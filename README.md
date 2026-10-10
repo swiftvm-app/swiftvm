@@ -109,3 +109,7 @@ swiftvm quit
 | `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, and the `swiftvm` tool |
 | `Config/` | Build settings, entitlements, Info.plist |
 | `docs/` | Notes |
+
+## License
+
+SwiftVM is licensed under the Apache License, Version 2.0. See `LICENSE`.
