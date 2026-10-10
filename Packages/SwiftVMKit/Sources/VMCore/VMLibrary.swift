@@ -22,13 +22,26 @@ public final class VMLibrary {
         self.rootDirectory = rootDirectory
     }
 
+    /// Environment variable that points the app and the `swiftvm` tool at a different data directory, so a
+    /// development copy can run next to the installed app without sharing its machines.
+    public nonisolated static let rootDirectoryEnvironmentKey = "SWIFTVM_HOME"
+
     public nonisolated static var defaultRootDirectory: URL {
-        URL.applicationSupportDirectory.appending(path: "SwiftVM", directoryHint: .isDirectory)
+        if let override = ProcessInfo.processInfo.environment[rootDirectoryEnvironmentKey], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+        }
+        return URL.applicationSupportDirectory.appending(path: "SwiftVM", directoryHint: .isDirectory)
     }
 
     /// Where new machines are created.
     public var machinesDirectory: URL {
         rootDirectory.appending(path: "Machines", directoryHint: .isDirectory)
+    }
+
+    /// Where a machine is put together before it joins the library. Creating one can take a long time
+    /// (downloading, installing), and a half-made bundle must never show up as a machine.
+    public var stagingDirectory: URL {
+        machinesDirectory.appending(path: ".staging", directoryHint: .isDirectory)
     }
 
     private var indexURL: URL { rootDirectory.appending(path: "library.json") }
@@ -92,6 +105,27 @@ public final class VMLibrary {
             counter += 1
         }
         return candidate
+    }
+
+    /// A bundle URL in the staging directory for a machine that is about to be created.
+    public func makeStagingBundleURL() throws -> URL {
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        return stagingDirectory.appending(path: "\(UUID().uuidString).\(VMBundle.pathExtension)", directoryHint: .isDirectory)
+    }
+
+    /// Moves a finished bundle out of the staging directory and adds it to the library.
+    @discardableResult
+    public func add(staged bundle: VMBundle) throws -> VirtualMachine {
+        let name = try bundle.loadConfiguration().name
+        let destination = availableBundleURL(forName: name)
+        try FileManager.default.moveItem(at: bundle.url, to: destination)
+        return try add(VMBundle(url: destination))
+    }
+
+    /// Deletes bundles left in the staging directory by a creation that never finished, for example because
+    /// the app quit in the middle of it. Call before any creation starts.
+    public func removeStagedBundles() {
+        try? FileManager.default.removeItem(at: stagingDirectory)
     }
 
     /// Adds an existing bundle to the library.

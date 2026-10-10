@@ -48,14 +48,20 @@ struct MachineMenu: View {
         switch machine.state {
         case .stopped:
             Button("Start", systemImage: "play", action: onStart)
+            if machine.configuration.os.family == .macOS {
+                Button("Start in Recovery", systemImage: "wrench.and.screwdriver") {
+                    onOpen?()
+                    Task { await machine.start(inRecovery: true) }
+                }
+            }
         case .suspended:
             Button("Resume", systemImage: "play", action: onStart)
             Button("Discard Saved State", systemImage: "arrow.counterclockwise") { machine.discardSavedState() }
         case .running:
             Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
             Button("Pause", systemImage: "pause") { Task { await machine.pause() } }
-            Button("Restart", systemImage: "arrow.clockwise") { Task { await machine.restart() } }
-            Button("Shut Down", systemImage: "power") { Task { await machine.shutDown() } }
+            Button("Restart", systemImage: "arrow.clockwise") { Task { await model.shutDown(machine, thenRestart: true) } }
+            Button("Shut Down", systemImage: "power") { Task { await model.shutDown(machine) } }
             Button("Force Stop", systemImage: "xmark.octagon", role: .destructive) { Task { await machine.forceStop() } }
         case .paused:
             Button("Resume", systemImage: "play") { Task { await machine.resume() } }

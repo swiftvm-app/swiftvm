@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import SSHIntegration
+import VMCore
 
 @Suite struct SSHAliasTests {
     @Test func slugsMachineNames() {
@@ -99,5 +100,87 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: pair.privateKeyPath))
         // The generated key is found again instead of being regenerated.
         #expect(try manager.preferredKeyPair() == pair)
+    }
+}
+
+@Suite struct SSHKeyInstallerTests {
+    @Test func signsInWithThePasswordOnly() {
+        let arguments = SSHKeyInstaller.arguments(alias: "macos-27", configURL: URL(fileURLWithPath: "/tmp/app/ssh_config"))
+        #expect(arguments.prefix(2) == ["-F", "/tmp/app/ssh_config"])
+        #expect(arguments.contains("PubkeyAuthentication=no"))
+        #expect(arguments.contains("NumberOfPasswordPrompts=1"))
+        // The host comes right before the command, after every option.
+        #expect(arguments.suffix(2) == ["macos-27", SSHKeyInstaller.remoteCommand])
+    }
+
+    /// Runs the command the guest would run, with a scratch directory standing in for the account's home.
+    @Test(arguments: ["/bin/sh", "/bin/zsh"])
+    func remoteCommandAddsTheKeyOnce(shell: String) throws {
+        let home = FileManager.default.temporaryDirectory.appending(path: "swiftvm-home-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTests me@host"
+        let other = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherKey other@host"
+
+        for line in [key, key, other] {
+            try ProcessRunner.run(
+                shell, ["-c", SSHKeyInstaller.remoteCommand],
+                environment: ["HOME": home.path], input: Data((line + "\n").utf8)
+            )
+        }
+
+        let authorizedKeys = home.appending(path: ".ssh/authorized_keys")
+        #expect(try String(contentsOf: authorizedKeys, encoding: .utf8) == "\(key)\n\(other)\n")
+        let permissions = { (url: URL) in try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int }
+        #expect(try permissions(authorizedKeys) == 0o600)
+        #expect(try permissions(home.appending(path: ".ssh")) == 0o700)
+    }
+}
+
+@Suite struct ProcessRunnerTests {
+    @Test func passesEnvironmentAndInput() throws {
+        let output = try ProcessRunner.run(
+            "/bin/sh", ["-c", "printf '%s:' \"$SWIFTVM_TEST_VALUE\"; cat"],
+            environment: ["SWIFTVM_TEST_VALUE": "from the caller"], input: Data("typed in".utf8)
+        )
+        #expect(output.standardOutput == "from the caller:typed in")
+        // Without input the tool reads end-of-file straight away, and keeps the caller's own environment.
+        #expect(try ProcessRunner.run("/bin/sh", ["-c", "cat; printf '%s' \"$HOME\""]).standardOutput == NSHomeDirectory())
+    }
+
+    @Test func survivesAToolThatIgnoresItsInput() throws {
+        // Larger than a pipe buffer, so the write can't finish before the tool has gone away.
+        let input = Data(repeating: 0x61, count: 1 << 20)
+        #expect(throws: ProcessRunner.Failure.self) {
+            try ProcessRunner.run("/bin/sh", ["-c", "exit 3"], input: input)
+        }
+    }
+}
+
+@Suite struct GuestTimeZoneTests {
+    @Test func acceptsOnlyTimeZoneNames() {
+        #expect(GuestTimeZone.isValidIdentifier("Europe/Berlin"))
+        #expect(GuestTimeZone.isValidIdentifier("America/Argentina/Buenos_Aires"))
+        #expect(GuestTimeZone.isValidIdentifier("Etc/GMT+5"))
+        #expect(GuestTimeZone.isValidIdentifier("UTC"))
+        #expect(!GuestTimeZone.isValidIdentifier(""))
+        #expect(!GuestTimeZone.isValidIdentifier("Europe/Berlin'; rm -rf ~"))
+        #expect(!GuestTimeZone.isValidIdentifier("../etc/passwd"))
+        #expect(!GuestTimeZone.isValidIdentifier("-settimezone"))
+        #expect(!GuestTimeZone.isValidIdentifier("Europe Berlin"))
+    }
+
+    @Test func refusesToRunWithAnythingElse() {
+        #expect(throws: VMError.self) {
+            try GuestTimeZone.set("$(reboot)", on: "mac", configURL: URL(fileURLWithPath: "/tmp/ssh_config"), password: "x")
+        }
+    }
+
+    @Test func usesTheInstalledKeyAndKeepsThePasswordOffTheCommandLine() {
+        let arguments = GuestTimeZone.arguments(identifier: "Europe/Berlin", alias: "macos-27", configURL: URL(fileURLWithPath: "/tmp/ssh_config"))
+        #expect(arguments.contains("BatchMode=yes"))
+        #expect(arguments.last?.contains("sudo -S") == true)
+        #expect(arguments.last?.contains("-settimezone 'Europe/Berlin'") == true)
+        #expect(arguments[arguments.count - 2] == "macos-27")
     }
 }

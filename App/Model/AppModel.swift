@@ -55,6 +55,8 @@ final class AppModel {
         }
 
         library.onChange = { [weak self] in self?.syncSSHConfiguration() }
+        // Whatever was being created when the app last quit can't be finished.
+        library.removeStagedBundles()
         library.load()
         // If the host has joined a network that collides with ours, move before any machine starts.
         networkManager?.relocateDefaultSubnetIfNeeded()
@@ -273,6 +275,21 @@ final class AppModel {
             || creations.contains { $0.name.lowercased() == lowered }
     }
 
+    /// Asks the guest to shut down, or to restart once it has.
+    ///
+    /// macOS answers with a dialog on its own screen, so the machine's window is brought up for someone to
+    /// see it. Without an answer the machine simply stays running.
+    func shutDown(_ machine: VirtualMachine, thenRestart: Bool = false) async {
+        if machine.configuration.asksBeforeShuttingDown {
+            showMachineWindow?(machine.id)
+        }
+        if thenRestart {
+            await machine.restart()
+        } else {
+            await machine.shutDown()
+        }
+    }
+
     func delete(_ machine: VirtualMachine) {
         let alias = machine.configuration.ssh.alias
         do {
@@ -291,5 +308,10 @@ final class AppModel {
 
     var activeMachines: [VirtualMachine] {
         library.machines.filter(\.state.isActive)
+    }
+
+    /// Creations that are still working (not failed and waiting to be dismissed).
+    var creationsInProgress: [MachineCreation] {
+        creations.filter { $0.errorMessage == nil }
     }
 }

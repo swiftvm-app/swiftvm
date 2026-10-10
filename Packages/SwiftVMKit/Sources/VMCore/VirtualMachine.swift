@@ -14,10 +14,20 @@ public final class VirtualMachine: Identifiable {
     /// Bytes the machine's disks occupy on the host.
     public private(set) var allocatedDiskSize: UInt64 = 0
 
+    /// The account to set up on the first boot after installation. Kept in memory only: if the app quits
+    /// before that boot, the guest shows its own setup assistant instead.
+    @ObservationIgnored public var pendingProvisioning: GuestProvisioning?
+
     @ObservationIgnored public weak var backendProvider: (any VMBackendProvider)?
     @ObservationIgnored public var onConfigurationChange: (@MainActor (VirtualMachine) -> Void)?
+    /// How long a guest gets to act on a shutdown request. A guest that is still up after that either
+    /// ignored the request or is waiting for someone to confirm it on its screen, so the machine counts as
+    /// running again rather than staying stuck in ``VMState/stopping``.
+    @ObservationIgnored public var shutdownRequestTimeout: Duration = .seconds(60)
+
     @ObservationIgnored private var backend: (any VMBackend)?
     @ObservationIgnored private var restartsAfterStop = false
+    @ObservationIgnored private var shutdownRequestExpiry: Task<Void, Never>?
 
     public init(bundle: VMBundle, configuration: VMConfiguration) {
         self.id = configuration.id
@@ -68,7 +78,9 @@ public final class VirtualMachine: Identifiable {
     // MARK: Lifecycle
 
     /// Boots the machine, or restores it if it was suspended.
-    public func start() async {
+    ///
+    /// - Parameter inRecovery: Boot a stopped macOS guest into its recovery environment.
+    public func start(inRecovery: Bool = false) async {
         guard state == .stopped || state == .suspended else { return }
         let restoring = state == .suspended && bundle.hasSavedState
         lastError = nil
@@ -78,9 +90,23 @@ public final class VirtualMachine: Identifiable {
             let backend = try await backendProvider.makeBackend(for: self)
             backend.eventHandler = { [weak self] event in self?.handle(event) }
             self.backend = backend
-            try await backend.start(restoringFrom: restoring ? bundle.savedStateURL : nil)
+
+            var options = VMStartOptions()
+            if restoring {
+                options.savedState = bundle.savedStateURL
+            } else if inRecovery {
+                options.startsInRecovery = true
+            } else if !configuration.installation.isProvisioned {
+                options.provisioning = pendingProvisioning
+            }
+            try await backend.start(options: options)
             if restoring {
                 bundle.removeSavedState()
+            }
+            if options.provisioning != nil {
+                // The guest only reads the account on this boot; a later start must not offer it again.
+                pendingProvisioning = nil
+                try? updateConfiguration { $0.installation.isProvisioned = true }
             }
             state = .running
         } catch {
@@ -97,12 +123,24 @@ public final class VirtualMachine: Identifiable {
             do {
                 try backend.requestStop()
                 state = .stopping
+                expireShutdownRequest(after: shutdownRequestTimeout)
                 return
             } catch {
                 // Fall through to a forced stop.
             }
         }
         await forceStop()
+    }
+
+    private func expireShutdownRequest(after timeout: Duration) {
+        shutdownRequestExpiry?.cancel()
+        shutdownRequestExpiry = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, let self, state == .stopping else { return }
+            // Whatever the guest does from here on is its own doing, not a restart we asked for.
+            restartsAfterStop = false
+            state = .running
+        }
     }
 
     /// Stops the machine immediately, like pulling the power cord.
@@ -196,6 +234,8 @@ public final class VirtualMachine: Identifiable {
 
     private func finishStop() {
         restartsAfterStop = false
+        shutdownRequestExpiry?.cancel()
+        shutdownRequestExpiry = nil
         tearDownBackend()
         state = .stopped
         refreshDiskUsage()

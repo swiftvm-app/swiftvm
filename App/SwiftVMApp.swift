@@ -6,6 +6,11 @@ struct SwiftVMApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel.shared
 
+    /// The menu bar item is only there while a machine runs; it can't be removed by hand.
+    private var hasActiveMachines: Binding<Bool> {
+        Binding(get: { !model.activeMachines.isEmpty }, set: { _ in })
+    }
+
     var body: some Scene {
         Window("SwiftVM", id: WindowID.library) {
             LibraryView()
@@ -26,6 +31,11 @@ struct SwiftVMApp: App {
 
         Settings {
             AppSettingsView()
+                .environment(model)
+        }
+
+        MenuBarExtra("SwiftVM", systemImage: "macwindow.on.rectangle", isInserted: hasActiveMachines) {
+            RunningMachinesMenu()
                 .environment(model)
         }
     }

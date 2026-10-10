@@ -97,6 +97,12 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         }
     }
 
+    /// Whether the guest answers a shutdown request by asking the person at its screen. macOS puts up its
+    /// "Are you sure you want to shut down?" dialog; other guests just shut down.
+    public var asksBeforeShuttingDown: Bool {
+        os.family == .macOS
+    }
+
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
 
@@ -174,6 +180,9 @@ public struct DisplayConfiguration: Codable, Sendable, Hashable {
         self.pixelsPerInch = pixelsPerInch
         self.automaticallyResizes = automaticallyResizes
     }
+
+    /// A Retina display the size of the default machine window, for macOS guests.
+    public static let macOS = DisplayConfiguration(widthInPixels: 2560, heightInPixels: 1600, pixelsPerInch: 220)
 }
 
 // MARK: - Networking

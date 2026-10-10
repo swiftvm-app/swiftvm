@@ -46,10 +46,17 @@ public final class VZBackend: NSObject, VMBackend {
 
     public var canRequestStop: Bool { virtualMachine.canRequestStop }
 
-    public func start(restoringFrom savedState: URL?) async throws {
-        if let savedState {
+    public func start(options: VMStartOptions) async throws {
+        if let savedState = options.savedState {
             try await perform { self.virtualMachine.restoreMachineStateFrom(url: savedState, completionHandler: $0) }
             try await resume()
+        } else if machineConfiguration.os.family == .macOS {
+            let startOptions = VZMacOSVirtualMachineStartOptions()
+            startOptions.startUpFromMacOSRecovery = options.startsInRecovery
+            if let provisioning = options.provisioning {
+                try startOptions.setGuestProvisioning(provisioning.macOptions)
+            }
+            try await perform { self.virtualMachine.start(options: startOptions, completionHandler: $0) }
         } else {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 virtualMachine.start { continuation.resume(with: $0) }

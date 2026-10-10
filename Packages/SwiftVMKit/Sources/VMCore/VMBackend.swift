@@ -41,6 +41,62 @@ public enum VMBackendEvent: Sendable {
     case networkDisconnected(String)
 }
 
+/// How a machine should start.
+public struct VMStartOptions: Sendable, Hashable {
+    /// Restore the guest from this saved state instead of booting it.
+    public var savedState: URL?
+    /// Account to set up on the first boot after installation (macOS guests).
+    public var provisioning: GuestProvisioning?
+    /// Boot into the recovery environment (macOS guests).
+    public var startsInRecovery: Bool
+
+    public init(savedState: URL? = nil, provisioning: GuestProvisioning? = nil, startsInRecovery: Bool = false) {
+        self.savedState = savedState
+        self.provisioning = provisioning
+        self.startsInRecovery = startsInRecovery
+    }
+}
+
+/// The account a freshly installed guest sets up by itself, so nobody has to click through first-run setup.
+///
+/// macOS only looks at this on the first boot after installation, and only from macOS 27 on.
+public struct GuestProvisioning: Sendable, Hashable {
+    public var fullName: String
+    public var userName: String
+    public var password: String
+    public var logsInAutomatically: Bool
+    /// Turn on Remote Login (SSH) in the guest.
+    public var enablesRemoteLogin: Bool
+
+    public init(fullName: String, userName: String, password: String, logsInAutomatically: Bool = true, enablesRemoteLogin: Bool = true) {
+        self.fullName = fullName
+        self.userName = userName
+        self.password = password
+        self.logsInAutomatically = logsInAutomatically
+        self.enablesRemoteLogin = enablesRemoteLogin
+    }
+
+    /// The first major macOS version that sets itself up from these options. Older guests ignore them.
+    public static let minimumMacOSMajorVersion = 27
+
+    /// Why `userName` can't be used as a macOS account name, or `nil` if it can.
+    public static func problem(withUserName userName: String) -> String? {
+        guard let first = userName.first else { return "Enter an account name." }
+        let isValid = first.isASCII && first.isLowercase
+            && userName.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") }
+            && userName.count <= 32
+        if !isValid {
+            return "Use lowercase letters, digits, “-”, “_” and “.”, starting with a letter."
+        }
+        if reservedUserNames.contains(userName) {
+            return "“\(userName)” is reserved by macOS. Choose another account name."
+        }
+        return nil
+    }
+
+    private static let reservedUserNames: Set<String> = ["root", "admin", "daemon", "nobody", "guest", "wheel", "staff"]
+}
+
 /// A running instance of a virtual machine in one engine (Virtualization.framework or QEMU).
 @MainActor
 public protocol VMBackend: AnyObject {
@@ -52,8 +108,8 @@ public protocol VMBackend: AnyObject {
     /// Whether the guest can be asked to shut down gracefully right now.
     var canRequestStop: Bool { get }
 
-    /// Boots the guest, or restores it from `savedState` and resumes it.
-    func start(restoringFrom savedState: URL?) async throws
+    /// Boots the guest, or restores it from saved state and resumes it.
+    func start(options: VMStartOptions) async throws
     /// Asks the guest to shut down (like pressing the power button).
     func requestStop() throws
     /// Stops the guest immediately.

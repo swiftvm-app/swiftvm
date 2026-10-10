@@ -10,6 +10,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quitting with machines running would cut their power, so offer to suspend or shut them down first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let model = AppModel.shared
+        let creating = model.creationsInProgress
+        if !creating.isEmpty {
+            // An installation that is cut short has to start from the beginning.
+            let alert = NSAlert()
+            alert.messageText = creating.count == 1
+                ? "“\(creating[0].name)” is still being created."
+                : "\(creating.count) virtual machines are still being created."
+            alert.informativeText = "If you quit now, this is cancelled and has to start over."
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        }
         for creation in model.creations {
             creation.task?.cancel()
         }

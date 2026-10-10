@@ -1,7 +1,8 @@
-import Foundation
+import AppKit
 import Installers
 import VMControl
 import VMCore
+import VZEngine
 
 /// Handles requests from the `swiftvm` command-line tool.
 extension AppModel {
@@ -16,6 +17,20 @@ extension AppModel {
         case .create:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
             return await createMachine(parameters)
+        case .quit:
+            // Quitting from the command line never puts up the dialog that asks what to do with machines.
+            guard activeMachines.isEmpty else {
+                return .failure("Stop or suspend the running virtual machines first.")
+            }
+            guard creationsInProgress.isEmpty else {
+                return .failure("A virtual machine is still being created.")
+            }
+            Task {
+                // Let the answer reach the caller before the app goes away.
+                try? await Task.sleep(for: .milliseconds(200))
+                NSApp.terminate(nil)
+            }
+            return ControlResponse(ok: true)
         default:
             break
         }
@@ -28,8 +43,13 @@ extension AppModel {
         case .start:
             await machine.start()
         case .stop:
-            await machine.shutDown()
-            guard await waitForState(of: machine, timeout: .seconds(90), where: { $0 == .stopped }) else {
+            await shutDown(machine)
+            // The machine goes back to running when the guest doesn't act on the request.
+            _ = await waitForState(of: machine, timeout: .seconds(90), where: { $0 != .stopping })
+            guard machine.state == .stopped else {
+                if machine.configuration.asksBeforeShuttingDown {
+                    return .failure("“\(machine.name)” asks for confirmation on its screen before it shuts down, and nobody answered. Answer it in the machine's window, or use force-stop to stop it immediately.")
+                }
                 return .failure("“\(machine.name)” didn't shut down in time. Use force-stop to stop it immediately.")
             }
         case .forceStop:
@@ -41,7 +61,7 @@ extension AppModel {
         case .resume:
             await machine.resume()
         case .restart:
-            await machine.restart()
+            await shutDown(machine, thenRestart: true)
             // Wait for the guest to go down and come back up.
             _ = await waitForState(of: machine, timeout: .seconds(90), where: { $0 != .running && $0 != .stopping })
             guard await waitForState(of: machine, timeout: .seconds(60), where: { $0 == .running }) else {
@@ -79,7 +99,7 @@ extension AppModel {
                 return .failure("“\(share.path)” isn't shared with “\(machine.name)”.")
             }
             changeConfiguration(of: machine) { $0.sharedFolders.removeAll { $0.path == share.path } }
-        case .list, .create:
+        case .list, .create, .quit:
             break
         }
 
@@ -94,11 +114,14 @@ extension AppModel {
     // MARK: Creating
 
     private func createMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
-        guard let distribution = DistributionCatalog.quickCreate.first(where: { $0.id == parameters.distribution }) else {
-            let available = DistributionCatalog.quickCreate.map(\.id).joined(separator: ", ")
-            return .failure("Unknown distribution “\(parameters.distribution)”. Available: \(available).")
+        let isMac = parameters.distribution == ControlRequest.CreateParameters.macOS
+        let distribution = DistributionCatalog.quickCreate.first { $0.id == parameters.distribution }
+        guard isMac || distribution != nil else {
+            let available = ([ControlRequest.CreateParameters.macOS] + DistributionCatalog.quickCreate.map(\.id)).joined(separator: ", ")
+            return .failure("Unknown system “\(parameters.distribution)”. Available: \(available).")
         }
-        var name = parameters.name ?? distribution.name.replacingOccurrences(of: " LTS", with: "")
+        let family: GuestFamily = isMac ? .macOS : .linux
+        var name = parameters.name ?? distribution?.name.replacingOccurrences(of: " LTS", with: "") ?? "macOS"
         if parameters.name == nil {
             let base = name
             var counter = 2
@@ -109,24 +132,68 @@ extension AppModel {
         } else if isNameTaken(name) {
             return .failure("A virtual machine named “\(name)” already exists.")
         }
+        let cpuCount = parameters.cpuCount ?? HostResources.recommendedCPUCount(for: family)
+        let memorySize = parameters.memoryGigabytes.map { UInt64($0) * HostResources.gibibyte }
+            ?? HostResources.recommendedMemorySize(for: family)
+        let diskCapacity = parameters.diskGigabytes.map { UInt64($0) * HostResources.gibibyte }
+            ?? HostResources.recommendedDiskCapacity(for: family)
 
-        let request = LinuxQuickCreateRequest(
-            name: name,
-            distribution: distribution,
-            cpuCount: parameters.cpuCount ?? HostResources.recommendedCPUCount(for: .linux),
-            memorySize: parameters.memoryGigabytes.map { UInt64($0) * HostResources.gibibyte }
-                ?? HostResources.recommendedMemorySize(for: .linux),
-            diskCapacity: parameters.diskGigabytes.map { UInt64($0) * HostResources.gibibyte }
-                ?? HostResources.recommendedDiskCapacity(for: .linux),
-            userName: parameters.user ?? NSUserName(),
-            fullName: NSFullUserName(),
-            password: parameters.password ?? "",
-            installsSSHKey: true,
-            rosetta: false
-        )
+        let start: () -> MachineCreation
+        if let distribution {
+            let request = LinuxQuickCreateRequest(
+                name: name,
+                distribution: distribution,
+                cpuCount: cpuCount,
+                memorySize: memorySize,
+                diskCapacity: diskCapacity,
+                userName: parameters.user ?? NSUserName(),
+                fullName: NSFullUserName(),
+                password: parameters.password ?? "",
+                installsSSHKey: true,
+                rosetta: false
+            )
+            start = { self.create(request) }
+        } else {
+            var image: MacRestoreImage?
+            if let path = parameters.restoreImagePath {
+                do {
+                    image = try await MacRestoreImage.load(from: URL(fileURLWithPath: path))
+                } catch {
+                    return .failure("Couldn't read the restore image: \(error.localizedDescription)")
+                }
+            }
+            // Without an image the latest macOS is installed, which sets up the account by itself.
+            var account: GuestProvisioning?
+            if image?.supportsProvisioning ?? true {
+                let userName = parameters.user ?? NSUserName()
+                if let problem = GuestProvisioning.problem(withUserName: userName) {
+                    return .failure("“\(userName)” can't be the account name. \(problem)")
+                }
+                guard let password = parameters.password, !password.isEmpty else {
+                    return .failure("macOS needs a password for the account. Add --password <password>.")
+                }
+                let provisioning = GuestProvisioning(fullName: NSFullUserName(), userName: userName, password: password)
+                do {
+                    try provisioning.validateForMacOS()
+                } catch {
+                    return .failure("macOS can't create that account: \(error.localizedDescription)")
+                }
+                account = provisioning
+            }
+            let request = MacInstallRequest(
+                name: name,
+                image: image,
+                cpuCount: cpuCount,
+                memorySize: memorySize,
+                diskCapacity: diskCapacity,
+                account: account,
+                installsSSHKey: true
+            )
+            start = { self.create(request) }
+        }
 
         let result: Result<VirtualMachine, any Error> = await withCheckedContinuation { continuation in
-            let creation = create(request)
+            let creation = start()
             creation.onFinish = { continuation.resume(returning: $0) }
         }
         switch result {

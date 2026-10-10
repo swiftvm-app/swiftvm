@@ -16,6 +16,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case open
         case create
         case delete
+        /// Quit the app. Refused while a machine is running.
+        case quit
         /// Share a host folder with the machine (applies to a running guest immediately).
         case share
         case unshare
@@ -33,7 +35,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     }
 
     public struct CreateParameters: Codable, Sendable, Equatable {
-        /// Catalog identifier, e.g. `ubuntu-26.04`.
+        /// What to install: `macos`, or a Linux catalog identifier such as `ubuntu-26.04`.
         public var distribution: String
         public var name: String?
         public var cpuCount: Int?
@@ -41,11 +43,17 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var diskGigabytes: Int?
         public var user: String?
         public var password: String?
+        /// macOS: absolute path of a restore image (IPSW) to install instead of downloading the latest.
+        public var restoreImagePath: String?
         public var start: Bool
+
+        /// The `distribution` value that installs macOS.
+        public static let macOS = "macos"
 
         public init(
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,
-            diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, start: Bool = true
+            diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
+            start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -54,6 +62,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.diskGigabytes = diskGigabytes
             self.user = user
             self.password = password
+            self.restoreImagePath = restoreImagePath
             self.start = start
         }
     }
@@ -121,8 +130,12 @@ public struct ControlResponse: Codable, Sendable, Equatable {
 
 /// Where the app listens and where its generated files live.
 public enum ControlPaths {
+    /// Same rule as `VMLibrary.defaultRootDirectory`: `SWIFTVM_HOME` selects another data directory.
     public static var applicationSupport: URL {
-        URL.applicationSupportDirectory.appending(path: "SwiftVM", directoryHint: .isDirectory)
+        if let override = ProcessInfo.processInfo.environment["SWIFTVM_HOME"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+        }
+        return URL.applicationSupportDirectory.appending(path: "SwiftVM", directoryHint: .isDirectory)
     }
 
     public static var socket: URL { applicationSupport.appending(path: "control.sock") }

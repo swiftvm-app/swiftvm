@@ -32,6 +32,8 @@ public struct ImageDownloader: Sendable {
     }
 
     public let cacheDirectory: URL
+    /// Pause before an interrupted download is picked up again.
+    var resumeDelay: Duration = .seconds(2)
 
     public init(cacheDirectory: URL = ImageDownloader.defaultCacheDirectory) {
         self.cacheDirectory = cacheDirectory
@@ -44,6 +46,22 @@ public struct ImageDownloader: Sendable {
     /// Where the verified copy of `image` lives once downloaded.
     public func cachedURL(for image: RemoteImage) -> URL {
         cacheDirectory.appending(path: image.fileName)
+    }
+
+    /// Whether a verified copy of `image` is already in the cache.
+    public func isCached(_ image: RemoteImage) -> Bool {
+        FileManager.default.fileExists(atPath: cachedURL(for: image).path)
+    }
+
+    /// Asks the server how large `image` is, without downloading it. `nil` if the server doesn't say.
+    public func remoteSize(of image: RemoteImage) async -> Int64? {
+        var request = URLRequest(url: image.url)
+        request.httpMethod = "HEAD"
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              http.expectedContentLength > 0
+        else { return nil }
+        return http.expectedContentLength
     }
 
     /// Returns the local file for `image`, downloading and verifying it if it isn't cached yet.
@@ -71,18 +89,42 @@ public struct ImageDownloader: Sendable {
 
     // MARK: Download
 
+    /// How many times in a row a download may be picked up again without getting any further.
+    static let maximumStalledResumes = 4
+
+    /// Downloads `url` to `destination`. When the connection drops partway, the download carries on from
+    /// where it stopped instead of starting over, as long as the server supports that. Images run to tens
+    /// of gigabytes, so a hiccup shouldn't cost the whole transfer.
     private func download(_ url: URL, to destination: URL, progress: @escaping @Sendable (Progress) -> Void) async throws {
         let delegate = DownloadDelegate(destination: destination, progress: progress)
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        let task = session.downloadTask(with: url)
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                delegate.setContinuation(continuation)
-                task.resume()
+
+        var resumeData: Data?
+        var stalledResumes = 0
+        var bytesAtLastFailure: Int64 = 0
+        while true {
+            let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: url)
+            do {
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                        delegate.setContinuation(continuation)
+                        task.resume()
+                    }
+                } onCancel: {
+                    task.cancel()
+                }
+                return
+            } catch let error as URLError where error.code != .cancelled {
+                guard let data = error.downloadTaskResumeData else { throw error }
+                let bytesReceived = delegate.bytesReceived
+                stalledResumes = bytesReceived > bytesAtLastFailure ? 0 : stalledResumes + 1
+                guard stalledResumes <= Self.maximumStalledResumes else { throw error }
+                bytesAtLastFailure = bytesReceived
+                resumeData = data
+                // Give the network a moment to come back; longer each time nothing got through.
+                try await Task.sleep(for: resumeDelay * (stalledResumes + 1))
             }
-        } onCancel: {
-            task.cancel()
         }
     }
 
@@ -150,6 +192,12 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, any Error>?
     private var moveError: (any Error)?
+    private var totalBytesReceived: Int64 = 0
+
+    /// Bytes received so far, across interruptions.
+    var bytesReceived: Int64 {
+        lock.withLock { totalBytesReceived }
+    }
 
     init(destination: URL, progress: @escaping @Sendable (ImageDownloader.Progress) -> Void) {
         self.destination = destination
@@ -164,6 +212,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
         _ session: URLSession, downloadTask: URLSessionDownloadTask,
         didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
     ) {
+        lock.withLock { totalBytesReceived = max(totalBytesReceived, totalBytesWritten) }
         progress(.init(
             bytesReceived: totalBytesWritten,
             bytesExpected: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil

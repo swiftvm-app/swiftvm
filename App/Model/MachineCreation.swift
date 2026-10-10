@@ -4,6 +4,8 @@ import Installers
 import Observation
 import SSHIntegration
 import VMCore
+import VMNetworking
+import VZEngine
 
 /// A machine that is still being downloaded and prepared; shown in the library with its progress.
 @Observable
@@ -60,6 +62,21 @@ struct LinuxInstallerRequest {
     var diskCapacity: UInt64
 }
 
+/// Everything needed to install macOS from a restore image.
+struct MacInstallRequest {
+    var name: String
+    /// The restore image to install. `nil` looks up the newest macOS this Mac can run and downloads it.
+    var image: MacRestoreImage?
+    var cpuCount: Int
+    var memorySize: UInt64
+    var diskCapacity: UInt64
+    /// The account macOS creates on its first start. `nil` leaves setup to the guest's own assistant, as
+    /// do images older than macOS 27.
+    var account: GuestProvisioning?
+    /// Add the host's SSH key to the account once the guest is up.
+    var installsSSHKey: Bool
+}
+
 extension AppModel {
     /// Starts creating a machine from a cloud image. `onReady` runs once it is in the library.
     @discardableResult
@@ -79,6 +96,15 @@ extension AppModel {
         }
         return run(MachineCreation(name: request.name, os: os), onReady: onReady) { creation in
             try await self.performInstallerCreate(request, os: os, creation: creation)
+        }
+    }
+
+    /// Starts installing macOS into a new machine.
+    @discardableResult
+    func create(_ request: MacInstallRequest, onReady: @escaping (VirtualMachine) -> Void = { _ in }) -> MachineCreation {
+        let os = request.image?.guestOS ?? GuestOS(family: .macOS)
+        return run(MachineCreation(name: request.name, os: os), onReady: onReady) { creation in
+            try await self.performMacInstall(request, creation: creation)
         }
     }
 
@@ -125,7 +151,7 @@ extension AppModel {
         let alias = uniqueAlias(for: request.name)
         let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
         let disk = DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
-        let interface = NetworkInterfaceConfiguration(ipv4Address: allocateAddress()?.description)
+        let interface = NetworkInterfaceConfiguration()
         let configuration = VMConfiguration(
             name: request.name,
             os: os,
@@ -148,7 +174,7 @@ extension AppModel {
         )
 
         creation.update("Preparing disk…", fraction: 0)
-        let bundle = try VMBundle.create(at: library.availableBundleURL(forName: request.name), configuration: configuration)
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
         do {
             let diskURL = bundle.diskURL(for: disk)
             let progress = ProgressRelay { fraction in creation.fraction = fraction }
@@ -158,7 +184,7 @@ extension AppModel {
             }.value
             try Task.checkCancellation()
             sshWriter.forgetHostKey(for: alias)
-            return try library.add(bundle)
+            return try addToLibrary(staged: bundle)
         } catch {
             try? FileManager.default.removeItem(at: bundle.url)
             throw error
@@ -177,24 +203,149 @@ extension AppModel {
 
         creation.update("Creating disk…")
         let disk = DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
-        let interface = NetworkInterfaceConfiguration(ipv4Address: allocateAddress()?.description)
         let configuration = VMConfiguration(
             name: request.name,
             os: os,
             cpuCount: request.cpuCount,
             memorySize: request.memorySize,
             disks: [disk],
-            networkInterfaces: [interface],
+            networkInterfaces: [NetworkInterfaceConfiguration()],
             ssh: SSHConfiguration(alias: uniqueAlias(for: request.name)),
             installation: InstallationConfiguration(installMediaPath: mediaURL.path)
         )
-        let bundle = try VMBundle.create(at: library.availableBundleURL(forName: request.name), configuration: configuration)
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
         do {
             try DiskService.createBlankDisk(at: bundle.diskURL(for: disk), capacity: disk.capacity, format: disk.format)
-            return try library.add(bundle)
+            return try addToLibrary(staged: bundle)
         } catch {
             try? FileManager.default.removeItem(at: bundle.url)
             throw error
+        }
+    }
+
+    private func performMacInstall(_ request: MacInstallRequest, creation: MachineCreation) async throws -> VirtualMachine {
+        var image: MacRestoreImage
+        if let requested = request.image {
+            image = requested
+        } else {
+            creation.update("Checking for the latest macOS…")
+            image = try await MacRestoreImage.latestSupported()
+        }
+        if image.isRemote {
+            let file = try await download(RemoteImage(url: image.url), named: image.productName, creation: creation)
+            try Task.checkCancellation()
+            creation.update("Checking \(image.productName)…")
+            // From here on, go by what the downloaded file says about itself.
+            do {
+                image = try await MacRestoreImage.load(from: file)
+            } catch {
+                // Nothing checks an image against a published checksum, so a damaged one would otherwise
+                // sit in the cache and fail the same way every time.
+                try? FileManager.default.removeItem(at: file)
+                throw VMError.invalidConfiguration(
+                    "The downloaded restore image is damaged and was removed (\(error.localizedDescription)) Try again to download it anew."
+                )
+            }
+        }
+        guard let requirements = image.requirements else {
+            throw MacOSInstaller.InstallError.unsupportedImage(image.productName)
+        }
+        try Task.checkCancellation()
+
+        let alias = uniqueAlias(for: request.name)
+        let account = image.supportsProvisioning ? request.account : nil
+        try account?.validateForMacOS()
+        let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try keyManager.preferredKeyPair() : nil
+        let disk = DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
+        let configuration = VMConfiguration(
+            name: request.name,
+            os: image.guestOS,
+            cpuCount: max(request.cpuCount, requirements.minimumCPUCount),
+            memorySize: max(request.memorySize, requirements.minimumMemorySize),
+            disks: [disk],
+            display: .macOS,
+            networkInterfaces: [NetworkInterfaceConfiguration()],
+            ssh: SSHConfiguration(alias: alias, user: account?.userName ?? "", identityFile: keyPair?.privateKeyPath)
+        )
+
+        creation.update("Creating disk…")
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
+        do {
+            try MacOSInstaller.prepare(bundle, for: requirements)
+            try DiskService.createBlankDisk(at: bundle.diskURL(for: disk), capacity: disk.capacity, format: disk.format)
+            creation.update("Installing \(image.productName)…", fraction: 0)
+            try await MacOSInstaller.install(image, into: bundle, configuration: configuration) { fraction in
+                creation.fraction = fraction
+            }
+            sshWriter.forgetHostKey(for: alias)
+            let machine = try addToLibrary(staged: bundle)
+            machine.pendingProvisioning = account
+            if let account, let keyPair {
+                finishSetup(of: machine, account: account, keyPair: keyPair)
+            }
+            return machine
+        } catch {
+            try? FileManager.default.removeItem(at: bundle.url)
+            throw error
+        }
+    }
+
+    /// Moves a finished bundle into the library and gives its network interface a free address.
+    ///
+    /// The address is picked here rather than when creation starts: creations run side by side, and two of
+    /// them must not end up with the same one.
+    private func addToLibrary(staged bundle: VMBundle) throws -> VirtualMachine {
+        var configuration = try bundle.loadConfiguration()
+        if let index = configuration.networkInterfaces.firstIndex(where: { $0.ipv4Address == nil }) {
+            configuration.networkInterfaces[index].ipv4Address = allocateAddress()?.description
+            try bundle.save(configuration)
+        }
+        return try library.add(staged: bundle)
+    }
+
+    /// Finishes setting up a macOS guest over SSH once its first start has created the account: adds the
+    /// host's SSH key and gives the guest the host's time zone.
+    ///
+    /// macOS turns on Remote Login for password sign-in only, so the key is installed by signing in once
+    /// with the password as soon as the guest answers. The password stays in memory until then.
+    private func finishSetup(of machine: VirtualMachine, account: GuestProvisioning, keyPair: SSHKeyManager.KeyPair) {
+        Task {
+            // The first start may be a while off if the machine isn't started right away.
+            while !machine.configuration.installation.isProvisioned {
+                guard library.machine(id: machine.id) != nil else { return }
+                try? await Task.sleep(for: .seconds(1))
+            }
+
+            let alias = machine.configuration.ssh.alias
+            let configURL = sshWriter.generatedConfigURL
+            let deadline = ContinuousClock.now + .seconds(600)
+            while machine.state.isActive, ContinuousClock.now < deadline {
+                if let address = address(for: machine).flatMap(IPv4Address.init),
+                   await Reachability.canConnect(to: address, port: machine.configuration.ssh.port) {
+                    // Refused sign-ins are expected until the guest has finished creating the account.
+                    let isInstalled = await Task.detached {
+                        do {
+                            try SSHKeyInstaller.install(
+                                publicKey: keyPair.publicKey, on: alias, configURL: configURL, password: account.password
+                            )
+                        } catch {
+                            return false
+                        }
+                        // Nobody was asked where this Mac is, so it would stay on Pacific time. Not worth
+                        // failing setup over if it doesn't work.
+                        try? GuestTimeZone.set(on: alias, configURL: configURL, password: account.password)
+                        return true
+                    }.value
+                    if isInstalled { return }
+                }
+                try? await Task.sleep(for: .seconds(3))
+            }
+            // A machine that was stopped before it finished setting up has nothing to report.
+            guard machine.state.isActive else { return }
+            machine.lastError = VMErrorInfo(
+                title: "Couldn't add your SSH key to “\(machine.name)”",
+                message: "The virtual machine didn't accept an SSH sign-in in time. You can still connect with the account's password."
+            )
         }
     }
 

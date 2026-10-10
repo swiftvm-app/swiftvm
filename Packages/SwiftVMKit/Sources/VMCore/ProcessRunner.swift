@@ -20,17 +20,36 @@ public enum ProcessRunner {
     }
 
     /// Runs `executable` and throws ``Failure`` when it exits with a non-zero status.
+    ///
+    /// - Parameters:
+    ///   - environment: Variables added to (or replacing those of) this process's environment.
+    ///   - input: Bytes fed to the tool's standard input. Keep it small; it is written in one go.
     @discardableResult
-    public static func run(_ executable: String, _ arguments: [String]) throws -> Output {
+    public static func run(
+        _ executable: String,
+        _ arguments: [String],
+        environment: [String: String] = [:],
+        input: Data? = nil
+    ) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, added in added }
+        }
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
-        process.standardInput = FileHandle.nullDevice
+        let inputPipe = input.map { _ in Pipe() }
+        process.standardInput = inputPipe ?? FileHandle.nullDevice
         try process.run()
+        if let input, let inputPipe {
+            // A tool that exits without reading its input must not take this process down with SIGPIPE.
+            _ = fcntl(inputPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+            try? inputPipe.fileHandleForWriting.write(contentsOf: input)
+            try? inputPipe.fileHandleForWriting.close()
+        }
         // Read before waiting so a chatty tool can't fill the pipe and block.
         let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()

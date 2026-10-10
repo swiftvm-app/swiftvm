@@ -62,3 +62,73 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
   on its reserved address (`192.168.232.11`) with no dynamic lease recorded.
 - **Fallback:** For guests that still don't match, the app collects candidate addresses (leases by MAC or
   host name, plus the reservation) and uses the one that accepts a connection on the SSH port.
+
+## macOS guests install and set themselves up unattended — works
+
+- **Tried:** `swiftvm create macos`, twice, with the 27.0.1 restore image (26A434; 26.6 GB, which the app
+  shows as 24.81 GB because it counts in binary units) already downloaded:
+  `VZMacOSInstaller` onto a blank 128 GB ASIF disk, then a first start with
+  `VZMacGuestProvisioningOptions` (account, automatic login, Remote Login).
+- **Host:** macOS 27.0 (26A428), M5 Pro.
+- **Outcome:** Creating the machine took 3 min 0 s and 2 min 44 s, nearly all of it the installation. On
+  the first start the guest creates the account and logs in by itself; key sign-in over SSH worked 26 s
+  and 32 s after the start. A later start answered after 7 s. Both guests took their reserved address
+  without help (macOS identifies itself to DHCP by MAC address).
+- **Also learned:**
+  - In Swift the setter is `VZMacOSVirtualMachineStartOptions.setGuestProvisioning(_:)`; the Objective-C
+    name `setGuestProvisioningOptions:` doesn't compile.
+  - `VZMacGuestProvisioningOptions.validate()` works on its own, so an account can be checked before the
+    installation rather than at the first start, when it is too late to change it.
+  - The installer reports no progress for the first 30 s or so (it stays at 0), then moves steadily.
+  - Suspending a macOS guest takes about 2 s and resuming about 3 s; the saved state of an 8 GB guest that
+    has just started is 2.8 GB.
+  - Shared folders show up at `/Volumes/My Shared Files/<name>` as soon as they are added, in both directions.
+
+## Remote Login comes up with password sign-in only
+
+- **Seen:** Provisioning with `enablesRemoteLogin` turns on SSH, but there is no way to hand over a public key.
+- **Fix:** Once the guest answers on port 22 the app signs in once with the password and appends the key to
+  `~/.ssh/authorized_keys`. `ssh` gets the password from a helper named in `SSH_ASKPASS` (with
+  `SSH_ASKPASS_REQUIRE=force`, because the app has no terminal); the helper prints an environment variable,
+  so the password is never written to disk or put on a command line. Checked with a password containing a
+  space, a double quote and a dollar sign.
+
+## An unattended macOS guest stays on Pacific time
+
+- **Seen:** `readlink /etc/localtime` in a freshly provisioned guest gives `US/Pacific`, whatever the host
+  uses: nobody was asked, and location services are off.
+- **Fix:** After installing the key the app runs `sudo -S systemsetup -settimezone <host zone>` over SSH,
+  with the password on standard input. `systemsetup` prints an `Error:-99` line and still succeeds; the
+  symlink changes a moment later. A guest created after the fix came up on `Europe/Berlin`.
+
+## macOS guests ask before they shut down
+
+- **Symptom:** `swiftvm stop` on a macOS guest timed out and the machine stayed in "Shutting Down" for good.
+- **Cause:** `VZVirtualMachine.requestStop()` acts like the power button. With a user logged in, macOS puts
+  up its shutdown confirmation and waits; the guest was still up 105 s later. Listing on-screen windows in
+  the guest shows no `loginwindow` window before the request and one (267×334 points, layer 1000) after it.
+- **Consequence:** A shutdown request now expires after 60 s and the machine counts as running again. For
+  macOS guests the app brings the machine's window forward so the question is seen, and `swiftvm stop`
+  explains what happened. Shutting down without anyone at the screen needs root in the guest
+  (`shutdown -h now`), so it is a job for the guest agent or a `sudoers` rule installed during setup.
+- **Note:** A guest that shuts itself down is noticed right away (`guestDidStop`).
+
+## Cancelling a macOS installation
+
+- **Tried:** A signed command-line harness that starts `MacOSInstaller.install` and cancels the task before
+  the installation starts, 12 s in and 50 s in.
+- **Outcome:** No crash in any of the three. Cancelling `VZMacOSInstaller.progress` after the installation
+  has started ends it within milliseconds with `VZErrorDomain` code 9 ("The installation was cancelled").
+  The header warns that cancelling *before* it has started raises an exception, so an early cancellation
+  is only remembered and the installation is never started.
+
+## Interrupted downloads can be picked up again
+
+- **Tried:** A local HTTP server that promises a 6 MB file, sends 2 MB and hangs up; later requests are
+  answered in full and honor `Range`.
+- **Outcome:** `URLSession` fails the download task with resume data in the error
+  (`URLError.downloadTaskResumeData`), and a task made from that data asks for the remainder only
+  (`Range: bytes=…`). The server has to send `Accept-Ranges: bytes` and an `ETag` (Apple's CDN does both for
+  restore images). The stitched file matches the original.
+- **Consequence:** `ImageDownloader` carries on after a dropped connection instead of starting a 25 GB
+  download over. Resume data is kept in memory only, so quitting the app still loses a partial download.

@@ -7,9 +7,11 @@ let usage = """
 Usage: swiftvm <command> [arguments]
 
   list                              List virtual machines
-  create <distribution> [options]   Create a Linux machine from a ready-made image
+  create <system> [options]         Create a machine and wait until it is ready
+      <system> is macos, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
       --user <name>  --password <password>  --no-start
+      --ipsw <file>                 macOS: install this restore image instead of downloading the latest
   start <machine>                   Start, or resume a suspended machine
   stop <machine>                    Shut down and wait
   force-stop <machine>              Stop immediately
@@ -22,6 +24,7 @@ Usage: swiftvm <command> [arguments]
   unshare <machine> <folder>        Stop sharing a folder
   ip <machine>                      Print the machine's IP address
   ssh <machine> [ssh arguments]     Open a shell (or run a command) in the machine
+  quit                              Quit the app (only when no machine is running)
 
 <machine> is a name, SSH alias or UUID.
 """
@@ -94,7 +97,7 @@ case "list", "ls":
 
 case "create":
     guard let distribution = arguments.first, !distribution.hasPrefix("--") else {
-        fail("Missing distribution, e.g. ubuntu-26.04.")
+        fail("Missing system: macos, or a Linux image such as ubuntu-26.04.")
     }
     var parameters = ControlRequest.CreateParameters(distribution: distribution)
     var index = 1
@@ -116,6 +119,7 @@ case "create":
         case "--disk": parameters.diskGigabytes = number(for: option)
         case "--user": parameters.user = value(for: option)
         case "--password": parameters.password = value(for: option)
+        case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--no-start": parameters.start = false
         default: fail("Unknown option \(option).")
         }
@@ -130,6 +134,9 @@ case "share", "unshare":
     let parameters = ControlRequest.ShareParameters(path: path, readOnly: arguments.dropFirst(2).contains("--read-only"))
     let command: ControlRequest.Command = commandName == "share" ? .share : .unshare
     printTable(send(ControlRequest(command: command, machine: machine, share: parameters)).machines)
+
+case "quit":
+    _ = send(ControlRequest(command: .quit))
 
 case "ip":
     let response = send(ControlRequest(command: .list, machine: requireMachine()))
@@ -146,7 +153,7 @@ case "ssh":
     fail("Couldn't run ssh: \(String(cString: strerror(errno)))")
 
 default:
-    guard let command = ControlRequest.Command(rawValue: commandName), command != .create, command != .list else {
+    guard let command = ControlRequest.Command(rawValue: commandName), ![.create, .list, .quit].contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }
     printTable(send(ControlRequest(command: command, machine: requireMachine())).machines)

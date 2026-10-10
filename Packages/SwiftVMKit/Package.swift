@@ -33,5 +33,6 @@ let package = Package(
         .testTarget(name: "InstallersTests", dependencies: ["Installers", "DiskTools"]),
         .testTarget(name: "VMNetworkingTests", dependencies: ["VMNetworking"]),
         .testTarget(name: "VMControlTests", dependencies: ["VMControl"]),
+        .testTarget(name: "VZEngineTests", dependencies: ["VZEngine", "VMCore"]),
     ]
 )

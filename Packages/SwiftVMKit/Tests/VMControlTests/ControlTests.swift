@@ -37,6 +37,14 @@ import Testing
         #expect(throws: ControlSocketError.self) { try client.send(ControlRequest(command: .list)) }
     }
 
+    @Test func readsCreateRequestsFromOlderTools() throws {
+        // A tool built before macOS guests existed doesn't send `restoreImagePath`.
+        let json = #"{"command":"create","create":{"distribution":"ubuntu-26.04","start":true}}"#
+        let request = try JSONDecoder().decode(ControlRequest.self, from: Data(json.utf8))
+        #expect(request.create == ControlRequest.CreateParameters(distribution: "ubuntu-26.04"))
+        #expect(request.create?.restoreImagePath == nil)
+    }
+
     @Test func commandsUseDashedNames() throws {
         let data = try JSONEncoder().encode(ControlRequest(command: .forceStop, machine: "vm"))
         #expect(String(decoding: data, as: UTF8.self).contains("\"force-stop\""))
