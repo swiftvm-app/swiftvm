@@ -23,6 +23,9 @@ public struct CloudInitSeed: Sendable, Hashable {
     /// Have the kernel write its messages to the serial console too, where `swiftvm console` and the
     /// machine's console log pick them up. Takes effect from the second boot.
     public var kernelMessagesOnSerialConsole: Bool
+    /// The script that installs the guest agent (``LinuxGuestAgent/installer()``), to run on the first
+    /// boot. `nil` leaves the guest without one.
+    public var guestAgentInstaller: String?
 
     public init(
         hostName: String,
@@ -35,7 +38,8 @@ public struct CloudInitSeed: Sendable, Hashable {
         timeZone: String? = TimeZone.current.identifier,
         sharedFoldersTag: String? = GuestIntegration.sharedFoldersTag,
         rosettaTag: String? = nil,
-        kernelMessagesOnSerialConsole: Bool = true
+        kernelMessagesOnSerialConsole: Bool = true,
+        guestAgentInstaller: String? = try? LinuxGuestAgent.installer()
     ) {
         self.hostName = hostName
         self.instanceID = instanceID
@@ -48,6 +52,7 @@ public struct CloudInitSeed: Sendable, Hashable {
         self.sharedFoldersTag = sharedFoldersTag
         self.rosettaTag = rosettaTag
         self.kernelMessagesOnSerialConsole = kernelMessagesOnSerialConsole
+        self.guestAgentInstaller = guestAgentInstaller
     }
 
     // MARK: Documents
@@ -118,12 +123,25 @@ public struct CloudInitSeed: Sendable, Hashable {
             lines.append("mounts:")
             lines.append(contentsOf: mounts)
         }
+        var files: [String] = []
         if kernelMessagesOnSerialConsole {
-            lines.append("write_files:")
-            lines.append("  - path: \(yaml(Self.serialConsoleSettingsPath))")
-            lines.append("    content: \(yaml(Self.serialConsoleSettings))")
+            files.append("  - path: \(yaml(Self.serialConsoleSettingsPath))")
+            files.append("    content: \(yaml(Self.serialConsoleSettings))")
             // The boot menu is only written anew when asked, and read at the next boot.
             commands.append(Self.bootMenuUpdateCommand)
+        }
+        if let guestAgentInstaller {
+            // Base64 carries the script through YAML untouched, whatever is in it.
+            files.append("  - path: \(yaml(LinuxGuestAgent.installerPath))")
+            files.append("    encoding: b64")
+            files.append("    content: \(yaml(Data(guestAgentInstaller.utf8).base64EncodedString()))")
+            files.append("    permissions: \(yaml("0755"))")
+            // A guest that can't run the agent (no Python, say) is still a guest that works.
+            commands.append("sh \(LinuxGuestAgent.installerPath) || true")
+        }
+        if !files.isEmpty {
+            lines.append("write_files:")
+            lines.append(contentsOf: files)
         }
         if !commands.isEmpty {
             lines.append("runcmd:")
@@ -183,11 +201,22 @@ public struct CloudInitSeed: Sendable, Hashable {
     ///
     /// The account is left out of the new seed. It is on the copied disk already, as it is today, and
     /// setting it up again would bring back the password and sign-in rules of the day the original was made.
-    public static func reissue(at url: URL, hostName: String, macAddress: String?, instanceID: String = UUID().uuidString.lowercased()) throws {
-        let userData = try ISOImageBuilder.text(of: userDataFileName, in: url)
+    ///
+    /// The copy runs its first-boot setup again, and with it the installer of the guest agent that the
+    /// seed carries. That is replaced by this build's, so that the copy of a machine made long ago doesn't
+    /// put an agent of that day over the one on its disk.
+    public static func reissue(
+        at url: URL, hostName: String, macAddress: String?, instanceID: String = UUID().uuidString.lowercased(),
+        guestAgentInstaller: String? = try? LinuxGuestAgent.installer()
+    ) throws {
+        var userData = try ISOImageBuilder.text(of: userDataFileName, in: url)
+        userData = removingAccountSetup(from: replacingHostName(in: userData, with: hostName))
+        if let guestAgentInstaller {
+            userData = replacingGuestAgentInstaller(in: userData, with: guestAgentInstaller)
+        }
         var files: [String: Data] = [
             metaDataFileName: Data(metaData(instanceID: instanceID, hostName: hostName).utf8),
-            userDataFileName: Data(removingAccountSetup(from: replacingHostName(in: userData, with: hostName)).utf8),
+            userDataFileName: Data(userData.utf8),
         ]
         if let macAddress {
             files[networkConfigFileName] = Data(networkConfig(macAddress: macAddress).utf8)
@@ -201,6 +230,18 @@ public struct CloudInitSeed: Sendable, Hashable {
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.hasPrefix("hostname:") ? "hostname: \(yaml(hostName))" : String($0) }
             .joined(separator: "\n")
+    }
+
+    /// Puts `installer` in the place of the guest agent's installer in a cloud-config document written by
+    /// ``userData``. A document that carries none stays as it is.
+    static func replacingGuestAgentInstaller(in userData: String, with installer: String) -> String {
+        var lines = userData.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let content = "    content: "
+        guard let path = lines.firstIndex(of: "  - path: \(yaml(LinuxGuestAgent.installerPath))"),
+              let index = lines[path...].dropFirst().prefix(3).firstIndex(where: { $0.hasPrefix(content) })
+        else { return userData }
+        lines[index] = content + yaml(Data(installer.utf8).base64EncodedString())
+        return lines.joined(separator: "\n")
     }
 
     // MARK: Helpers

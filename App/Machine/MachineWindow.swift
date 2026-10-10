@@ -58,11 +58,11 @@ struct MachineView: View {
             SnapshotsView(machine: machine)
         }
         .alert(
-            machine.lastError?.title ?? "",
-            isPresented: Binding(get: { machine.lastError != nil }, set: { if !$0 { machine.lastError = nil } }),
-            presenting: machine.lastError
-        ) { _ in
-            Button("OK") { machine.lastError = nil }
+            machine.message?.title ?? "",
+            isPresented: Binding(get: { machine.message != nil }, set: { if !$0 { machine.dismissMessage() } }),
+            presenting: machine.message
+        ) { error in
+            MessageButtons(message: error) { machine.dismissMessage() }
         } message: { error in
             Text(error.message)
         }

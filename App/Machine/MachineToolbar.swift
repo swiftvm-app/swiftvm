@@ -243,7 +243,7 @@ struct SharedFoldersPopover: View {
 
             SharedFoldersEditor(machine: machine)
 
-            SharedFoldersGuestHint(configuration: machine.configuration)
+            SharedFoldersGuestHint(configuration: machine.configuration, isMountedByAgent: machine.hasAgentMountedSharedFolders)
         }
         .padding(16)
         .frame(width: 400)
@@ -253,6 +253,8 @@ struct SharedFoldersPopover: View {
 /// Says where shared folders show up in the guest, or how to mount them when the guest doesn't do it itself.
 struct SharedFoldersGuestHint: View {
     let configuration: VMConfiguration
+    /// The guest tools have mounted the folders in a guest that doesn't do so by itself.
+    var isMountedByAgent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -262,10 +264,10 @@ struct SharedFoldersGuestHint: View {
             case .windows:
                 hint("Folders appear in the guest as a network drive.")
             case .linux:
-                if configuration.mountsSharedFoldersAutomatically {
+                if configuration.mountsSharedFoldersAutomatically || isMountedByAgent {
                     hint("Folders appear in the guest under \(GuestIntegration.sharedFoldersMountPoint). Changes apply right away.")
                 } else {
-                    hint("This system wasn't set up by SwiftVM, so it doesn't mount shared folders by itself. Run this in the guest's terminal:")
+                    hint("This system wasn't set up by SwiftVM, so it doesn't mount shared folders by itself. With the guest tools installed (Install Guest Tools… in the Virtual Machine menu) they are mounted whenever it runs. Without them, run this in the guest's terminal:")
                     CopyableCommand(command: GuestIntegration.linuxMountCommand)
                     hint("Folders then appear under \(GuestIntegration.sharedFoldersMountPoint). To mount them at every start, also run this once (after installing, not in a live session):")
                     CopyableCommand(command: GuestIntegration.linuxPersistentMountCommand)

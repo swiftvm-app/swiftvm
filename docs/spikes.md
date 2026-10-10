@@ -429,3 +429,153 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
   responding". The one without was still there.
 - **Consequence:** `GuestClock` passes both options. The two commands that finish setting up a macOS guest
   (`SSHKeyInstaller`, `GuestTimeZone`) don't yet.
+
+## A line to the guest that needs no network (virtio-vsock) — works
+
+- **Tried:** `VZVirtioSocketDevice.connect(toPort:)` on the socket device every machine already has, from
+  the app, with the descriptor it returns handed to `swiftvm vsock <machine> <port>` through the control
+  socket. `ssh` uses that as its `ProxyCommand`.
+- **Guests:** Ubuntu 26.04 (systemd 259), Ubuntu 24.04 (systemd 255), Debian 13 (systemd 257).
+- **Outcome:** `swiftvm ssh <machine> --vsock` signs in on Ubuntu 26.04 and Debian 13 as they come: systemd
+  from version 256 on has a generator that puts the SSH server on port 22 of the socket device
+  (`sshd-vsock.socket`). The session's `SSH_CONNECTION` reads `UNKNOWN 65535 UNKNOWN 65535`. With the
+  machine's cable pulled, `ssh` to the address times out and the one over the socket device still works.
+  512 MB of random data through it arrived with the right checksum in 1.1 s.
+- **Ubuntu 24.04** has no such generator, and nothing listens: the connect fails with "Connection reset by
+  peer". The guest tools add a socket unit that does the same (`ListenStream=vsock::22`, one `sshd -i` per
+  connection), which stands back where systemd's generator exists. With it, 24.04 signs in too.
+- **Also learned:**
+  - The connection object closes its descriptor when it is released. A `dup` of the descriptor keeps the
+    line open after that, so the app holds plain descriptors and no framework objects.
+  - A connect to a port nobody listens on fails within 30 ms, also in the first second of a boot, before
+    the guest has a driver for the device. Asking again and again is cheap.
+  - The descriptor is a socket that can be closed in one direction: a guest program that reads to the end
+    of its input and then answers got 300,006 bytes and its answer came back.
+
+## The Linux guest agent is a Python script
+
+- **The choice:** a static Swift binary would share the protocol's code with the app, but needs the Swift
+  Static Linux SDK on the Mac, and a toolchain from swift.org next to Xcode's, for everyone who builds the
+  app. A script needs nothing on the Mac. The user chose the script.
+- **Checked on the three cloud images:** `python3` is there (cloud-init needs it) and its `socket` module
+  has `AF_VSOCK`, its `time` module `clock_settime`:
+
+  | | Python | systemd | `hwclock` |
+  |---|---|---|---|
+  | Ubuntu 26.04 | 3.14.4 | 259 | present |
+  | Ubuntu 24.04 | 3.12.3 | 255 | missing |
+  | Debian 13 | 3.13.5 | 257 | missing |
+
+- **Hence the clock is set from the Mac's time**, sent in the request, rather than from the guest's
+  hardware clock: `hwclock` moved to a package of its own that two of the three images don't have. That
+  also means the SSH way of setting the clock (`sudo hwclock --hctosys`) never worked on those two.
+- **The agent** listens on port 717 of the socket device and the app connects, which it does afresh
+  whenever a guest comes up: connections don't survive a suspend, the agent's listening socket does. The
+  agent serves the newest connection and drops the one before.
+- **Who may give it orders:** only root can listen below port 1024, so the app knows who answers. In the
+  other direction the agent only takes connections that come from the host (peer CID 2). Tried from
+  inside a guest: without the `vsock_loopback` module a local connect to port 717 fails; with it loaded
+  the connect succeeds, the agent hangs up at once, and the shutdown that was sent with it didn't happen.
+  On the Mac, `swiftvm vsock <machine> 717` is refused by the app: the agent serves one connection, and a
+  second one would take the app's place. What the agent will do is kept narrow all the same: it mounts
+  shared folders under `/mnt` or `/media` only, and a device name can't pass for an option to `mount`.
+- **Not covered:** guests without systemd or without Python 3 at `/usr/bin/python3`. The installer says so
+  and stops.
+
+## The agent across a machine's life
+
+All through `swiftvm`, on Ubuntu 26.04, Ubuntu 24.04 and Debian 13 unless it says otherwise.
+
+- **First boot of a new Quick Create machine** (the installer arrives through cloud-init): the agent was
+  connected 8.5 s, 6.2 s and 6.5 s after the first start, and `swiftvm info` then shows what the guest calls
+  itself (`Ubuntu 26.04.1 LTS`, `Ubuntu 24.04.5 LTS`, `Debian GNU/Linux 13 (trixie)`), its kernel and the
+  address it holds.
+- **A later cold start:** connected after 4.5 to 5.5 s.
+- **Existing machines** got it with `swiftvm install-tools` over SSH in 0.6 to 0.7 s each.
+- **Resume:** connected again at once. A guest with its cable pulled, so that nothing could reach it over
+  SSH, suspended for 30.3 s: the resume took 0.51 s, and its clock, read between 0.02 and 0.23 s after
+  that, was between 0.02 s behind and 0.19 s ahead of the Mac's (the spread is the time the reading took).
+  The agent's log says `The clock was 31.125 s behind and has been set.` The same on Debian with the
+  standard kernel and on Ubuntu 24.04.
+- **Pause:** a guest paused for 20 s is 19.6 s behind when it carries on. Ubuntu 24.04's own time service
+  put that right within five seconds; with the agent it is right in the first reading (−0.03 to +0.14 s).
+- **Snapshot of a running guest:** the agent was back as the guest was (the snapshot took 0.8 s, the clock
+  was set by 0.86 s). **Revert** to it 20 s later and start: connected 0.6 s after the start, the file
+  changed after the snapshot had its old contents, the clock was set by 21.9 s.
+- **Restart:** `swiftvm restart` took 3.5 to 8.6 s, the agent was back about 5 s later, three times of three.
+- **Duplicate:** the copy has the agent from the copied disk; connected 5.4 s after its first start, with
+  its own address.
+- **Shutdown** through the agent took 0.5 to 1.5 s from `swiftvm stop` to stopped, and the console logs
+  end with `reboot: Power down` as they do after the power button.
+- **A guest SwiftVM didn't set up** (an Ubuntu 24.04 copy with the agent, the shared-folder entry in
+  `/etc/fstab` and cloud-init taken out, `sudo` asking for a password): installing over SSH is refused with
+  sudo's own words; `swiftvm install-tools --disc` plugs in a 900 KB disc that the guest sees as `sda`
+  with the label `SWIFTVM`; the one command printed, run there, installs; the agent connects and mounts
+  the shared folders at `/mnt/shared`, where the file put there on the Mac could be read.
+- **A guest installed from an ISO** (Ubuntu 26.04.1 desktop, which brings no SSH server): port 22 refuses
+  on the network and on the socket device alike, so `swiftvm install-tools` fails with ssh's "Connection
+  refused" and points at `--disc`. From the disc, with the command run in the guest's terminal, the tools
+  installed; `swiftvm info` then showed them (1.0, kernel 7.0.0-38, `Ubuntu 26.04.1 LTS`) and the shared
+  folder was there in the guest.
+- **A guest that restarts by itself** (`sudo systemctl reboot` in it) keeps its machine running: the
+  framework reports no stop. Its uptime went from 3 s to 8 s with the machine's state unchanged, the
+  agent was gone and back, and the shared folders, which nothing mounts in that guest but the agent,
+  were mounted again.
+- **A guest started with its cable out** is slow to finish starting: Ubuntu 24.04 waits up to two minutes
+  for a network before it lets anyone but root sign in ("System is booting up", also over the socket
+  device), and a `swiftvm stop` during that wait gave up after 90 s with the guest still going down.
+- **A stale journal:** what the guest logs between waking up and the clock being set carries the time of
+  the suspend. In the journal a resume therefore looks as if the network took 31 s to come back; it took
+  0.3 s.
+
+## Leases on the books are not addresses
+
+- **Seen:** a machine created while another one runs gets a dynamic address, because reservations are
+  fixed when the network is made. The lease for it stays in `/var/db/dhcpd_leases` until it runs out,
+  about an hour going by the expiry it is listed with. Once all
+  machines have stopped and the network is made anew, the same machine gets its reserved address, and for
+  the first seconds of every start, until it answers on the SSH port, the app listed it at the old one.
+  `ssh` right after a resume went to an address nobody holds.
+- **With the agent** the app is told. The address monitor takes the agent's word as soon as it is
+  connected, looks again the moment the agent reports a change, and while the guest holds no address (its
+  cable is out, or it is still asking) lists it where it was last known to be for certain, or at its
+  reserved address. Checked with such leases present for two machines: at the moment the agent connected
+  and one second later both were listed where they really were, and `ssh` worked right after a resume.
+- **Without the agent** the first seconds of a start are as before.
+
+## Debian's cloud image can't be resumed, and sees no USB drives
+
+- **Symptom:** a Debian 13 Quick Create machine suspends, and then fails to resume, every time:
+  `The virtual machine failed to restore with error “invalid argument”.` The build from before this work
+  does the same, so it is not the agent.
+- **Cause:** the image (`debian-13-genericcloud-arm64`) boots a kernel made for cloud servers
+  (`6.12…-cloud-arm64`) that has no driver for the display. In `/sys/bus/virtio/devices` the display
+  device (ID `0x0010`) has no driver there, where Ubuntu has `virtio_gpu`. The same kernel has no USB
+  storage driver: a plugged-in disc or disk image never shows up in `lsblk`.
+- **Checked with:** `sudo apt install linux-image-arm64`, removing the cloud kernel and restarting. The
+  display device then has its driver, the guest suspends and resumes (0.47 s), the agent is back and the
+  clock right, and a plugged-in disc is there as `sda`.
+- **Not done:** changing the catalog to Debian's `generic` image, which has the standard kernel. It is
+  the fix, and a decision for the user: the download is larger, and existing machines stay as they are.
+
+## A resumed guest with its cable out reports a lost network
+
+- **Seen:** resuming a machine whose network cable had been pulled before it was suspended made
+  `swiftvm start` fail with "Network disconnected … Internal Network Error", although the guest was
+  running: the framework tells its delegate that the attachment was disconnected, which for a cable the
+  user pulled is no news.
+- **Fix:** the backend knows which cables are out and lets those reports pass.
+
+## Quitting and opening the app at once left it without its control socket
+
+- **Seen:** a copy of the app launched while the previous one was still on its way out ran, but
+  `swiftvm` said the app wasn't running. The old copy removes the socket file when it has finished
+  leaving, by its path, and by then the file was the new copy's.
+- **Fix:** a server remembers which file it made (device and inode) and only removes that one.
+
+## A restart can be over between two looks
+
+- **Seen:** `swiftvm restart` returned after 90 s although the guest had been back for 85. It waited for
+  the machine to be seen stopped, looking five times a second, and a guest that shuts down through the
+  agent and starts again can do both between two looks.
+- **Fix:** the machine counts its starts, and a restart waits for the next one.

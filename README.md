@@ -16,6 +16,12 @@ Early development. Working today:
 - **Networking**: an app-managed NAT network with a stable address per machine
 - **SSH from the host**: every machine gets a host alias; `swiftvm ssh <machine>` or, after turning on
   *Add machines to ~/.ssh/config* in Settings, plain `ssh <alias>`
+- **SSH without a network**: `swiftvm ssh <machine> --vsock` reaches a Linux guest over the machine's own
+  socket device, so it still works when the guest's network is down or its cable is pulled
+- **Guest tools for Linux guests**: a small agent in the guest tells the app which system it runs and
+  which addresses it holds, sets its clock the moment it is resumed, mounts the shared folders and shuts
+  it down without delay. Quick Create machines come with it; any other Linux guest gets it with
+  *Install Guest Tools…* or `swiftvm install-tools`
 - **Port forwarding**: reach a port in a guest as `localhost:<port>` on the Mac, and optionally from other
   devices on the network. Forwards can be added and removed while the guest runs
 - **Shared folders** that can be added and removed while the guest runs
@@ -30,12 +36,24 @@ Early development. Working today:
   started up is in the machine's `logs/console.log`
 - **`swiftvm`** command-line tool that drives the running app
 
-Planned: Windows guests (QEMU engine), USB passthrough, guest tools.
+Planned: Windows guests (QEMU engine), USB passthrough, guest tools for macOS guests.
 
 Good to know:
 
 - macOS guests ask on their own screen before they shut down, so *Shut Down* and `swiftvm stop` need someone
   to confirm in the machine's window. Suspend needs no confirmation.
+- The guest tools are one Python script and its systemd units, so they need a guest with systemd and
+  Python 3. Ubuntu and Debian bring both along; other distributions haven't been tried. They are
+  installed over SSH where the Mac can sign in and use `sudo` without a password, as in Quick Create
+  machines. For other guests *Install Guest Tools…* plugs in a disc and shows the one command to run in
+  the guest. In the guest, `sudo sh /usr/local/lib/swiftvm/install.sh --remove` takes them out again.
+  Machines created before the guest tools existed don't have them until you install them.
+- SSH over the socket device needs an SSH server that listens there. systemd arranges that by itself from
+  version 256 on (Ubuntu 26.04, Debian 13); for older systems such as Ubuntu 24.04 the guest tools add it.
+- A Debian 13 machine from Quick Create can't be resumed once it has been suspended, and doesn't see
+  drives that are plugged in: Debian's cloud image has a kernel without the drivers for the display and
+  for USB storage. Until SwiftVM uses another image, installing Debian's standard kernel in the guest
+  (`sudo apt install linux-image-arm64`, then remove `linux-image-cloud-arm64` and restart) cures both.
 - Snapshots and duplicates are instant because APFS shares the unchanged parts of the disk. On a volume
   with another file system they are full copies.
 - A snapshot covers the machine's own disks. While a disk image that the guest can write to is attached,
@@ -79,6 +97,8 @@ swiftvm create macos --name "Build Mac" --password 'a password for the account'
 swiftvm list
 swiftvm info web-server
 swiftvm ssh web-server
+swiftvm ssh web-server --vsock              # the same without the guest's network
+swiftvm install-tools web-server            # guest tools, over SSH; --disc plugs in a disc instead
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80          # http://localhost:8080 is the guest's port 80
 swiftvm attach web-server ~/Downloads/data.img
@@ -103,6 +123,10 @@ swiftvm quit                                # only when nothing is running
 `swiftvm quit` never asks anything, so it refuses while a machine is running. While one is still being
 created it refuses too, unless you add `--cancel-creations`.
 
+`swiftvm vsock <machine> <port>` connects its input and output to a port in the guest over the socket
+device. It is what `swiftvm ssh --vsock` hands to `ssh`, and it works in your own SSH configuration as
+`ProxyCommand swiftvm vsock <machine> 22`, for `scp`, `rsync` or an editor that works over SSH.
+
 ## Development
 
 Set `SWIFTVM_HOME` to run a second copy of the app with its own machines, network settings and control socket,
@@ -120,7 +144,8 @@ swiftvm quit
 | Path | What |
 |---|---|
 | `App/` | The SwiftUI app, and its icon (`AppIcon.icon`, an Icon Composer document) |
-| `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, and the `swiftvm` tool |
+| `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, `GuestChannel` (the protocol between the app and the agent in a guest), and the `swiftvm` tool |
+| `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgent/` | The guest agent for Linux, its systemd units and its installer |
 | `Config/` | Build settings, entitlements, Info.plist |
 | `docs/` | Notes |
 

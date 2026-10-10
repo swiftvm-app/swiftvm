@@ -19,11 +19,6 @@ extension AppModel {
             guard let identifier = request.machine else { return .failure("Missing machine name.") }
             guard let machine = findMachine(identifier) else { return notFound(identifier) }
             return details(machine)
-        case .console:
-            // The stream itself is served by `serveConsole` once this answer has gone out.
-            guard let identifier = request.machine else { return .failure("Missing machine name.") }
-            guard let machine = findMachine(identifier) else { return notFound(identifier) }
-            return success(machine)
         case .create:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
             return await createMachine(parameters)
@@ -72,11 +67,30 @@ extension AppModel {
         case .resume:
             await machine.resume()
         case .restart:
+            guard machine.state == .running else { return .failure("“\(machine.name)” isn't running.") }
+            let runs = machine.startCount
             await shutDown(machine, thenRestart: true)
-            // Wait for the guest to go down and come back up.
-            _ = await waitForState(of: machine, timeout: .seconds(90), where: { $0 != .running && $0 != .stopping })
-            guard await waitForState(of: machine, timeout: .seconds(60), where: { $0 == .running }) else {
-                return .failure("“\(machine.name)” didn't come back up in time.")
+            // Wait for the guest to go down and come back up. Its state alone doesn't say: a guest that
+            // shuts down at once is running again between two looks.
+            let deadline = ContinuousClock.now + .seconds(150)
+            while machine.startCount == runs || machine.state != .running {
+                if machine.startCount == runs, machine.state == .running {
+                    // Still the same run: the guest was asked and has let the request pass.
+                    if machine.configuration.asksBeforeShuttingDown {
+                        return .failure("“\(machine.name)” asks for confirmation on its screen before it restarts, and nobody answered. Answer it in the machine's window.")
+                    }
+                    return .failure("“\(machine.name)” didn't shut down in time, so it wasn't restarted.")
+                }
+                // It failed to start again, which the error says better than this could.
+                guard machine.lastError == nil else { break }
+                if machine.state == .stopped, !machine.isRestartPending {
+                    // The guest couldn't be asked and was stopped outright, which is no restart.
+                    return .failure("“\(machine.name)” was stopped and didn't start again.")
+                }
+                guard ContinuousClock.now < deadline else {
+                    return .failure("“\(machine.name)” didn't come back up in time.")
+                }
+                try? await Task.sleep(for: .milliseconds(100))
             }
         case .open:
             guard let showMachineWindow else { return .failure("The library window isn't available.") }
@@ -172,6 +186,43 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return details(machine)
+        case .plug, .unplug:
+            guard !machine.configuration.networkInterfaces.isEmpty else {
+                return .failure("“\(machine.name)” has no network interface.")
+            }
+            // In between states the change would be written down and not reach the guest.
+            guard !machine.state.isTransitioning else {
+                return .failure("“\(machine.name)” is busy starting up or shutting down. Try again in a moment.")
+            }
+            changeConfiguration(of: machine) { $0.networkInterfaces[0].isConnected = request.command == .plug }
+        case .installTools:
+            do {
+                if request.usesDisc == true {
+                    let disc = try await attachGuestToolsDisc(to: machine)
+                    var response = details(machine)
+                    let alias = machine.configuration.ssh.alias
+                    response.note = """
+                        The guest tools disc is plugged into “\(machine.name)”. To install from it, run this in the guest:
+
+                            \(LinuxGuestAgent.toolsInstallCommand)
+
+                        Afterwards, eject the disc: swiftvm eject \(alias.isEmpty ? machine.id.uuidString : alias) "\(disc.name)"
+                        """
+                    return response
+                }
+                try await installGuestTools(on: machine)
+            } catch let error as ProcessRunner.Failure {
+                if let complaint = LinuxGuestAgent.installerComplaint(in: error) {
+                    // The installer ran and gave up; from the disc it would give up the same way.
+                    return .failure("The guest tools couldn't be installed in “\(machine.name)”: \(complaint).")
+                }
+                let reason = error.output.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                let detail = reason.isEmpty ? "" : " (\(reason))"
+                return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and sudo without a password\(detail). To install from inside the guest instead, use `swiftvm install-tools <machine> --disc`.")
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return details(machine)
         case .discardState:
             guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
             machine.discardSavedState()
@@ -229,7 +280,7 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
-        case .list, .info, .console, .create, .quit:
+        case .list, .info, .console, .vsock, .create, .quit:
             break
         }
 
@@ -241,17 +292,43 @@ extension AppModel {
         return success(machine)
     }
 
-    // MARK: Serial console
+    // MARK: Streams
+
+    /// Answers a request that turns its connection into a byte stream. With a yes comes what serves the
+    /// stream once the answer has gone out.
+    func openStream(_ request: ControlRequest) async -> (response: ControlResponse, stream: ControlServer.Stream?) {
+        guard !isQuittingUnattended else { return (.failure("SwiftVM is quitting."), nil) }
+        guard let identifier = request.machine else { return (.failure("Missing machine name."), nil) }
+        guard let machine = findMachine(identifier) else { return (notFound(identifier), nil) }
+        switch request.command {
+        case .console:
+            let (console, name) = (machine.console, machine.name)
+            return (success(machine), { connection in await Self.serveConsole(console, name: name, connection: connection) })
+        case .vsock:
+            guard let port = request.port, port > 0 else { return (.failure("Missing port."), nil) }
+            // The agent serves one connection, the app's. Another one would take its place.
+            guard port != GuestAgent.port else {
+                return (.failure("Port \(port) is the line between SwiftVM and the guest tools, and not for anything else."), nil)
+            }
+            do {
+                let guest = try await machine.connectToGuest(port: port)
+                return (success(machine), { connection in
+                    await ByteRelay.run(between: connection, and: guest.fileDescriptor)
+                    try? guest.close()
+                })
+            } catch let error as VMError {
+                return (.failure(error.localizedDescription), nil)
+            } catch {
+                return (.failure("Nothing in “\(machine.name)” answers on port \(port) of its socket device. (\(error.localizedDescription))"), nil)
+            }
+        default:
+            return (.failure("This command doesn't open a stream."), nil)
+        }
+    }
 
     /// Connects a `swiftvm console` session to a machine's serial console and returns when the tool hangs
     /// up. Like a cable, the session survives the machine being stopped and started.
-    nonisolated func serveConsole(_ request: ControlRequest, connection: Int32) async {
-        let target: (console: SerialConsole, name: String)? = await MainActor.run {
-            guard let machine = request.machine.flatMap(self.findMachine) else { return nil }
-            return (machine.console, machine.name)
-        }
-        guard let (console, name) = target else { return }
-
+    private nonisolated static func serveConsole(_ console: SerialConsole, name: String, connection: Int32) async {
         let writer = ConsoleClientWriter(descriptor: connection)
         let token = console.addListener { event in
             switch event {
@@ -456,7 +533,9 @@ extension AppModel {
                     allowsOtherDevices: forward.allowsOtherDevices, status: status
                 )
             },
-            snapshotCount: machine.snapshots.count
+            snapshotCount: machine.snapshots.count,
+            guestTools: configuration.canHaveGuestAgent
+                ? MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel) : nil
         )
         return ControlResponse(ok: true, machines: [summary])
     }

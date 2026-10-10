@@ -47,6 +47,10 @@ private final class FakeBackend: VMBackend {
     func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {
         self.capturesSystemKeys = capturesSystemKeys
     }
+
+    func connectToGuest(port: UInt32) async throws -> FileHandle {
+        throw POSIXError(.ECONNRESET)
+    }
 }
 
 @MainActor

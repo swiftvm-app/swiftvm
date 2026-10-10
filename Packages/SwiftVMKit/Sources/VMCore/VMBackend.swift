@@ -130,6 +130,11 @@ public protocol VMBackend: AnyObject {
     /// Sends shortcuts such as Command-Tab to the guest, or leaves them to the host.
     func setCapturesSystemKeys(_ capturesSystemKeys: Bool)
 
+    /// Connects to a port that something in the guest listens on, over the machine's socket device
+    /// (virtio-vsock). The line doesn't run over the guest's network, so it is there when the network
+    /// isn't. The connection is closed when the returned handle is released.
+    func connectToGuest(port: UInt32) async throws -> FileHandle
+
     /// Lets go of host resources (network attachments, the display) after the guest has stopped, without
     /// waiting for the backend object itself to be deallocated.
     func invalidate()
@@ -144,15 +149,19 @@ public protocol VMBackendProvider: AnyObject {
     func backendDidStop(for machine: VirtualMachine)
 }
 
-/// An error surfaced to the user for a specific machine.
+/// Something to tell the user about a specific machine: most often an error, sometimes what is left for
+/// them to do.
 public struct VMErrorInfo: Identifiable, Sendable, Hashable {
     public let id = UUID()
     public var title: String
     public var message: String
+    /// A command from the message that the user is meant to run somewhere else, to offer for copying.
+    public var copyableText: String?
 
-    public init(title: String, message: String) {
+    public init(title: String, message: String, copyableText: String? = nil) {
         self.title = title
         self.message = message
+        self.copyableText = copyableText
     }
 }
 
@@ -164,6 +173,8 @@ public enum VMError: Error, LocalizedError {
     case busy(name: String, VMActivity)
     /// The operation needs the machine to be shut down.
     case notStopped(name: String, VMState)
+    /// The operation needs a guest that is up.
+    case notRunning(name: String)
 
     public var errorDescription: String? {
         switch self {
@@ -179,6 +190,8 @@ public enum VMError: Error, LocalizedError {
             state == .suspended
                 ? "“\(name)” is suspended. Resume it and shut it down first."
                 : "Shut down “\(name)” first."
+        case .notRunning(let name):
+            "“\(name)” isn't running."
         }
     }
 }

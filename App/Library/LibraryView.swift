@@ -126,8 +126,8 @@ struct LibraryView: View {
             presentedError?.title ?? "",
             isPresented: Binding(get: { presentedError != nil }, set: { if !$0 { dismissError() } }),
             presenting: presentedError
-        ) { _ in
-            Button("OK") { dismissError() }
+        ) { error in
+            MessageButtons(message: error, dismiss: dismissError)
         } message: { error in
             Text(error.message)
         }
@@ -275,19 +275,20 @@ struct LibraryView: View {
 
     // MARK: Errors
 
-    /// The error to show here: app-wide problems first, then machines whose own window isn't open.
+    /// What to show here: app-wide problems first, then what machines whose own window isn't open have
+    /// to say, errors and notices alike.
     private var presentedError: VMErrorInfo? {
         if let error = model.generalError {
             return error
         }
-        return model.library.machines.first { $0.lastError != nil && !model.openMachineWindows.contains($0.id) }?.lastError
+        return model.library.machines.first { $0.message != nil && !model.openMachineWindows.contains($0.id) }?.message
     }
 
     private func dismissError() {
         if model.generalError != nil {
             model.generalError = nil
-        } else if let machine = model.library.machines.first(where: { $0.lastError != nil && !model.openMachineWindows.contains($0.id) }) {
-            machine.lastError = nil
+        } else if let machine = model.library.machines.first(where: { $0.message != nil && !model.openMachineWindows.contains($0.id) }) {
+            machine.dismissMessage()
         }
     }
 }

@@ -36,8 +36,16 @@ Usage: swiftvm <command> [arguments]
   revert <machine> <snapshot>       Go back to a snapshot, discarding what happened since
   delete-snapshot <machine> <snapshot>
   rename-snapshot <machine> <snapshot> <new name>
+  plug <machine> | unplug <machine> Plug the machine's network cable in, or pull it
+  install-tools <machine> [--disc]  Install the guest tools in a running Linux machine over SSH. With
+                                    --disc, plug in the guest tools disc instead, to install from inside
   ip <machine>                      Print the machine's IP address
-  ssh <machine> [ssh arguments]     Open a shell (or run a command) in the machine
+  ssh <machine> [--vsock] [ssh arguments]
+                                    Open a shell (or run a command) in the machine. With --vsock the
+                                    connection goes through the machine's socket device rather than its
+                                    network, so it also works while the network is down
+  vsock <machine> <port>            Connect this command's input and output to a port in the machine over
+                                    its socket device. Made for ssh: ProxyCommand swiftvm vsock <machine> 22
   console <machine> [--wait <seconds>]
                                     Connect this terminal to the machine's serial console
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
@@ -133,6 +141,12 @@ func printDetails(of machine: MachineSummary) {
             if forward.udp { text += " udp" }
             if let status = forward.status { text += " (\(status))" }
             lines.append((index == 0 ? "Forwards" : "", text))
+        }
+        if let tools = details.guestTools {
+            lines.append(("Guest tools", tools.version ?? "not connected"))
+            if let kernel = tools.kernel {
+                lines.append(("Kernel", kernel))
+            }
         }
         lines.append(("Snapshots", String(details.snapshotCount)))
         lines.append(("Location", details.location))
@@ -247,6 +261,18 @@ case "forward", "unforward":
         printDetails(of: machine)
     }
 
+case "install-tools":
+    let machine = requireMachine()
+    rejectUnknownOptions(arguments.dropFirst(), allowed: ["--disc"])
+    let request = ControlRequest(command: .installTools, machine: machine, usesDisc: arguments.contains("--disc") ? true : nil)
+    let response = send(request)
+    if let machine = response.machines.first {
+        printDetails(of: machine)
+    }
+    if let note = response.note {
+        print("\n" + note)
+    }
+
 case "resize":
     let machine = requireMachine()
     guard arguments.count >= 2, let gigabytes = Int(arguments[1]), gigabytes > 0 else { fail("Missing disk size in GB.") }
@@ -326,10 +352,34 @@ case "ip":
     guard let address = response.machines.first?.address else { fail("The machine has no address yet.") }
     print(address)
 
+case "vsock":
+    let machine = requireMachine()
+    guard arguments.count == 2, let port = UInt32(arguments[1]), port > 0 else {
+        fail("Usage: swiftvm vsock <machine> <port>")
+    }
+    do {
+        let (response, descriptor) = try ControlClient().openStream(ControlRequest(command: .vsock, machine: machine, port: port))
+        guard let descriptor else { fail(response.error ?? "The connection couldn't be made.") }
+        StreamSession.run(descriptor: descriptor)
+    } catch {
+        fail(error.localizedDescription)
+    }
+
 case "ssh":
     let response = send(ControlRequest(command: .list, machine: requireMachine()))
-    guard let alias = response.machines.first?.sshAlias else { fail("The machine has no SSH alias.") }
-    let sshArguments = ["ssh", "-F", ControlPaths.sshConfig.path, alias] + arguments.dropFirst()
+    guard let machine = response.machines.first, let alias = machine.sshAlias else { fail("The machine has no SSH alias.") }
+    var rest = Array(arguments.dropFirst())
+    var options: [String] = []
+    if rest.first == "--vsock" {
+        rest.removeFirst()
+        guard let tool = Bundle.main.executablePath else { fail("Couldn't find this tool's own path.") }
+        // ssh runs this in a shell, after replacing what starts with a percent sign, and talks to it
+        // instead of connecting to the machine's address.
+        let quoted = "'" + tool.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let command = "\(quoted) vsock \(machine.id.uuidString) \(StreamSession.sshPort)".replacingOccurrences(of: "%", with: "%%")
+        options = ["-o", "ProxyCommand=\(command)"]
+    }
+    let sshArguments = ["ssh", "-F", ControlPaths.sshConfig.path] + options + [alias] + rest
     var cArguments: [UnsafeMutablePointer<CChar>?] = sshArguments.map { strdup($0) }
     cArguments.append(nil)
     execv("/usr/bin/ssh", cArguments)

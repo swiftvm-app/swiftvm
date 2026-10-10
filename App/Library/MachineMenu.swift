@@ -35,6 +35,9 @@ struct MachineMenu: View {
         if machine.configuration.hasSerialConsole, model.commandLineToolURL != nil {
             Button("Open Serial Console", systemImage: "cable.connector") { model.openSerialConsole(for: machine) }
         }
+        if model.offersGuestTools(for: machine) {
+            Button("Install Guest Tools…", systemImage: "shippingbox") { model.installGuestToolsReportingResult(on: machine) }
+        }
         Button("Copy IP Address", systemImage: "network") {
             guard let address = model.address(for: machine) else { return }
             NSPasteboard.general.clearContents()
@@ -91,5 +94,23 @@ struct MachineMenu: View {
             Button(machine.state.label + "…") {}
                 .disabled(true)
         }
+    }
+}
+
+/// The buttons under a message about a machine: OK, and for a message that asks the user to run a command
+/// somewhere else, a way to take the command along.
+struct MessageButtons: View {
+    let message: VMErrorInfo
+    let dismiss: () -> Void
+
+    var body: some View {
+        if let command = message.copyableText {
+            Button("Copy Command") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
+                dismiss()
+            }
+        }
+        Button("OK", action: dismiss)
     }
 }

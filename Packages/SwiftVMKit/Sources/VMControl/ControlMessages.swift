@@ -45,6 +45,15 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Attach to the machine's serial console. After the answer, the connection carries the console's
         /// bytes in both directions until either side closes it.
         case console
+        /// Connect to ``ControlRequest/port`` in the guest over the machine's socket device (virtio-vsock),
+        /// which needs no network. After the answer, the connection carries that conversation.
+        case vsock
+        /// Plug the machine's network cable in, or pull it.
+        case plug
+        case unplug
+        /// Install the guest tools in a running guest: over SSH, or with ``ControlRequest/usesDisc`` by
+        /// plugging in the guest tools disc for someone to install from inside the guest.
+        case installTools = "install-tools"
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -133,11 +142,15 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var forward: ForwardParameters?
     /// For `quit`: give up the machines that are still being created instead of refusing to quit.
     public var cancelsCreations: Bool?
+    /// For `vsock`: the port in the guest to connect to.
+    public var port: UInt32?
+    /// For `install-tools`: plug in the guest tools disc instead of installing over SSH.
+    public var usesDisc: Bool?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
-        forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil
+        forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -149,13 +162,15 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.diskGigabytes = diskGigabytes
         self.forward = forward
         self.cancelsCreations = cancelsCreations
+        self.port = port
+        self.usesDisc = usesDisc
     }
 }
 
 extension ControlRequest.Command {
     /// Whether a successful answer is followed by a byte stream instead of further requests.
     public var opensStream: Bool {
-        self == .console
+        self == .console || self == .vsock
     }
 }
 
@@ -240,10 +255,24 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     public var sharedFolders: [Folder]
     public var forwards: [Forward]?
     public var snapshotCount: Int
+    /// What is known of the guest tools, for guests that can have them.
+    public var guestTools: GuestTools?
+
+    public struct GuestTools: Codable, Sendable, Equatable {
+        /// The version of the agent that is connected. `nil` while none is.
+        public var version: String?
+        /// The guest's kernel, as its agent reports it.
+        public var kernel: String?
+
+        public init(version: String?, kernel: String?) {
+            self.version = version
+            self.kernel = kernel
+        }
+    }
 
     public init(
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
-        snapshotCount: Int
+        snapshotCount: Int, guestTools: GuestTools? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -251,6 +280,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.sharedFolders = sharedFolders
         self.forwards = forwards
         self.snapshotCount = snapshotCount
+        self.guestTools = guestTools
     }
 }
 
@@ -277,12 +307,18 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     public var machines: [MachineSummary]
     /// The machine's snapshots, for the commands that deal with them.
     public var snapshots: [SnapshotSummary]?
+    /// Something for the person at the terminal to read once the command has done its part, such as
+    /// what is left for them to do.
+    public var note: String?
 
-    public init(ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil) {
+    public init(
+        ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil
+    ) {
         self.ok = ok
         self.error = error
         self.machines = machines
         self.snapshots = snapshots
+        self.note = note
     }
 
     public static func failure(_ message: String) -> ControlResponse {

@@ -122,7 +122,7 @@ struct MachineSettingsView: View {
         } header: {
             Text("Shared Folders")
         } footer: {
-            SharedFoldersGuestHint(configuration: configuration)
+            SharedFoldersGuestHint(configuration: configuration, isMountedByAgent: machine.hasAgentMountedSharedFolders)
         }
     }
 

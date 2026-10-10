@@ -1,0 +1,15 @@
+# Makes the SSH server answer on the virtual machine's socket device, so that the Mac can sign in
+# without a network ("swiftvm ssh --vsock"). systemd does this by itself from version 256 on; this
+# is for the systems before that, and stands back where systemd's own is present.
+[Unit]
+Description=SSH on the virtual machine's socket device (SwiftVM)
+ConditionPathExists=!/usr/lib/systemd/system-generators/systemd-ssh-generator
+ConditionPathExists=!/lib/systemd/system-generators/systemd-ssh-generator
+ConditionPathExists=/usr/sbin/sshd
+
+[Socket]
+ListenStream=vsock::22
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

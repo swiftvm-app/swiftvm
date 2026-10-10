@@ -1,0 +1,14 @@
+# The SwiftVM guest agent: lets the SwiftVM app on the Mac see this system's version and addresses,
+# set its clock after the virtual machine was suspended, mount the folders shared with it and shut
+# it down. Installed by SwiftVM; to remove it, see the end of install.sh.
+[Unit]
+Description=SwiftVM guest agent
+Documentation=https://github.com/swiftvm-app/swiftvm
+
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/local/lib/swiftvm/swiftvm-agent.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

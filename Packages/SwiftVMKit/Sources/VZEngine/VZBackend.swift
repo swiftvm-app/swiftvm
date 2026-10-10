@@ -14,6 +14,8 @@ public final class VZBackend: NSObject, VMBackend {
     private let attachmentProvider: @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment
     private var view: VZVirtualMachineView?
     private var capturesSystemKeys: Bool
+    /// The interfaces whose cable is out because the user pulled it.
+    private var unpluggedInterfaces: Set<UUID>
 
     init(
         vzConfiguration: VZVirtualMachineConfiguration,
@@ -23,6 +25,7 @@ public final class VZBackend: NSObject, VMBackend {
         self.vzConfiguration = vzConfiguration
         self.machineConfiguration = machineConfiguration
         self.capturesSystemKeys = machineConfiguration.keyboard.capturesSystemKeys
+        self.unpluggedInterfaces = Set(machineConfiguration.networkInterfaces.filter { !$0.isConnected }.map(\.id))
         self.attachmentProvider = attachmentProvider
         // Without an explicit queue the machine uses the main queue, matching this class's isolation.
         self.virtualMachine = VZVirtualMachine(configuration: vzConfiguration)
@@ -115,7 +118,9 @@ public final class VZBackend: NSObject, VMBackend {
         let device = virtualMachine.networkDevices[index]
         if connected {
             device.attachment = try attachmentProvider(machineConfiguration.networkInterfaces[index])
+            unpluggedInterfaces.remove(id)
         } else {
+            unpluggedInterfaces.insert(id)
             device.attachment = nil
         }
     }
@@ -162,6 +167,27 @@ public final class VZBackend: NSObject, VMBackend {
         self.capturesSystemKeys = capturesSystemKeys
         view?.capturesSystemKeys = capturesSystemKeys
     }
+
+    // MARK: Guest socket
+
+    public func connectToGuest(port: UInt32) async throws -> FileHandle {
+        guard let device = virtualMachine.socketDevices.lazy.compactMap({ $0 as? VZVirtioSocketDevice }).first else {
+            throw VMError.invalidConfiguration("This virtual machine has no socket device.")
+        }
+        let descriptor: Int32 = try await withCheckedThrowingContinuation { continuation in
+            device.connect(toPort: port) { result in
+                continuation.resume(with: result.flatMap { connection -> Result<Int32, any Error> in
+                    // The connection object closes its descriptor when it is released. The caller gets
+                    // one of its own, which keeps the line open for as long as the caller holds it.
+                    let descriptor = dup(connection.fileDescriptor)
+                    let code = errno
+                    connection.close()
+                    return descriptor >= 0 ? .success(descriptor) : .failure(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO))
+                })
+            }
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
 }
 
 // The machine runs on the main queue, so its delegate callbacks arrive on the main actor.
@@ -179,6 +205,13 @@ extension VZBackend: @preconcurrency VZVirtualMachineDelegate {
         networkDevice: VZNetworkDevice,
         attachmentWasDisconnectedWithError error: any Error
     ) {
+        // A cable that the user has pulled is no news. The framework reports one all the same when a
+        // guest is resumed with its cable out.
+        if let index = virtualMachine.networkDevices.firstIndex(where: { $0 === networkDevice }),
+           machineConfiguration.networkInterfaces.indices.contains(index),
+           unpluggedInterfaces.contains(machineConfiguration.networkInterfaces[index].id) {
+            return
+        }
         eventHandler?(.networkDisconnected(error.localizedDescription))
     }
 }

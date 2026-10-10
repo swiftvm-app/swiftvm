@@ -1,0 +1,10 @@
+# One SSH session that arrived over the virtual machine's socket device. See swiftvm-sshd-vsock.socket.
+[Unit]
+Description=SSH session over the virtual machine's socket device (SwiftVM)
+
+[Service]
+ExecStart=-/usr/sbin/sshd -i
+StandardInput=socket
+RuntimeDirectory=sshd
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0755

@@ -56,15 +56,42 @@ import VMCore
 
         var displayOnly = seed
         displayOnly.kernelMessagesOnSerialConsole = false
+        #expect(!displayOnly.userData.contains("hvc0"))
+        #expect(!displayOnly.userData.contains("update-grub"))
+        // With nothing to write and nothing to run, neither list is there.
+        displayOnly.guestAgentInstaller = nil
         #expect(!displayOnly.userData.contains("write_files"))
         #expect(!displayOnly.userData.contains("runcmd"))
-        #expect(!displayOnly.userData.contains("hvc0"))
 
         // With Rosetta there are two things to run, in one list.
         var withRosetta = seed
         withRosetta.rosettaTag = GuestIntegration.rosettaTag
+        withRosetta.guestAgentInstaller = nil
         #expect(withRosetta.userData.components(separatedBy: "runcmd:").count == 2)
         #expect(withRosetta.userData.hasSuffix("  - \"command -v update-grub >/dev/null && update-grub || true\"\n"))
+    }
+
+    @Test func installsTheGuestAgentOnTheFirstBoot() throws {
+        let text = seed.userData
+        // Both files are in the one list of files to write, and the installer runs last.
+        #expect(text.components(separatedBy: "write_files:").count == 2)
+        #expect(text.components(separatedBy: "runcmd:").count == 2)
+        #expect(text.hasSuffix("  - \"sh /usr/local/lib/swiftvm/install.sh || true\"\n"))
+
+        let lines = text.components(separatedBy: "\n")
+        let path = try #require(lines.firstIndex(of: "  - path: \"/usr/local/lib/swiftvm/install.sh\""))
+        #expect(lines[path + 1] == "    encoding: b64")
+        #expect(lines[path + 3] == "    permissions: \"0755\"")
+        // What arrives in the guest is the installer, byte for byte.
+        let content = lines[path + 2]
+        #expect(content.hasPrefix("    content: \"") && content.hasSuffix("\""))
+        let decoded = try #require(Data(base64Encoded: String(content.dropFirst("    content: \"".count).dropLast())))
+        #expect(String(decoding: decoded, as: UTF8.self) == (try LinuxGuestAgent.installer()))
+
+        var without = seed
+        without.guestAgentInstaller = nil
+        #expect(!without.userData.contains("install.sh"))
+        #expect(without.userData.contains("update-grub"))
     }
 
     @Test func rendersMetaDataAndNetworkConfig() {
@@ -112,8 +139,37 @@ import VMCore
         #expect(userData.contains("  - [\"swiftvm\", \"/mnt/shared\", virtiofs, \"rw,nofail\", \"0\", \"0\"]"))
         #expect(userData.contains("write_files:\n  - path: \"/etc/default/grub.d/99-swiftvm-console.cfg\""))
         #expect(userData.contains("update-grub"))
+        // The copy installs the agent anew, which does no harm to the one on the copied disk.
+        #expect(userData.contains("  - path: \"/usr/local/lib/swiftvm/install.sh\"\n    encoding: b64\n"))
+        #expect(userData.hasSuffix("  - \"sh /usr/local/lib/swiftvm/install.sh || true\"\n"))
         #expect(userData.hasPrefix("#cloud-config\n"))
-        #expect(userData.hasSuffix("\n"))
+    }
+
+    @Test func aCopyGetsThisBuildsGuestAgent() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "swiftvm-seed-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: url) }
+        // The original was made by a build with an older agent, and has since been given a newer one.
+        var old = seed
+        old.guestAgentInstaller = "#!/bin/sh\necho an agent of long ago\n"
+        try old.writeImage(to: url)
+        let longAgo = Data("#!/bin/sh\necho an agent of long ago\n".utf8).base64EncodedString()
+        #expect(try ISOImageBuilder.text(of: "user-data", in: url).contains(longAgo))
+
+        // The copy's first boot must not put the old one back.
+        try CloudInitSeed.reissue(at: url, hostName: "ubuntu-copy", macAddress: nil)
+        let userData = try ISOImageBuilder.text(of: "user-data", in: url)
+        #expect(!userData.contains(longAgo))
+        let current = Data(try LinuxGuestAgent.installer().utf8).base64EncodedString()
+        #expect(userData.contains("  - path: \"/usr/local/lib/swiftvm/install.sh\"\n    encoding: b64\n    content: \"\(current)\"\n    permissions: \"0755\"\n"))
+        #expect(userData.hasSuffix("  - \"sh /usr/local/lib/swiftvm/install.sh || true\"\n"))
+
+        // A machine that was made without the agent doesn't get one by being copied.
+        var without = seed
+        without.guestAgentInstaller = nil
+        try without.writeImage(to: url)
+        try CloudInitSeed.reissue(at: url, hostName: "ubuntu-copy", macAddress: nil)
+        #expect(!(try ISOImageBuilder.text(of: "user-data", in: url)).contains("install.sh"))
+        #expect(CloudInitSeed.replacingGuestAgentInstaller(in: without.userData, with: "new") == without.userData)
     }
 
     @Test func accountSectionsAreRemovedWhole() {

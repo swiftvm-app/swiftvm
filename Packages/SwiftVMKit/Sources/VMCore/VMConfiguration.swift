@@ -133,6 +133,11 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         os.family == .linux
     }
 
+    /// Whether there is an agent for this kind of guest that the app can talk to.
+    public var canHaveGuestAgent: Bool {
+        os.family == .linux
+    }
+
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
 

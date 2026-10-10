@@ -1,4 +1,5 @@
 import AppKit
+import GuestChannel
 import Observation
 
 /// A virtual machine in the library: its bundle, configuration and live state.
@@ -13,12 +14,24 @@ public final class VirtualMachine: Identifiable {
     public private(set) var state: VMState
     /// The most recent error; cleared when the user dismisses it or the next operation starts.
     public var lastError: VMErrorInfo?
+    /// Something to tell the user that isn't an error, such as what is left for them to do. Kept apart
+    /// from ``lastError`` so that an operation which clears or reports errors leaves it alone.
+    public var notice: VMErrorInfo?
     /// Bytes the machine's disks occupy on the host.
     public private(set) var allocatedDiskSize: UInt64 = 0
     /// Points the machine can go back to, oldest first.
     public private(set) var snapshots: [VMSnapshot] = []
     /// Work in progress on the machine's files. Until it is over the machine can't be started or stopped.
     public private(set) var activity: VMActivity?
+    /// The line to the agent in the guest. It is only ever connected while the guest is up and has one.
+    public let agent = GuestAgent()
+    /// Whether the agent has mounted the shared folders, in a guest that doesn't mount them by itself.
+    public private(set) var hasAgentMountedSharedFolders = false
+    /// How many times the guest has come up since the app was launched, booted or resumed. It tells one
+    /// run of the guest from the next, which the state alone doesn't: a restart can be over between two looks.
+    @ObservationIgnored public private(set) var startCount = 0
+    /// Called when the guest's agent reports addresses, or is gone and reports none any more.
+    @ObservationIgnored public var onGuestAddressesChange: (@MainActor (VirtualMachine) -> Void)?
 
     /// The account to set up on the first boot after installation. Kept in memory only: if the app quits
     /// before that boot, the guest shows its own setup assistant instead.
@@ -48,6 +61,12 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored private var isAboutToRestart = false
     /// A pause or resume is under way. Neither has a state of its own.
     @ObservationIgnored private var isChangingPause = false
+    /// The guest's clock stood still for a while, suspended or paused, and has not been set since.
+    @ObservationIgnored private var isGuestClockStale = false
+    /// Counts the times the guest's clock has gone stale, to tell whether it did again while it was being set.
+    @ObservationIgnored private var clockStandstills = 0
+    @ObservationIgnored private var isLookingAfterGuest = false
+    @ObservationIgnored private var shouldLookAfterGuestAgain = false
 
     public init(bundle: VMBundle, configuration: VMConfiguration) {
         self.id = configuration.id
@@ -59,6 +78,13 @@ public final class VirtualMachine: Identifiable {
         self.state = bundle.hasSavedState ? .suspended : .stopped
         self.snapshots = bundle.loadSnapshots()
         refreshDiskUsage()
+        agent.onConnect = { [weak self] hello in self?.agentDidConnect(hello) }
+        agent.onAddressesChange = { [weak self] in
+            guard let self else { return }
+            onGuestAddressesChange?(self)
+        }
+        // A guest that restarts by itself keeps its machine running, and comes back with nothing mounted.
+        agent.onDisconnect = { [weak self] in self?.hasAgentMountedSharedFolders = false }
     }
 
     public convenience init(bundle: VMBundle) throws {
@@ -66,6 +92,21 @@ public final class VirtualMachine: Identifiable {
     }
 
     public var name: String { configuration.name }
+
+    /// What there is to show the user about this machine right now: an error first, then a notice.
+    public var message: VMErrorInfo? { lastError ?? notice }
+
+    /// The user has seen ``message``.
+    public func dismissMessage() {
+        if lastError != nil {
+            lastError = nil
+        } else {
+            notice = nil
+        }
+    }
+
+    /// Whether the guest has shut down, or is about to, in order to be started again right away.
+    public var isRestartPending: Bool { restartsAfterStop || isAboutToRestart }
 
     /// The guest display, available while the machine is active.
     public var displayView: NSView? { backend?.displayView }
@@ -144,6 +185,68 @@ public final class VirtualMachine: Identifiable {
         }
     }
 
+    // MARK: Guest agent
+
+    /// Starts looking for the agent in a guest that has just come up.
+    private func reachForAgent() {
+        guard configuration.canHaveGuestAgent else { return }
+        agent.start { [weak self] in
+            guard let self else { throw CancellationError() }
+            return try await connectToGuest(port: GuestProtocol.agentPort)
+        }
+    }
+
+    private func agentDidConnect(_ hello: AgentHello) {
+        // The guest knows best what it is. One that was upgraded says so here, and one that was installed
+        // from a disc says it for the first time.
+        if let name = hello.system.displayName {
+            let distribution = hello.system.id.flatMap { $0.isEmpty ? nil : $0 } ?? configuration.os.distribution
+            try? updateConfiguration { configuration in
+                configuration.os.productName = name
+                configuration.os.distribution = distribution
+            }
+        }
+        Task { await lookAfterGuest() }
+    }
+
+    /// Does through the agent what the guest needs from the host right now: a clock that is right, and its
+    /// shared folders mounted. Called when the agent connects and whenever one of the two may be due.
+    private func lookAfterGuest() async {
+        // One round at a time. Whoever comes while one is under way has it run once more instead, so
+        // that nothing is asked of the agent twice.
+        guard !isLookingAfterGuest else {
+            shouldLookAfterGuestAgain = true
+            return
+        }
+        isLookingAfterGuest = true
+        defer { isLookingAfterGuest = false }
+        repeat {
+            shouldLookAfterGuestAgain = false
+            let run = startCount
+            let standstills = clockStandstills
+            // First the clock: until it is right, everything in the guest that goes by the time is off.
+            // A guest that was paused again while the time was on its way has it set once more.
+            if isGuestClockStale, await agent.setClock(), run == startCount, standstills == clockStandstills {
+                isGuestClockStale = false
+            }
+            if !configuration.mountsSharedFoldersAutomatically, !hasAgentMountedSharedFolders,
+               await agent.mountSharedFolders(tag: GuestIntegration.sharedFoldersTag, at: GuestIntegration.sharedFoldersMountPoint),
+               // The answer may come after the guest has stopped, or stopped and started again.
+               run == startCount, agent.isConnected {
+                hasAgentMountedSharedFolders = true
+            }
+        } while shouldLookAfterGuestAgain
+    }
+
+    // MARK: Guest socket
+
+    /// Connects to a port in the running guest over its socket device, which needs no network in the
+    /// guest. The connection is closed when the returned handle is released.
+    public func connectToGuest(port: UInt32) async throws -> FileHandle {
+        guard state == .running, let backend else { throw VMError.notRunning(name: name) }
+        return try await backend.connectToGuest(port: port)
+    }
+
     public func refreshDiskUsage() {
         allocatedDiskSize = bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })
     }
@@ -195,6 +298,10 @@ public final class VirtualMachine: Identifiable {
                 try? updateConfiguration { $0.installation.isProvisioned = true }
             }
             state = .running
+            startCount += 1
+            isGuestClockStale = restoring
+            clockStandstills += 1
+            reachForAgent()
             if restoring {
                 onResume?(self)
             }
@@ -230,6 +337,14 @@ public final class VirtualMachine: Identifiable {
     /// Asks the guest to shut down. Falls back to a forced stop when the guest can't be asked.
     public func shutDown() async {
         guard activity == nil, state == .running, let backend else { return }
+        if agent.isConnected {
+            // Asked through its agent, a guest shuts down wherever it is in its startup and whatever is
+            // on its screen. The power button below is for an agent that doesn't answer.
+            state = .stopping
+            expireShutdownRequest(after: shutdownRequestTimeout)
+            if await agent.shutDown() { return }
+            guard isCurrent(backend), state == .stopping else { return }
+        }
         if backend.canRequestStop {
             do {
                 try backend.requestStop()
@@ -301,6 +416,10 @@ public final class VirtualMachine: Identifiable {
             try await backend.resume()
             guard isCurrent(backend), state == .paused else { return }
             state = .running
+            // The guest's clock stood still while it was paused.
+            isGuestClockStale = true
+            clockStandstills += 1
+            Task { await lookAfterGuest() }
         } catch {
             report(error, title: "Couldn't resume “\(name)”")
         }
@@ -532,6 +651,9 @@ public final class VirtualMachine: Identifiable {
 
     private func tearDownBackend() {
         guard backend != nil else { return }
+        agent.stop()
+        isGuestClockStale = false
+        hasAgentMountedSharedFolders = false
         backend?.eventHandler = nil
         backend?.invalidate()
         backend = nil

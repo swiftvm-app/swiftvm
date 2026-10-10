@@ -19,6 +19,8 @@ public final class VMLibrary {
     @ObservationIgnored public var onChange: (@MainActor () -> Void)?
     /// Called when a machine's guest has been resumed from saved memory.
     @ObservationIgnored public var onMachineResume: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when the agent in a machine's guest reports other addresses than before.
+    @ObservationIgnored public var onGuestAddressesChange: (@MainActor (VirtualMachine) -> Void)?
     /// Whether machines may start. The app turns this off once it has agreed to quit: a machine that
     /// came up after that would lose its power with the app, and nobody would have been asked.
     @ObservationIgnored public var allowsStarting = true
@@ -179,6 +181,7 @@ public final class VMLibrary {
         machine.backendProvider = backendProvider
         machine.onConfigurationChange = { [weak self] _ in self?.onChange?() }
         machine.onResume = { [weak self] machine in self?.onMachineResume?(machine) }
+        machine.onGuestAddressesChange = { [weak self] machine in self?.onGuestAddressesChange?(machine) }
         machine.isStartAllowed = { [weak self] in self?.allowsStarting ?? true }
     }
 

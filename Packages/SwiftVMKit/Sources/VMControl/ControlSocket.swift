@@ -160,19 +160,27 @@ public struct ControlClient: Sendable {
 /// Accepts control connections on a background thread and hands each request to `handler`.
 public final class ControlServer: @unchecked Sendable {
     public typealias Handler = @Sendable (ControlRequest) async -> ControlResponse
-    /// Takes over a connection as a byte stream after a stream request was answered with success. The
-    /// connection is closed when it returns.
-    public typealias StreamHandler = @Sendable (ControlRequest, Int32) async -> Void
+    /// Takes over a connection as a byte stream. The connection is closed when it returns.
+    public typealias Stream = @Sendable (Int32) async -> Void
+    /// Answers a request that opens a stream (``ControlRequest/Command/opensStream``). With a successful
+    /// answer comes what serves the stream; whatever the stream needs is set up before answering, so that
+    /// a failure to do so can still be the answer.
+    public typealias StreamHandler = @Sendable (ControlRequest) async -> (response: ControlResponse, stream: Stream?)
 
     private let descriptor: Int32
     private let socketURL: URL
     private let handler: Handler
+    /// Which file the socket was when this server made it. A copy of the app that starts later puts its
+    /// own socket at the same path, and that one isn't this server's to remove.
+    private let socketFile: (device: dev_t, inode: ino_t)?
 
     public init(socketURL: URL = ControlPaths.socket, handler: @escaping Handler, streamHandler: StreamHandler? = nil) throws {
         try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         self.socketURL = socketURL
         self.handler = handler
         self.descriptor = try ControlSocket.listen(at: socketURL)
+        var information = stat()
+        socketFile = stat(socketURL.path, &information) == 0 ? (information.st_dev, information.st_ino) : nil
         signal(SIGPIPE, SIG_IGN)
         let thread = Thread { [descriptor, handler] in
             while true {
@@ -192,11 +200,18 @@ public final class ControlServer: @unchecked Sendable {
 
     deinit {
         close(descriptor)
-        unlink(socketURL.path)
+        invalidate()
     }
 
     /// Removes the socket file so clients see that the app is gone.
+    ///
+    /// Only if it is still this server's: an app that is quit and opened again at once has its new copy
+    /// listening before the old one is done leaving, and the old one must not take the new socket with it.
     public func invalidate() {
+        var information = stat()
+        guard let socketFile, stat(socketURL.path, &information) == 0,
+              information.st_dev == socketFile.device, information.st_ino == socketFile.inode
+        else { return }
         unlink(socketURL.path)
     }
 
@@ -204,11 +219,16 @@ public final class ControlServer: @unchecked Sendable {
         defer { close(connection) }
         while let line = ControlSocket.readLine(from: connection) {
             let request = try? JSONDecoder().decode(ControlRequest.self, from: line)
-            let response: ControlResponse
-            if let request {
+            var response = ControlResponse.failure("The request couldn't be understood.")
+            var stream: Stream?
+            if let request, request.command.opensStream {
+                if let streamHandler {
+                    (response, stream) = await streamHandler(request)
+                } else {
+                    response = .failure("This command isn't available.")
+                }
+            } else if let request {
                 response = await handler(request)
-            } else {
-                response = .failure("The request couldn't be understood.")
             }
             guard let data = try? JSONEncoder().encode(response) else { return }
             do {
@@ -216,8 +236,8 @@ public final class ControlServer: @unchecked Sendable {
             } catch {
                 return
             }
-            if let request, request.command.opensStream, response.ok {
-                await streamHandler?(request, connection)
+            if response.ok, let stream {
+                await stream(connection)
                 return
             }
         }

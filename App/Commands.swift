@@ -112,6 +112,12 @@ struct MachineCommands: Commands {
                 AppModel.shared.openSerialConsole(for: machine)
             }
             .disabled(machine?.configuration.hasSerialConsole != true || AppModel.shared.commandLineToolURL == nil)
+
+            Button("Install Guest Tools…") {
+                guard let machine else { return }
+                AppModel.shared.installGuestToolsReportingResult(on: machine)
+            }
+            .disabled(machine.map { AppModel.shared.offersGuestTools(for: $0) } != true)
         }
     }
 }
