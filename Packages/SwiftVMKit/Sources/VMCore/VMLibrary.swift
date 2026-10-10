@@ -19,6 +19,9 @@ public final class VMLibrary {
     @ObservationIgnored public var onChange: (@MainActor () -> Void)?
     /// Called when a machine's guest has been resumed from saved memory.
     @ObservationIgnored public var onMachineResume: (@MainActor (VirtualMachine) -> Void)?
+    /// Whether machines may start. The app turns this off once it has agreed to quit: a machine that
+    /// came up after that would lose its power with the app, and nobody would have been asked.
+    @ObservationIgnored public var allowsStarting = true
 
     public init(rootDirectory: URL = VMLibrary.defaultRootDirectory) {
         self.rootDirectory = rootDirectory
@@ -176,6 +179,7 @@ public final class VMLibrary {
         machine.backendProvider = backendProvider
         machine.onConfigurationChange = { [weak self] _ in self?.onChange?() }
         machine.onResume = { [weak self] machine in self?.onMachineResume?(machine) }
+        machine.isStartAllowed = { [weak self] in self?.allowsStarting ?? true }
     }
 
     private func saveIndex() {

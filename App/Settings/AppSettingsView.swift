@@ -1,9 +1,14 @@
 import SwiftUI
+import VMControl
 import VMCore
 
 /// App-wide settings.
 struct AppSettingsView: View {
     @Environment(AppModel.self) private var model
+    @State private var toolStatus = CommandLineToolLink.Status.notInstalled
+    /// The link is being installed or removed, possibly with a password dialog on the screen.
+    @State private var isChangingTool = false
+    @State private var toolProblem: String?
 
     var body: some View {
         Form {
@@ -23,14 +28,8 @@ struct AppSettingsView: View {
                 LabeledContent("This Mac", value: model.networkManager?.defaultSubnet.hostAddress.description ?? "Unavailable")
             }
 
-            if let tool = model.commandLineToolURL {
-                Section {
-                    CopyableCommand(command: "sudo mkdir -p /usr/local/bin && sudo ln -sf \(AppSettingsView.shellQuoted(tool.path)) /usr/local/bin/swiftvm")
-                } header: {
-                    Text("Command Line")
-                } footer: {
-                    Text("The swiftvm tool creates, starts and connects to virtual machines from Terminal. It is inside the app; run this once to put it on your PATH, then try “swiftvm help”.")
-                }
+            if let link = model.commandLineToolLink {
+                commandLineSection(link)
             }
 
             Section("Storage") {
@@ -39,6 +38,7 @@ struct AppSettingsView: View {
                         NSWorkspace.shared.open(model.library.machinesDirectory)
                     }
                     .buttonStyle(.link)
+                    .help("Show in Finder")
                 }
                 LabeledContent("Downloaded Images") {
                     Button((model.downloader.cacheDirectory.path as NSString).abbreviatingWithTildeInPath) {
@@ -46,15 +46,65 @@ struct AppSettingsView: View {
                         NSWorkspace.shared.open(model.downloader.cacheDirectory)
                     }
                     .buttonStyle(.link)
+                    .help("Show in Finder")
                 }
             }
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear { toolStatus = model.commandLineToolLink?.status ?? .notInstalled }
+        // The link may have been changed from Terminal in the meantime.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            toolStatus = model.commandLineToolLink?.status ?? .notInstalled
+        }
     }
 
-    private static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    // MARK: Command line tool
+
+    private func commandLineSection(_ link: CommandLineToolLink) -> some View {
+        Section {
+            LabeledContent {
+                Button(toolStatus == .installed ? "Uninstall…" : "Install Command Line Tool…") {
+                    setToolInstalled(toolStatus != .installed, link: link)
+                }
+                .disabled(isChangingTool)
+            } label: {
+                Text("swiftvm")
+                Text(toolStatusText(for: link))
+            }
+        } header: {
+            Text("Command Line")
+        } footer: {
+            if let toolProblem {
+                Text(toolProblem).foregroundStyle(.red)
+            } else {
+                Text("The swiftvm tool creates, starts and connects to virtual machines from Terminal. Installing it puts a link in \(link.linkURL.deletingLastPathComponent().path), for which macOS may ask for an administrator's password. Then try “swiftvm help”.")
+            }
+        }
+    }
+
+    private func toolStatusText(for link: CommandLineToolLink) -> String {
+        switch toolStatus {
+        case .installed:
+            "Installed at \(link.linkURL.path)"
+        case .notInstalled:
+            "Not installed"
+        case .occupied(let target?):
+            // Another copy of the app, or one that has been moved or deleted since.
+            "\(link.linkURL.path) leads to \((target as NSString).abbreviatingWithTildeInPath). Installing points it at this copy of SwiftVM."
+        case .occupied(nil):
+            "Something else is at \(link.linkURL.path). Installing replaces it, unless it is a folder."
+        }
+    }
+
+    private func setToolInstalled(_ installed: Bool, link: CommandLineToolLink) {
+        isChangingTool = true
+        toolProblem = nil
+        Task {
+            toolProblem = await model.setCommandLineToolInstalled(installed)
+            toolStatus = link.status
+            isChangingTool = false
+        }
     }
 }

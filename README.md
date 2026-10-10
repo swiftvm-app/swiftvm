@@ -25,7 +25,9 @@ Early development. Working today:
 - **Duplicate** a machine in an instant; the copy shares disk space with the original until they differ
 - **Grow a disk** after the fact
 - **Suspend and resume** to disk, graceful shutdown, pause
-- **Serial console** for Linux guests, for when the network or the display isn't there
+- **Serial console** for Linux guests, for when the network or the display isn't there. Quick Create
+  machines also send their kernel's messages to it, and what it has printed since the machine last
+  started up is in the machine's `logs/console.log`
 - **`swiftvm`** command-line tool that drives the running app
 
 Planned: Windows guests (QEMU engine), USB passthrough, guest tools.
@@ -41,6 +43,13 @@ Good to know:
 - While the Mac is locked, a suspended machine can't be resumed: the system refuses to read its saved
   memory. SwiftVM says so when that happens, and won't suspend a running machine for a snapshot while the
   Mac is locked.
+- Kernel messages reach the serial console from a Quick Create machine's second start on, and from the
+  moment the console exists, a few hundredths of a second into the boot. Ubuntu turns ordinary kernel
+  messages off on every console once it is up and only lets errors through; Debian keeps them all.
+  Machines created before this was added, and those installed from an ISO, are as they were.
+- A download that is cut short by quitting, by cancelling or by a failure carries on where it stopped the
+  next time the same system is created. What has arrived waits in the system's temporary folder, where
+  macOS removes files that haven't been used for three days; after that the download starts over.
 - A grown disk is only bigger hardware. Linux guests set up by Quick Create grow into it at their next
   start; other Linux guests need `growpart` and `resize2fs` or the like. macOS can't grow its startup
   volume (its recovery system is in the way), but Disk Utility in the guest can add a volume in the new
@@ -61,8 +70,8 @@ team, see the comment at the top of `Config/Base.xcconfig`.
 
 ## Command line
 
-The `swiftvm` tool is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`. SwiftVM › Settings shows the
-command that puts it on your `PATH`. The app must be running.
+The `swiftvm` tool is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`. *Install Command Line Tool…*
+in SwiftVM › Settings puts it on your `PATH`, as a link in `/usr/local/bin`. The app must be running.
 
 ```sh
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
@@ -74,13 +83,15 @@ swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80          # http://localhost:8080 is the guest's port 80
 swiftvm attach web-server ~/Downloads/data.img
 swiftvm snapshot web-server "Before upgrade"
-swiftvm revert web-server "Before upgrade"
+swiftvm rename-snapshot web-server "Before upgrade" "Before 2.0"
+swiftvm revert web-server "Before 2.0"
 swiftvm suspend web-server
 swiftvm start web-server                    # resumes; `swiftvm discard-state` starts it fresh instead
 swiftvm console web-server                  # serial console; Control-] to leave
 swiftvm stop web-server
 swiftvm clone web-server --name "Web Server 2"
 swiftvm resize web-server 64
+swiftvm quit                                # only when nothing is running
 ```
 
 `swiftvm help` lists every command. `scripts/build.sh` also builds the tool on its own at
@@ -88,6 +99,9 @@ swiftvm resize web-server 64
 
 `swiftvm create macos` downloads the latest macOS restore image (about 25 GB) unless it is already in
 `~/Library/Caches/SwiftVM/Downloads` or you pass `--ipsw <file>`.
+
+`swiftvm quit` never asks anything, so it refuses while a machine is running. While one is still being
+created it refuses too, unless you add `--cancel-creations`.
 
 ## Development
 

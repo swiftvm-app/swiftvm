@@ -20,6 +20,9 @@ public struct CloudInitSeed: Sendable, Hashable {
     public var sharedFoldersTag: String?
     /// Register Rosetta (shared with this virtio-fs tag) to run x86-64 binaries.
     public var rosettaTag: String?
+    /// Have the kernel write its messages to the serial console too, where `swiftvm console` and the
+    /// machine's console log pick them up. Takes effect from the second boot.
+    public var kernelMessagesOnSerialConsole: Bool
 
     public init(
         hostName: String,
@@ -31,7 +34,8 @@ public struct CloudInitSeed: Sendable, Hashable {
         macAddress: String? = nil,
         timeZone: String? = TimeZone.current.identifier,
         sharedFoldersTag: String? = GuestIntegration.sharedFoldersTag,
-        rosettaTag: String? = nil
+        rosettaTag: String? = nil,
+        kernelMessagesOnSerialConsole: Bool = true
     ) {
         self.hostName = hostName
         self.instanceID = instanceID
@@ -43,6 +47,7 @@ public struct CloudInitSeed: Sendable, Hashable {
         self.timeZone = timeZone
         self.sharedFoldersTag = sharedFoldersTag
         self.rosettaTag = rosettaTag
+        self.kernelMessagesOnSerialConsole = kernelMessagesOnSerialConsole
     }
 
     // MARK: Documents
@@ -112,6 +117,13 @@ public struct CloudInitSeed: Sendable, Hashable {
         if !mounts.isEmpty {
             lines.append("mounts:")
             lines.append(contentsOf: mounts)
+        }
+        if kernelMessagesOnSerialConsole {
+            lines.append("write_files:")
+            lines.append("  - path: \(yaml(Self.serialConsoleSettingsPath))")
+            lines.append("    content: \(yaml(Self.serialConsoleSettings))")
+            // The boot menu is only written anew when asked, and read at the next boot.
+            commands.append(Self.bootMenuUpdateCommand)
         }
         if !commands.isEmpty {
             lines.append("runcmd:")
@@ -192,6 +204,24 @@ public struct CloudInitSeed: Sendable, Hashable {
     }
 
     // MARK: Helpers
+
+    /// Where a guest that boots with GRUB picks up additions to the kernel's command line. Its name sorts
+    /// after the settings the cloud images bring, so that what it adds comes last.
+    static let serialConsoleSettingsPath = "/etc/default/grub.d/99-swiftvm-console.cfg"
+
+    /// Adds the serial console (`hvc0`) to the consoles the kernel writes its messages to.
+    ///
+    /// The display (`tty1`) is named once more after it. The console named last is the one systemd reports
+    /// to and the one an emergency shell comes up on, and that has to stay where someone is looking.
+    static let serialConsoleSettings = """
+        # Added by SwiftVM. Kernel messages also go to the serial console (hvc0), where
+        # "swiftvm console" and the virtual machine's console log pick them up. tty1 is
+        # named last so that the display stays the system console.
+        GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 console=tty1"
+
+        """
+
+    static let bootMenuUpdateCommand = "command -v update-grub >/dev/null && update-grub || true"
 
     /// Registers Rosetta with binfmt_misc so the kernel runs x86-64 ELF binaries through it.
     static func rosettaRegistrationCommand(mountPoint: String) -> String {

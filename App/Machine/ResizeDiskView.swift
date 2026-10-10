@@ -28,6 +28,7 @@ struct ResizeDiskView: View {
                 Spacer()
                 TextField("New Size", value: $gigabytes, format: .number)
                     .labelsHidden()
+                    .accessibilityLabel("New size in gigabytes")
                     .multilineTextAlignment(.trailing)
                     .frame(width: 72)
                     .onSubmit(resize)
@@ -47,6 +48,7 @@ struct ResizeDiskView: View {
                 if isWorking {
                     ProgressView()
                         .controlSize(.small)
+                        .accessibilityLabel("Resizing the disk")
                 }
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)

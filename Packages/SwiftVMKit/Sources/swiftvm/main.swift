@@ -35,11 +35,13 @@ Usage: swiftvm <command> [arguments]
   snapshots <machine>               List snapshots
   revert <machine> <snapshot>       Go back to a snapshot, discarding what happened since
   delete-snapshot <machine> <snapshot>
+  rename-snapshot <machine> <snapshot> <new name>
   ip <machine>                      Print the machine's IP address
   ssh <machine> [ssh arguments]     Open a shell (or run a command) in the machine
   console <machine> [--wait <seconds>]
                                     Connect this terminal to the machine's serial console
-  quit                              Quit the app (only when no machine is running)
+  quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
+                                    is being created unless you add --cancel-creations
 
 <machine> is a name, SSH alias or UUID.
 """
@@ -290,6 +292,14 @@ case "revert", "delete-snapshot":
         printSnapshots(response.snapshots ?? [])
     }
 
+case "rename-snapshot":
+    let machine = requireMachine()
+    guard arguments.count == 3 else {
+        fail("Usage: swiftvm rename-snapshot <machine> <snapshot> <new name>. Put a name with spaces in quotes.")
+    }
+    let request = ControlRequest(command: .renameSnapshot, machine: machine, name: arguments[2], snapshot: arguments[1])
+    printSnapshots(send(request).snapshots ?? [])
+
 case "console":
     let machine = requireMachine()
     var idleTimeout: Double?
@@ -308,7 +318,8 @@ case "console":
     }
 
 case "quit":
-    _ = send(ControlRequest(command: .quit))
+    rejectUnknownOptions(arguments, allowed: ["--cancel-creations"])
+    _ = send(ControlRequest(command: .quit, cancelsCreations: arguments.contains("--cancel-creations") ? true : nil))
 
 case "ip":
     let response = send(ControlRequest(command: .list, machine: requireMachine()))

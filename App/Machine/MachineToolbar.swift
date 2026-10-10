@@ -40,6 +40,7 @@ struct MachineToolbar: ToolbarContent {
                 isShowingNetwork.toggle()
             }
             .help("Network")
+            .accessibilityValue(networkStateLabel)
             .popover(isPresented: $isShowingNetwork, arrowEdge: .bottom) {
                 NetworkPopover(machine: machine)
             }
@@ -48,6 +49,7 @@ struct MachineToolbar: ToolbarContent {
                 isShowingFolders.toggle()
             }
             .help("Shared folders")
+            .accessibilityValue("\(machine.configuration.sharedFolders.count) shared")
             .popover(isPresented: $isShowingFolders, arrowEdge: .bottom) {
                 SharedFoldersPopover(machine: machine)
             }
@@ -56,6 +58,7 @@ struct MachineToolbar: ToolbarContent {
                 isShowingDrives.toggle()
             }
             .help("Disc and disk images")
+            .accessibilityValue("\(machine.configuration.removableImages.count) attached")
             .popover(isPresented: $isShowingDrives, arrowEdge: .bottom) {
                 RemovableDrivesPopover(machine: machine)
             }
@@ -75,6 +78,13 @@ struct MachineToolbar: ToolbarContent {
         machine.configuration.networkInterfaces.first?.isConnected ?? false
     }
 
+    private var networkStateLabel: String {
+        if machine.configuration.networkInterfaces.isEmpty {
+            return "No network interface"
+        }
+        return isConnected ? "Connected" : "Cable unplugged"
+    }
+
     private var audioButton: some View {
         let isOn = machine.configuration.audio.outputEnabled
         return Button("Sound", systemImage: isOn ? "speaker.wave.2" : "speaker.slash") {
@@ -84,6 +94,7 @@ struct MachineToolbar: ToolbarContent {
             }
         }
         .help(isOn ? "Sound is on" : "Sound is off")
+        .accessibilityValue(isOn ? "On" : "Off")
         .popover(isPresented: noticeBinding(.audio), arrowEdge: .bottom) {
             restartNoticeView("Sound will be \(isOn ? "on" : "off") the next time this virtual machine starts.")
         }
@@ -98,6 +109,7 @@ struct MachineToolbar: ToolbarContent {
             }
         }
         .help(isOn ? "Microphone is on" : "Microphone is off")
+        .accessibilityValue(isOn ? "On" : "Off")
         .popover(isPresented: noticeBinding(.microphone), arrowEdge: .bottom) {
             restartNoticeView("The microphone will be \(isOn ? "on" : "off") the next time this virtual machine starts.")
         }
@@ -316,6 +328,7 @@ struct SharedFoldersEditor: View {
                 HStack(spacing: 10) {
                     Image(systemName: "folder.fill")
                         .foregroundStyle(.tint)
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(folder.name)
                             .lineLimit(1)
@@ -329,6 +342,7 @@ struct SharedFoldersEditor: View {
                     Toggle("Read Only", isOn: readOnlyBinding(for: folder))
                         .toggleStyle(.checkbox)
                         .font(.callout)
+                        .accessibilityLabel("\(folder.name), Read Only")
                     Button("Stop Sharing \(folder.name)", systemImage: "minus.circle") {
                         update { $0.sharedFolders.removeAll { $0.id == folder.id } }
                     }

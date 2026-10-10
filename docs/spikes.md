@@ -131,7 +131,8 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
   (`Range: bytes=…`). The server has to send `Accept-Ranges: bytes` and an `ETag` (Apple's CDN does both for
   restore images). The stitched file matches the original.
 - **Consequence:** `ImageDownloader` carries on after a dropped connection instead of starting a 25 GB
-  download over. Resume data is kept in memory only, so quitting the app still loses a partial download.
+  download over. The same data also carries a download across a quit: see "Resume data outlives the
+  process that got it" below.
 
 ## Disc and disk images can be plugged in while a guest runs — works
 
@@ -232,8 +233,9 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
 
 - **Seen:** Ubuntu 26.04 starts a login prompt on `/dev/hvc0`, the port behind
   `VZVirtioConsoleDeviceSerialPortConfiguration`, without being asked (systemd does that for the first
-  hypervisor console). Kernel messages don't go there: the cloud image boots with
-  `console=tty1 console=ttyAMA0`.
+  hypervisor console). Kernel messages don't go there by themselves: the cloud image boots with
+  `console=tty1 console=ttyAMA0`. Quick Create machines are now set up to send them: see "Kernel messages
+  on the serial console" below.
 - **Why the log looked empty:** It was started over at every start, and a guest that is resumed prints
   nothing new. The login prompt of a cold boot was always there.
 - **Now:** The port is attached to pipes (`VZFileHandleSerialPortAttachment`) instead of a file, so it can be
@@ -318,3 +320,112 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
 - **Fix:** The copy's seed has `users: []` and no password sections. The account is on the copied disk.
 - **Checked with:** An Ubuntu guest created without a password, given one later with `chpasswd`. Its copy
   had the same password hash, `sudo` without a password, key sign-in, and no extra default account.
+
+## Kernel messages on the serial console
+
+- **Tried:** cloud-init writes `/etc/default/grub.d/99-swiftvm-console.cfg` with
+  `GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 console=tty1"` and runs
+  `update-grub`, in new Quick Create machines of all three distributions. The first boot is unchanged; the
+  second has the new command line.
+
+  | | Kernel | Command line before | Kernel lines in `console.log`, second boot | After a shutdown, the log ends with |
+  |---|---|---|---|---|
+  | Ubuntu 26.04 | 7.0.0-34 | `console=tty1 console=ttyAMA0` | about 150 | the login prompt |
+  | Ubuntu 24.04 | 6.8.0-142 | `console=tty1 console=ttyAMA0` | about 200 | `reboot: Power down` |
+  | Debian 13 | 6.12.111 | none | 135 when SSH answers, more as it runs | `systemd-shutdown[1]: Powering off.` and `reboot: Power down` |
+
+- **The display stays the system console.** `tty1` is named again after `hvc0`, and the console named last
+  is the one behind `/dev/console`: `/proc/consoles` marks `tty1` with `C` on all three, and
+  `/sys/class/tty/console/active` reads `hvc0 tty1`. systemd's status lines and an emergency shell go
+  there. Both keep their login prompt, and no unit failed.
+- **The log starts when the console does.** Its first line is the one after
+  `printk: legacy console [hvc0] enabled`, 0.06 s into the boot on Ubuntu and 0.15 s on Debian. What the
+  kernel printed before that is not repeated on `hvc0`.
+- **Ubuntu goes quiet on purpose.** It sets `kernel.printk = 4 4 1 7` early in the boot (the log's last
+  kernel line is systemd applying the kernel variables, at 0.2 s). From then on only errors and worse reach
+  any console: a line written to `/dev/kmsg` at level 0 showed up in the log, one at level 6 didn't. Debian
+  leaves the level at 7 and logs everything. That setting is the guest's and is left alone: raising it would
+  flood the display as well.
+- **Ubuntu 26.04 doesn't say `Power down` on `hvc0`**, although that message is an emergency-level one and
+  the two older kernels print it. Not looked into.
+- **Copies.** A duplicate's seed is the original's without the account, so it writes the file and runs
+  `update-grub` again on its first boot. A copy of an Ubuntu 24.04 machine came up with its own host name,
+  the console settings from the copied disk, and no errors from cloud-init.
+- **Not covered:** machines created before this, and machines installed from an ISO. Nothing sets them up.
+
+## The last lines before a stop were lost
+
+- **Cause:** `SerialConsole.disconnect` stopped listening to the pipe from the guest and closed the log.
+  What the engine had written to the pipe and nobody had read yet was dropped, and so was a chunk that was
+  being read at that moment: it went to the listeners but found the log closed.
+- **Fix:** The pipe is read without blocking, under the console's lock, both when it has something and
+  once more when the guest is unplugged. Whichever gets there first takes what is there, in order.
+- **Checked with:** a script in `/usr/lib/systemd/system-shutdown/` of an Ubuntu 26.04 guest that prints
+  41 lines to `/dev/hvc0`. systemd runs it as the last thing before it asks the kernel to power off. Five
+  shutdowns with `swiftvm stop`: all 41 lines in the log every time, the last one last. On Debian 13 and
+  Ubuntu 24.04 the kernel's own last line, `reboot: Power down`, ends the log.
+- **Not done:** the same five shutdowns with the build from before the fix. The unit test that writes and
+  unplugs 200 times in a row loses lines on the old code and none on the new.
+
+## Resume data outlives the process that got it
+
+- **Tried:** A command-line tool that downloads a 40 MB file from a slow local server, calls
+  `cancel(byProducingResumeData:)` after three seconds, writes the data to a file and exits. A second
+  process makes a task from that file with `downloadTask(withResumeData:)`.
+- **Outcome:** The second process asked for `Range: bytes=10682368-` with `If-Range: "v1"`, and the finished
+  file matched. The resume data is a 7.8 KB keyed archive that names a file in the temporary folder
+  (`$TMPDIR/CFNetworkDownload_XXXXXX.tmp`), where the bytes received so far stay after the process is gone.
+- **Also learned:**
+  - The error the cancelled task ends with (`NSURLErrorCancelled`) carries the same resume data as the
+    completion handler of `cancel(byProducingResumeData:)`. A plain `cancel()` leaves none.
+  - If the temporary file is gone, the task quietly downloads everything again, without a `Range`.
+  - Resume data that isn't any fails at once with error -1002, without a request to the server.
+  - With nobody listening at the address, a task made from resume data fails with -1004, and that error
+    carries resume data again; the temporary file is untouched. A dead network costs nothing.
+  - A server that answers the request for the rest with an error costs everything: given a 503,
+    URLSession reported the download finished, with the 20 bytes of the error page in the temporary file
+    where 10 MB had been. Resuming from the same data afterwards started over. The downloader can only
+    notice (the status isn't 2xx) and start from the beginning.
+  - macOS clears the temporary folder of files that haven't been used for three days (the
+    `com.apple.bsd.dirhelper` job runs daily with `CLEAN_FILES_OLDER_THAN_DAYS=3`). Whether restarting the
+    Mac empties it was not tried.
+- **Checked for real:** `swiftvm create ubuntu-24.04`, and four seconds later `swiftvm quit
+  --cancel-creations`, with 193 MB of 620 MB received. The app left an 8.5 KB
+  `ubuntu-24.04-server-cloudimg-arm64.img.resume` in the download cache. After a relaunch the same command
+  carried on in the same temporary file, from 193,380,352 bytes to the end, and the image has the SHA-256
+  that Ubuntu publishes.
+- **Consequence:** `ImageDownloader` cancels with resume data, writes it next to the cache together with the
+  address it is for, and tries it first the next time. On its way out the app waits, three seconds at most,
+  for downloads to have done that. A cancelled download therefore leaves its bytes in the temporary folder
+  until they are used or macOS clears them, also when the user cancelled because they changed their mind.
+  Moving the temporary file into the cache as well, so that it would outlive the three days, would mean
+  rewriting the name inside an archive whose format isn't documented; left alone.
+
+## A quit that is asked for inside a task can't be answered later
+
+- **Tried:** A window-less AppKit program whose delegate answers `applicationShouldTerminate` with
+  `.terminateLater` and replies from a `Task` a moment later, with `NSApp.terminate(nil)` called three ways.
+- **Outcome:** Called from a `Task` on the main actor, the app never quits: the reply never runs. Called
+  from a `Timer` or from a block handed to the run loop, it quits.
+- **Cause:** Tasks on the main actor are run one at a time by the main dispatch queue. `terminate` waits in
+  a run loop of its own for the reply, inside the first task, and the queue hands out nothing more until
+  that task has returned.
+- **Where it mattered:** The app called `terminate` from a task in two places: after waiting for a snapshot
+  or a copy to finish before quitting, and for `swiftvm quit`. With a machine running by then, the quit
+  dialog would have come up and "Suspend and Quit" would have hung. Not seen in use; found by reading.
+- **Consequence:** Both now go through `AppDelegate.terminate(after:)`, which uses a timer. `swiftvm quit`
+  also can't meet a running machine any more: once the app has agreed to quit, nothing starts
+  (`VMLibrary.allowsStarting`) and further requests are answered with "SwiftVM is quitting." Three rounds
+  of `swiftvm quit` followed at once by two `swiftvm start`: both starts refused, the app gone within half
+  a second, every machine still shut down.
+
+## ssh waits for good for a guest that has gone
+
+- **Seen:** An `ssh … sudo -n hwclock --hctosys` from an earlier session, 76 minutes old, its parent gone,
+  holding an established connection to an address that had since been given to another guest. It is the
+  command that sets a Linux guest's clock after a resume; its guest was stopped under it.
+- **Tried:** Two `ssh <guest> "sleep 300"` to an Ubuntu guest, then `swiftvm force-stop`. The one with
+  `-o ServerAliveInterval=5 -o ServerAliveCountMax=2` ended after 12 s with "Timeout, server not
+  responding". The one without was still there.
+- **Consequence:** `GuestClock` passes both options. The two commands that finish setting up a macOS guest
+  (`SSHKeyInstaller`, `GuestTimeZone`) don't yet.

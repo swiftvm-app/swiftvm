@@ -91,6 +91,32 @@ private final class FakeProvider: VMBackendProvider {
         #expect(provider.backend.starts.last == VMStartOptions())
     }
 
+    @Test func nothingStartsOnceTheLibraryIsClosedForStarts() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = VMLibrary(rootDirectory: directory.appending(path: "library"))
+        library.backendProvider = provider
+        let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
+        let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration))
+        machine.isHostLocked = { false }
+
+        library.allowsStarting = false
+        await machine.start()
+        #expect(machine.state == .stopped)
+        #expect(provider.backend.starts.isEmpty)
+        #expect(machine.lastError == nil)
+
+        // A suspended machine is left with its saved memory, to be resumed another time.
+        library.allowsStarting = true
+        await machine.start()
+        await machine.suspend()
+        #expect(machine.state == .suspended)
+        library.allowsStarting = false
+        await machine.start()
+        #expect(machine.state == .suspended)
+        #expect(machine.bundle.hasSavedState)
+        #expect(provider.backend.starts.count == 1)
+    }
+
     @Test func keepsTheAccountWhenTheFirstStartFails() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try makeMachine()

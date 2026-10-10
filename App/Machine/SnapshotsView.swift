@@ -50,6 +50,7 @@ struct SnapshotsView: View {
                     ProgressView()
                         .controlSize(.small)
                         .help(activity.label)
+                        .accessibilityLabel(activity.label)
                 }
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)

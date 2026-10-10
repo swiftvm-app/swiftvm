@@ -79,6 +79,31 @@ private final class Recorder: @unchecked Sendable {
         #expect(recorder.text == "first boot\nsecond boot\n")
     }
 
+    @Test func keepsWhatTheGuestPrintedLastWhenItStops() throws {
+        let logURL = temporaryLog()
+        defer { try? FileManager.default.removeItem(at: logURL.deletingLastPathComponent().deletingLastPathComponent()) }
+        let console = SerialConsole(logURL: logURL)
+        let recorder = Recorder()
+        _ = console.addListener(recorder.record)
+
+        // Nothing waits between the guest's last words and its stop, so whether they were read in time
+        // used to be a matter of luck. Often enough to lose that race at least once.
+        for round in 0..<200 {
+            let guest = console.connect()
+            let first = "[\(round)] Stopping…\n"
+            let last = String(repeating: "x", count: round * 40) + "\n[\(round)] reboot: Power down\n"
+            try guest.output.write(contentsOf: Data(first.utf8))
+            try guest.output.write(contentsOf: Data(last.utf8))
+            console.disconnect()
+
+            #expect(try String(contentsOf: logURL, encoding: .utf8) == first + last)
+            #expect(console.transcript == Data((first + last).utf8))
+            #expect(recorder.text.hasSuffix(first + last))
+        }
+        // Listeners hear the last words before they hear that the guest is gone.
+        #expect(recorder.connectionChanges == Array(repeating: [true, false], count: 200).flatMap { $0 })
+    }
+
     @Test func typingToNobodyIsHarmless() {
         let console = SerialConsole()
         console.send(Data("hello?".utf8))

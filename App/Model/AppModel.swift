@@ -39,6 +39,10 @@ final class AppModel {
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
     @ObservationIgnored var lastDuplication: Task<Void, Never>?
+    /// Set once the app has agreed to quit for the command-line tool, where there is nobody to ask what
+    /// to do with machines. See ``quitUnattended()``.
+    @ObservationIgnored private(set) var isQuittingUnattended = false
+    @ObservationIgnored private var unattendedQuitTimer: Timer?
 
     private init() {
         library = VMLibrary()
@@ -424,5 +428,27 @@ final class AppModel {
     /// Creations that are still working (not failed and waiting to be dismissed).
     var creationsInProgress: [MachineCreation] {
         creations.filter { $0.errorMessage == nil }
+    }
+
+    // MARK: Quitting
+
+    /// Quits for the command-line tool, a moment from now so that the tool gets its answer first. Call it
+    /// only when no machine is running.
+    ///
+    /// From here on nothing starts, and further requests from the tool are turned down. That is what
+    /// makes it safe to quit without the dialog that asks what to do with running machines: none can
+    /// have come up between the check and the quit.
+    func quitUnattended() {
+        isQuittingUnattended = true
+        library.allowsStarting = false
+        unattendedQuitTimer = AppDelegate.terminate(after: 0.2)
+    }
+
+    /// Goes back to normal after a quit for the command-line tool was called off.
+    func cancelUnattendedQuit() {
+        isQuittingUnattended = false
+        library.allowsStarting = true
+        unattendedQuitTimer?.invalidate()
+        unattendedQuitTimer = nil
     }
 }

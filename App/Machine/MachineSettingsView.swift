@@ -71,6 +71,7 @@ struct MachineSettingsView: View {
                 .buttonStyle(.link)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help("Show in Finder")
             }
         }
     }
@@ -83,6 +84,8 @@ struct MachineSettingsView: View {
             LabeledContent("Memory") {
                 HStack {
                     Slider(value: memoryBinding, in: 1...Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte), step: 1)
+                        .accessibilityLabel("Memory")
+                        .accessibilityValue(Formatting.bytes(configuration.memorySize))
                     Text(Formatting.bytes(configuration.memorySize))
                         .monospacedDigit()
                         .frame(width: 56, alignment: .trailing)

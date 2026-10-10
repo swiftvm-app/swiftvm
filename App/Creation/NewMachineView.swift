@@ -214,6 +214,8 @@ private struct LinuxMachineForm: View {
                     LabeledContent("Memory") {
                         HStack {
                             Slider(value: $memoryGigabytes, in: 1...Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte), step: 1)
+                                .accessibilityLabel("Memory")
+                                .accessibilityValue("\(Int(memoryGigabytes)) GB")
                             Text("\(Int(memoryGigabytes)) GB")
                                 .monospacedDigit()
                                 .frame(width: 56, alignment: .trailing)
@@ -509,6 +511,8 @@ private struct MacMachineForm: View {
                             // A slider needs room to move; on a small Mac the minimum is all there is.
                             if maximumMemoryGigabytes > minimumMemoryGigabytes {
                                 Slider(value: $memoryGigabytes, in: minimumMemoryGigabytes...maximumMemoryGigabytes, step: 1)
+                                    .accessibilityLabel("Memory")
+                                    .accessibilityValue("\(Int(memoryGigabytes)) GB")
                             }
                             Text("\(Int(memoryGigabytes)) GB")
                                 .monospacedDigit()

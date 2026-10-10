@@ -39,6 +39,8 @@ struct LibraryView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
                 .padding(.bottom, 14)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Virtual Machines")
             }
             .onChange(of: selection) { _, newValue in
                 if let newValue {
@@ -169,6 +171,8 @@ struct LibraryView: View {
             }
             .simultaneousGesture(TapGesture(count: 2).onEnded { open(machine) })
             .contextMenu { menu }
+            // What a double-click does, for someone who doesn't use the pointer.
+            .accessibilityAction(named: "Open Window") { open(machine) }
     }
 
     private var emptyState: some View {

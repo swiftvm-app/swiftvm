@@ -16,7 +16,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case open
         case create
         case delete
-        /// Quit the app. Refused while a machine is running.
+        /// Quit the app. Refused while a machine is running, and while one is being created unless
+        /// ``ControlRequest/cancelsCreations`` is set.
         case quit
         /// Throw away a suspended machine's saved memory, so that it starts up fresh.
         case discardState = "discard-state"
@@ -36,6 +37,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case snapshots
         case revert
         case deleteSnapshot = "delete-snapshot"
+        /// Give a snapshot the name in ``ControlRequest/name``.
+        case renameSnapshot = "rename-snapshot"
         /// Forward a port on this Mac to a port in the machine.
         case forward
         case unforward
@@ -121,18 +124,20 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var create: CreateParameters?
     public var share: ShareParameters?
     public var drive: DriveParameters?
-    /// The name for a copy of a machine or for a new snapshot.
+    /// The name for a copy of a machine or for a new snapshot, or the new name of an existing snapshot.
     public var name: String?
     /// Name or UUID of the snapshot the command applies to.
     public var snapshot: String?
     /// The disk size to grow to, in GB.
     public var diskGigabytes: Int?
     public var forward: ForwardParameters?
+    /// For `quit`: give up the machines that are still being created instead of refusing to quit.
+    public var cancelsCreations: Bool?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
-        forward: ForwardParameters? = nil
+        forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -143,6 +148,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.snapshot = snapshot
         self.diskGigabytes = diskGigabytes
         self.forward = forward
+        self.cancelsCreations = cancelsCreations
     }
 }
 

@@ -47,6 +47,26 @@ import VMCore
         #expect(withRosetta.userData.contains("update-binfmts --install rosetta /media/rosetta/rosetta"))
     }
 
+    @Test func sendsKernelMessagesToTheSerialConsole() {
+        let text = seed.userData
+        #expect(text.contains("write_files:\n  - path: \"/etc/default/grub.d/99-swiftvm-console.cfg\"\n    content: \""))
+        // One line of YAML, with the display named after the serial console so that it stays the system console.
+        #expect(text.contains(#"GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 console=tty1\"\n""#))
+        #expect(text.contains("runcmd:\n  - \"command -v update-grub >/dev/null && update-grub || true\"\n"))
+
+        var displayOnly = seed
+        displayOnly.kernelMessagesOnSerialConsole = false
+        #expect(!displayOnly.userData.contains("write_files"))
+        #expect(!displayOnly.userData.contains("runcmd"))
+        #expect(!displayOnly.userData.contains("hvc0"))
+
+        // With Rosetta there are two things to run, in one list.
+        var withRosetta = seed
+        withRosetta.rosettaTag = GuestIntegration.rosettaTag
+        #expect(withRosetta.userData.components(separatedBy: "runcmd:").count == 2)
+        #expect(withRosetta.userData.hasSuffix("  - \"command -v update-grub >/dev/null && update-grub || true\"\n"))
+    }
+
     @Test func rendersMetaDataAndNetworkConfig() {
         #expect(seed.metaData == "instance-id: \"abc-123\"\nlocal-hostname: \"ubuntu-26-04\"\n")
         #expect(seed.networkConfig?.contains("macaddress: \"02:1a:2b:3c:4d:5e\"") == true)
@@ -90,6 +110,8 @@ import VMCore
         #expect(userData.contains("timezone: \"Europe/Berlin\""))
         #expect(userData.contains("growpart:\n  mode: auto\n  devices: [\"/\"]"))
         #expect(userData.contains("  - [\"swiftvm\", \"/mnt/shared\", virtiofs, \"rw,nofail\", \"0\", \"0\"]"))
+        #expect(userData.contains("write_files:\n  - path: \"/etc/default/grub.d/99-swiftvm-console.cfg\""))
+        #expect(userData.contains("update-grub"))
         #expect(userData.hasPrefix("#cloud-config\n"))
         #expect(userData.hasSuffix("\n"))
     }
@@ -155,8 +177,9 @@ import VMCore
     }
 }
 
-/// A minimal HTTP server for one file that hangs up partway through the first request, the way a
-/// connection drops in the middle of a download. Later requests are answered in full, honoring `Range`.
+/// A minimal HTTP server for one file that stops partway through the first request: it hangs up, the way
+/// a connection drops in the middle of a download, or sends nothing more until the client goes away, the
+/// way a download is cut short by the user. Later requests are answered in full, honoring `Range`.
 private final class FlakyFileServer: @unchecked Sendable {
     let port: UInt16
     private let descriptor: Int32
@@ -166,7 +189,9 @@ private final class FlakyFileServer: @unchecked Sendable {
     /// The `Range` header of every request received so far (`nil` for a request without one).
     var requestedRanges: [String?] { lock.withLock { ranges } }
 
-    init(payload: Data, droppingFirstResponseAfter cutoff: Int) throws {
+    /// - Parameter waitsForClient: After `cutoff` bytes of the first response, keep the connection open
+    ///   until the client closes it instead of hanging up.
+    init(payload: Data, droppingFirstResponseAfter cutoff: Int, waitsForClient: Bool = false) throws {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -186,7 +211,11 @@ private final class FlakyFileServer: @unchecked Sendable {
             while true {
                 let connection = accept(descriptor, nil, nil)
                 guard connection >= 0 else { return }
-                serve(connection, payload: payload, cutoff: cutoff)
+                let isCutShort = serve(connection, payload: payload, cutoff: cutoff)
+                if isCutShort, waitsForClient {
+                    var byte: UInt8 = 0
+                    while read(connection, &byte, 1) > 0 {}
+                }
                 close(connection)
             }
         }
@@ -197,7 +226,8 @@ private final class FlakyFileServer: @unchecked Sendable {
         close(descriptor)
     }
 
-    private func serve(_ connection: Int32, payload: Data, cutoff: Int) {
+    /// Answers one request. Returns whether the answer stopped short of the whole file.
+    private func serve(_ connection: Int32, payload: Data, cutoff: Int) -> Bool {
         var noSignal: Int32 = 1
         setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
 
@@ -217,6 +247,7 @@ private final class FlakyFileServer: @unchecked Sendable {
 
         let common = "Accept-Ranges: bytes\r\nETag: \"v1\"\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n"
         var response: Data
+        var isCutShort = false
         if let range, let start = Int(range.dropFirst("bytes=".count).prefix { $0 != "-" }), start < payload.count {
             let header = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(start)-\(payload.count - 1)/\(payload.count)\r\nContent-Length: \(payload.count - start)\r\n"
             response = Data((header + common + "\r\n").utf8) + payload.dropFirst(start)
@@ -224,6 +255,7 @@ private final class FlakyFileServer: @unchecked Sendable {
             response = Data(("HTTP/1.1 200 OK\r\nContent-Length: \(payload.count)\r\n" + common + "\r\n").utf8)
             // The first answer promises the whole file and stops short of it.
             response += isFirstRequest ? payload.prefix(cutoff) : payload
+            isCutShort = isFirstRequest && cutoff < payload.count
         }
         response.withUnsafeBytes { buffer in
             var offset = 0
@@ -233,16 +265,35 @@ private final class FlakyFileServer: @unchecked Sendable {
                 offset += written
             }
         }
+        return isCutShort
     }
+}
+
+/// Removes the system's temporary file that an unfinished download keeps its bytes in, for tests that end
+/// with one. The file's name is in URLSession's resume data.
+private func discardTemporaryFile(of unfinished: URL) {
+    guard let data = try? Data(contentsOf: unfinished),
+          let saved = try? PropertyListDecoder().decode(UnfinishedDownload.self, from: data),
+          let archive = try? PropertyListSerialization.propertyList(from: saved.resumeData, format: nil) as? [String: Any],
+          let objects = archive["$objects"] as? [Any]
+    else { return }
+    for case let name as String in objects where name.hasPrefix("CFNetworkDownload_") && name.hasSuffix(".tmp") {
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: name))
+    }
+}
+
+/// A file whose every 64 KB block has its own byte value, so that one stitched together at the wrong offset shows.
+private func blockPatternedPayload() -> Data {
+    var payload = Data()
+    for block in 0..<96 {
+        payload.append(Data(repeating: UInt8(block), count: 64 << 10))
+    }
+    return payload
 }
 
 @Suite struct ImageDownloaderResumeTests {
     @Test func carriesOnAfterTheConnectionDrops() async throws {
-        // Every 64 KB block has its own byte value, so a file stitched together at the wrong offset shows.
-        var payload = Data()
-        for block in 0..<96 {
-            payload.append(Data(repeating: UInt8(block), count: 64 << 10))
-        }
+        let payload = blockPatternedPayload()
         let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: 2 << 20)
         defer { server.stop() }
         let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
@@ -260,6 +311,165 @@ private final class FlakyFileServer: @unchecked Sendable {
         // The second request asks for the rest only.
         #expect(ranges.last??.hasPrefix("bytes=") == true)
         #expect(ranges.last != .some("bytes=0-"))
+        // Nothing is left behind for a download that is complete.
+        #expect(!FileManager.default.fileExists(atPath: downloader.unfinishedDownloadURL(for: image).path))
+    }
+
+    @Test func carriesOnAfterBeingCancelledAndTheAppOpenedAgain() async throws {
+        let payload = blockPatternedPayload()
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: 2 << 20, waitsForClient: true)
+        defer { server.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        let (arrivals, arrival) = AsyncStream<Void>.makeStream()
+        let attempt = Task {
+            try await downloader.fetch(image) { progress in
+                if progress.bytesReceived >= 1 << 20 {
+                    arrival.yield()
+                }
+            }
+        }
+        for await _ in arrivals { break }
+
+        // What the app does on its way out: it cancels, and waits only until what has arrived is put away.
+        attempt.cancel()
+        #expect(downloader.waitForDownloadsToWindUp(timeout: 10))
+        let unfinished = downloader.unfinishedDownloadURL(for: image)
+        #expect(FileManager.default.fileExists(atPath: unfinished.path))
+        await #expect(throws: URLError.self) { try await attempt.value }
+        #expect(!downloader.isCached(image))
+
+        // A downloader of its own, as the app has after it is opened again.
+        let file = try await ImageDownloader(cacheDirectory: cache).fetch(image) { _ in }
+        #expect(try Data(contentsOf: file) == payload)
+        let ranges = server.requestedRanges
+        #expect(ranges.count == 2)
+        #expect(ranges.first == .some(nil))
+        #expect(ranges.last??.hasPrefix("bytes=") == true)
+        #expect(ranges.last != .some("bytes=0-"))
+        #expect(!FileManager.default.fileExists(atPath: unfinished.path))
+    }
+
+    @Test func aDownloadThatIsCancelledBeforeItBeginsEndsAsWell() async throws {
+        let payload = blockPatternedPayload()
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: payload.count)
+        defer { server.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let downloader = ImageDownloader(cacheDirectory: cache)
+
+        for _ in 0..<20 {
+            let (endings, ending) = AsyncStream<Void>.makeStream()
+            let attempt = Task {
+                defer { ending.yield() }
+                return try await downloader.fetch(image) { _ in }
+            }
+            attempt.cancel()
+            // Give up waiting after a while rather than hang with it.
+            let watchdog = Task {
+                try await Task.sleep(for: .seconds(5))
+                ending.finish()
+            }
+            var didEnd = false
+            for await _ in endings {
+                didEnd = true
+                break
+            }
+            watchdog.cancel()
+            #expect(didEnd)
+            guard didEnd else { return }
+            // Whether it was cancelled in time or got through, nothing of it is under way any more.
+            #expect(downloader.waitForDownloadsToWindUp(timeout: 5))
+            try? FileManager.default.removeItem(at: downloader.cachedURL(for: image))
+        }
+        discardTemporaryFile(of: downloader.unfinishedDownloadURL(for: image))
+    }
+
+    @Test func startsOverWhenWhatWasLeftCanNotBeUsed() async throws {
+        let payload = blockPatternedPayload()
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: payload.count)
+        defer { server.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        let unfinished = downloader.unfinishedDownloadURL(for: image)
+        UnfinishedDownload(url: image.url, resumeData: Data("not resume data".utf8)).save(to: unfinished)
+
+        let file = try await downloader.fetch(image) { _ in }
+        #expect(try Data(contentsOf: file) == payload)
+        #expect(server.requestedRanges == [nil])
+        #expect(!FileManager.default.fileExists(atPath: unfinished.path))
+    }
+
+    @Test func keepsWhatWasLeftWhenTheServerCanNotBeReached() async throws {
+        let payload = blockPatternedPayload()
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: 2 << 20, waitsForClient: true)
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+
+        var downloader = ImageDownloader(cacheDirectory: cache)
+        downloader.resumeDelay = .milliseconds(5)
+        let unfinished = downloader.unfinishedDownloadURL(for: image)
+        let (arrivals, arrival) = AsyncStream<Void>.makeStream()
+        let attempt = Task { [downloader] in
+            try await downloader.fetch(image) { progress in
+                if progress.bytesReceived >= 1 << 20 {
+                    arrival.yield()
+                }
+            }
+        }
+        for await _ in arrivals { break }
+        attempt.cancel()
+        _ = await attempt.result
+        #expect(FileManager.default.fileExists(atPath: unfinished.path))
+
+        // The next attempt finds nobody at the address. What had arrived is still worth keeping.
+        server.stop()
+        await #expect(throws: URLError.self) { try await downloader.fetch(image) { _ in } }
+        #expect(FileManager.default.fileExists(atPath: unfinished.path))
+        discardTemporaryFile(of: unfinished)
+    }
+
+    @Test func whatCanNotBeUsedIsNotKeptAnyLonger() async throws {
+        // Nobody listens at this address, so starting over fails as well.
+        let server = try FlakyFileServer(payload: Data(), droppingFirstResponseAfter: 0)
+        server.stop()
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        let unfinished = downloader.unfinishedDownloadURL(for: image)
+        UnfinishedDownload(url: image.url, resumeData: Data("not resume data".utf8)).save(to: unfinished)
+
+        await #expect(throws: URLError.self) { try await downloader.fetch(image) { _ in } }
+        #expect(!FileManager.default.fileExists(atPath: unfinished.path))
+    }
+
+    @Test func whatWasLeftOfAnotherDownloadIsNotUsed() throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: "swiftvm-unfinished-\(UUID().uuidString).resume")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let url = URL(string: "https://example.com/a/image.img")!
+        let data = Data("resume data".utf8)
+
+        UnfinishedDownload(url: url, resumeData: data).save(to: file)
+        #expect(UnfinishedDownload.take(from: file, for: url) == data)
+        // Taken means gone: a second download of the same image starts on its own.
+        #expect(UnfinishedDownload.take(from: file, for: url) == nil)
+
+        // The same file name at another address is another file.
+        UnfinishedDownload(url: url, resumeData: data).save(to: file)
+        #expect(UnfinishedDownload.take(from: file, for: URL(string: "https://example.org/b/image.img")!) == nil)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
     }
 }
 

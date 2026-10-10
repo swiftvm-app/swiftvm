@@ -7,6 +7,7 @@ import VZEngine
 /// Handles requests from the `swiftvm` command-line tool.
 extension AppModel {
     func handle(_ request: ControlRequest) async -> ControlResponse {
+        guard !isQuittingUnattended else { return .failure("SwiftVM is quitting.") }
         switch request.command {
         case .list:
             if let identifier = request.machine {
@@ -31,17 +32,15 @@ extension AppModel {
             guard activeMachines.isEmpty else {
                 return .failure("Stop or suspend the running virtual machines first.")
             }
-            guard creationsInProgress.isEmpty else {
-                return .failure("A virtual machine is still being created.")
+            let creating = creationsInProgress
+            guard creating.isEmpty || request.cancelsCreations == true else {
+                let subject = creating.count == 1 ? "“\(creating[0].name)” is" : "\(creating.count) virtual machines are"
+                return .failure("\(subject) still being created. To quit anyway, use `swiftvm quit --cancel-creations`: a download carries on where it stopped the next time, an installation starts over.")
             }
             guard !isWorkingOnMachineFiles else {
                 return .failure("A virtual machine is busy with a snapshot, a copy or a resize. Try again in a moment.")
             }
-            Task {
-                // Let the answer reach the caller before the app goes away.
-                try? await Task.sleep(for: .milliseconds(200))
-                NSApp.terminate(nil)
-            }
+            quitUnattended()
             return ControlResponse(ok: true)
         default:
             break
@@ -206,8 +205,12 @@ extension AppModel {
             return snapshots(of: machine)
         case .snapshots:
             return snapshots(of: machine)
-        case .revert, .deleteSnapshot:
+        case .revert, .deleteSnapshot, .renameSnapshot:
             guard let identifier = request.snapshot else { return .failure("Missing snapshot name.") }
+            let newName = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard request.command != .renameSnapshot || !newName.isEmpty else {
+                return .failure("Missing the snapshot's new name.")
+            }
             let found = findSnapshot(identifier, of: machine)
             guard case .success(let snapshot) = found else {
                 if case .failure(let problem) = found { return .failure(problem.message) }
@@ -216,6 +219,9 @@ extension AppModel {
             do {
                 if request.command == .revert {
                     try await machine.revert(to: snapshot)
+                } else if request.command == .renameSnapshot {
+                    try machine.renameSnapshot(snapshot, to: newName)
+                    return snapshots(of: machine)
                 } else {
                     try machine.deleteSnapshot(snapshot)
                     return snapshots(of: machine)
@@ -367,6 +373,8 @@ extension AppModel {
             start = { self.create(request) }
         }
 
+        // A quit may have been agreed to while the restore image was being read.
+        guard !isQuittingUnattended else { return .failure("SwiftVM is quitting.") }
         let result: Result<VirtualMachine, any Error> = await withCheckedContinuation { continuation in
             let creation = start()
             creation.onFinish = { continuation.resume(returning: $0) }
@@ -374,6 +382,9 @@ extension AppModel {
         switch result {
         case .success(let machine):
             if parameters.start {
+                guard !isQuittingUnattended else {
+                    return .failure("“\(machine.name)” was created but not started, because SwiftVM is quitting.")
+                }
                 await machine.start()
                 if let error = machine.lastError {
                     machine.lastError = nil

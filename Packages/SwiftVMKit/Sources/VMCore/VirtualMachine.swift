@@ -38,6 +38,8 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public var shutdownRequestRepeatInterval: Duration = .seconds(5)
     /// Whether this Mac's screen is locked. A suspended guest can't be resumed while it is.
     @ObservationIgnored public var isHostLocked: @MainActor () -> Bool = { HostSession.isScreenLocked }
+    /// Asked before every start. While it says no, starting does nothing and the machine stays as it is.
+    @ObservationIgnored public var isStartAllowed: @MainActor () -> Bool = { true }
 
     @ObservationIgnored private var backend: (any VMBackend)?
     @ObservationIgnored private var restartsAfterStop = false
@@ -157,7 +159,7 @@ public final class VirtualMachine: Identifiable {
     }
 
     private func performStart(inRecovery: Bool = false) async {
-        guard state == .stopped || state == .suspended else { return }
+        guard state == .stopped || state == .suspended, isStartAllowed() else { return }
         let restoring = state == .suspended && bundle.hasSavedState
         lastError = nil
         state = restoring ? .restoring : .starting

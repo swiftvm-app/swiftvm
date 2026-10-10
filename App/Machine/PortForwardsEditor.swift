@@ -67,10 +67,12 @@ struct PortForwardsEditor: View {
             Circle()
                 .fill(color(for: status))
                 .frame(width: 8, height: 8)
-                .accessibilityLabel(statusLabel(for: status))
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text("localhost:\(String(forward.hostPort)) → \(String(forward.guestPort))\(forward.transport == .udp ? " UDP" : "")")
                     .monospacedDigit()
+                    // The dot's color and the arrow, in words.
+                    .accessibilityLabel("\(forward.transport == .udp ? "UDP port" : "Port") \(String(forward.hostPort)) on this Mac to port \(String(forward.guestPort)) in the guest, \(statusLabel(for: status))")
                 Text(detail(for: forward, status: status))
                     .font(.caption)
                     .foregroundStyle(isFailure(status) ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))

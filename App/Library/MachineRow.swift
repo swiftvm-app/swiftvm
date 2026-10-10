@@ -54,6 +54,7 @@ struct MachineRow: View {
         .onHover { isHovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(machine.name), \(machine.activity?.label ?? machine.state.label)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -62,6 +63,7 @@ struct MachineRow: View {
             ProgressView()
                 .controlSize(.small)
                 .help(activity.label)
+                .accessibilityLabel(activity.label)
         } else {
             stateButton
         }
@@ -80,6 +82,7 @@ struct MachineRow: View {
             ProgressView()
                 .controlSize(.small)
                 .help(machine.state.label)
+                .accessibilityLabel(machine.state.label)
         }
     }
 
@@ -126,6 +129,7 @@ struct CreationRow: View {
                         .progressViewStyle(.linear)
                         .controlSize(.small)
                         .frame(maxWidth: 260)
+                        .accessibilityLabel(creation.status)
                 }
             }
 
@@ -144,6 +148,8 @@ struct CreationRow: View {
         .padding(.leading, 18)
         .padding(.trailing, 12)
         .padding(.vertical, 11)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(creation.name), \(creation.errorMessage == nil ? "being created" : "couldn't be created")")
     }
 
     private var statusText: String {

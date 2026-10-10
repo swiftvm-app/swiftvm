@@ -117,6 +117,7 @@ struct MachineView: View {
     private var display: some View {
         if let displayView = machine.displayView {
             MachineDisplayView(displayView: displayView)
+                .accessibilityLabel("Display of \(machine.name)")
         }
     }
 
@@ -130,6 +131,8 @@ struct MachineView: View {
         .padding(28)
         .glassEffect(.regular, in: .rect(cornerRadius: 22))
         .transition(.opacity)
+        // One announcement, "Starting…", rather than a nameless progress indicator and a text.
+        .accessibilityElement(children: .combine)
     }
 
     private func placeholder(title: String, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {

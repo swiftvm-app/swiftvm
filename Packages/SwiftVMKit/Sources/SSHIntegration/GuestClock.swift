@@ -15,6 +15,10 @@ public enum GuestClock {
             "-F", configURL.path,
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
+            // A guest that is stopped or goes back to a snapshot in the middle of this says nothing more,
+            // not even goodbye. Without these, `ssh` would wait for it for good, also after the app has quit.
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=2",
             alias,
             "sudo -n hwclock --hctosys",
         ]

@@ -50,6 +50,18 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self).contains("\"force-stop\""))
         let snapshot = try JSONEncoder().encode(ControlRequest(command: .deleteSnapshot, machine: "vm", snapshot: "Before"))
         #expect(String(decoding: snapshot, as: UTF8.self).contains("\"delete-snapshot\""))
+        let rename = try JSONEncoder().encode(ControlRequest(command: .renameSnapshot, machine: "vm", name: "After", snapshot: "Before"))
+        #expect(String(decoding: rename, as: UTF8.self).contains("\"rename-snapshot\""))
+    }
+
+    @Test func aPlainQuitSaysNothingAboutCreations() throws {
+        // What an app from before the option existed is sent, and what it sends back.
+        let plain = try JSONEncoder().encode(ControlRequest(command: .quit))
+        #expect(String(decoding: plain, as: UTF8.self) == #"{"command":"quit"}"#)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: plain).cancelsCreations == nil)
+
+        let insisting = ControlRequest(command: .quit, cancelsCreations: true)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(insisting)) == insisting)
     }
 
     @Test func newerRequestsAndAnswersRoundTrip() throws {
