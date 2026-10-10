@@ -1,0 +1,187 @@
+import SwiftUI
+import VMCore
+
+/// A machine's own window: the guest display with a toolbar of live controls.
+struct MachineWindow: View {
+    let machineID: UUID?
+
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let machineID, let machine = model.library.machine(id: machineID) {
+            MachineView(machine: machine)
+        } else {
+            ContentUnavailableView(
+                "Virtual Machine Not Found",
+                systemImage: "questionmark.square.dashed",
+                description: Text("It may have been deleted or moved.")
+            )
+            .frame(minWidth: 480, minHeight: 320)
+        }
+    }
+}
+
+struct MachineView: View {
+    let machine: VirtualMachine
+
+    @Environment(AppModel.self) private var model
+    @State private var isShowingSettings = false
+
+    var body: some View {
+        ZStack {
+            Color.black
+            content
+        }
+        .frame(minWidth: 640, minHeight: 400)
+        .navigationTitle(machine.name)
+        .toolbar {
+            MachineToolbar(machine: machine, isShowingSettings: $isShowingSettings)
+        }
+        .windowToolbarFullScreenVisibility(.onHover)
+        .focusedSceneValue(\.machine, machine)
+        .sheet(isPresented: $isShowingSettings) {
+            MachineSettingsView(machine: machine)
+        }
+        .alert(
+            machine.lastError?.title ?? "",
+            isPresented: Binding(get: { machine.lastError != nil }, set: { if !$0 { machine.lastError = nil } }),
+            presenting: machine.lastError
+        ) { _ in
+            Button("OK") { machine.lastError = nil }
+        } message: { error in
+            Text(error.message)
+        }
+        .onAppear { model.openMachineWindows.insert(machine.id) }
+        .onDisappear { model.openMachineWindows.remove(machine.id) }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch machine.state {
+        case .stopped:
+            placeholder(
+                title: machine.name,
+                detail: Formatting.summary(of: machine),
+                actionTitle: "Start",
+                action: { Task { await machine.start() } }
+            )
+        case .suspended:
+            placeholder(
+                title: "\(machine.name) is suspended",
+                detail: "Its state is saved on disk and uses no memory.",
+                actionTitle: "Resume",
+                action: { Task { await machine.start() } }
+            )
+        case .starting, .restoring:
+            display
+                .overlay { progressOverlay(machine.state == .restoring ? "Resuming…" : "Starting…") }
+        case .running, .stopping:
+            display
+        case .suspending:
+            display
+                .overlay { progressOverlay("Suspending…") }
+        case .paused:
+            display
+                .overlay {
+                    ZStack {
+                        Color.black.opacity(0.45)
+                        VStack(spacing: 14) {
+                            Text("Paused")
+                                .font(.title2.weight(.semibold))
+                            Button("Resume") { Task { await machine.resume() } }
+                                .buttonStyle(.glassProminent)
+                                .controlSize(.large)
+                        }
+                        .foregroundStyle(.white)
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var display: some View {
+        if let displayView = machine.displayView {
+            MachineDisplayView(displayView: displayView)
+        }
+    }
+
+    private func progressOverlay(_ title: String) -> some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+            Text(title)
+                .font(.headline)
+        }
+        .padding(28)
+        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        .transition(.opacity)
+    }
+
+    private func placeholder(title: String, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {
+        VStack(spacing: 18) {
+            OSGlyph(os: machine.configuration.os, size: 64)
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+            }
+            Button(action: action) {
+                Label(actionTitle, systemImage: "play.fill")
+                    .padding(.horizontal, 10)
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(40)
+    }
+}
+
+/// Hosts the engine's display view (an AppKit view that the engine creates once and keeps).
+struct MachineDisplayView: NSViewRepresentable {
+    let displayView: NSView
+
+    func makeNSView(context: Context) -> DisplayContainerView {
+        let container = DisplayContainerView()
+        container.embed(displayView)
+        return container
+    }
+
+    func updateNSView(_ container: DisplayContainerView, context: Context) {
+        container.embed(displayView)
+    }
+}
+
+final class DisplayContainerView: NSView {
+    private weak var embedded: NSView?
+
+    func embed(_ view: NSView) {
+        guard embedded !== view || view.superview !== self else { return }
+        subviews.forEach { $0.removeFromSuperview() }
+        view.frame = bounds
+        view.autoresizingMask = [.width, .height]
+        addSubview(view)
+        embedded = view
+        focusGuest()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        focusGuest()
+    }
+
+    /// Keyboard input should go to the guest as soon as its display is on screen.
+    private func focusGuest() {
+        guard let embedded, let window else { return }
+        window.makeFirstResponder(embedded)
+    }
+}
+
+extension FocusedValues {
+    /// The machine shown in the focused window, for menu commands.
+    @Entry var machine: VirtualMachine?
+}

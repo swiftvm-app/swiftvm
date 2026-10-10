@@ -1,0 +1,53 @@
+{
+  "distributions": [
+    {
+      "id": "ubuntu-26.04",
+      "distribution": "ubuntu",
+      "name": "Ubuntu 26.04 LTS",
+      "summary": "Latest long-term support release",
+      "cloudImage": {
+        "url": "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img",
+        "checksumsURL": "https://cloud-images.ubuntu.com/releases/26.04/release/SHA256SUMS",
+        "checksumAlgorithm": "sha256"
+      },
+      "installers": [
+        {
+          "name": "Desktop",
+          "url": "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04.1-desktop-arm64.iso",
+          "checksumsURL": "https://cdimage.ubuntu.com/releases/26.04/release/SHA256SUMS",
+          "checksumAlgorithm": "sha256"
+        },
+        {
+          "name": "Server",
+          "url": "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04.1-live-server-arm64.iso",
+          "checksumsURL": "https://cdimage.ubuntu.com/releases/26.04/release/SHA256SUMS",
+          "checksumAlgorithm": "sha256"
+        }
+      ]
+    },
+    {
+      "id": "ubuntu-24.04",
+      "distribution": "ubuntu",
+      "name": "Ubuntu 24.04 LTS",
+      "summary": "Previous long-term support release",
+      "cloudImage": {
+        "url": "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img",
+        "checksumsURL": "https://cloud-images.ubuntu.com/releases/24.04/release/SHA256SUMS",
+        "checksumAlgorithm": "sha256"
+      },
+      "installers": []
+    },
+    {
+      "id": "debian-13",
+      "distribution": "debian",
+      "name": "Debian 13",
+      "summary": "Stable release (trixie)",
+      "cloudImage": {
+        "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2",
+        "checksumsURL": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
+        "checksumAlgorithm": "sha512"
+      },
+      "installers": []
+    }
+  ]
+}

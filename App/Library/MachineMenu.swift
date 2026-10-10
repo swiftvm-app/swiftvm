@@ -1,0 +1,72 @@
+import SwiftUI
+import VMCore
+
+/// The actions available for a machine, used by the row's “…” menu, its context menu and the window toolbar.
+struct MachineMenu: View {
+    let machine: VirtualMachine
+    /// Starts the machine and shows its window.
+    let onStart: () -> Void
+    /// Shows the machine's window; `nil` hides the item (already in that window).
+    var onOpen: (() -> Void)?
+    let onSettings: () -> Void
+    /// `nil` hides the item.
+    var onDelete: (() -> Void)?
+
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        lifecycleItems
+
+        Divider()
+        if let onOpen {
+            Button("Open Window", systemImage: "macwindow", action: onOpen)
+        }
+        Button("Settings…", systemImage: "slider.horizontal.3", action: onSettings)
+
+        Divider()
+        Button("Copy SSH Command", systemImage: "terminal") { model.copySSHCommand(for: machine) }
+            .disabled(model.sshCommand(for: machine) == nil)
+        Button("Open in Terminal", systemImage: "apple.terminal") { model.openTerminal(for: machine) }
+            .disabled(model.sshCommand(for: machine) == nil || machine.state != .running)
+        Button("Copy IP Address", systemImage: "network") {
+            guard let address = model.address(for: machine) else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(address, forType: .string)
+        }
+        .disabled(model.address(for: machine) == nil)
+
+        Divider()
+        Button("Show in Finder", systemImage: "folder") { model.revealInFinder(machine) }
+        if let onDelete {
+            Button("Delete…", systemImage: "trash", role: .destructive, action: onDelete)
+                .disabled(machine.state.isActive)
+        }
+    }
+
+    @ViewBuilder
+    private var lifecycleItems: some View {
+        switch machine.state {
+        case .stopped:
+            Button("Start", systemImage: "play", action: onStart)
+        case .suspended:
+            Button("Resume", systemImage: "play", action: onStart)
+            Button("Discard Saved State", systemImage: "arrow.counterclockwise") { machine.discardSavedState() }
+        case .running:
+            Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
+            Button("Pause", systemImage: "pause") { Task { await machine.pause() } }
+            Button("Restart", systemImage: "arrow.clockwise") { Task { await machine.restart() } }
+            Button("Shut Down", systemImage: "power") { Task { await machine.shutDown() } }
+            Button("Force Stop", systemImage: "xmark.octagon", role: .destructive) { Task { await machine.forceStop() } }
+        case .paused:
+            Button("Resume", systemImage: "play") { Task { await machine.resume() } }
+            Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
+            Button("Force Stop", systemImage: "xmark.octagon", role: .destructive) { Task { await machine.forceStop() } }
+        case .stopping:
+            // A guest that ignores the shutdown request can still be stopped.
+            Button("Force Stop", systemImage: "xmark.octagon", role: .destructive) { Task { await machine.forceStop() } }
+        case .starting, .restoring, .suspending:
+            Button(machine.state.label + "…") {}
+                .disabled(true)
+        }
+    }
+}

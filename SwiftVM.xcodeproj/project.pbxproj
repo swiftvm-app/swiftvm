@@ -1,0 +1,280 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5F0000000000000000000046 /* VMCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000032 /* VMCore */; };
+		5F0000000000000000000047 /* VZEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000033 /* VZEngine */; };
+		5F0000000000000000000048 /* VMNetworking in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000034 /* VMNetworking */; };
+		5F0000000000000000000049 /* SSHIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000035 /* SSHIntegration */; };
+		5F000000000000000000004A /* DiskTools in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000036 /* DiskTools */; };
+		5F000000000000000000004B /* Installers in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000037 /* Installers */; };
+		5F000000000000000000004C /* VMControl in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000038 /* VMControl */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		5F000000000000000000000A /* SwiftVM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftVM.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F000000000000000000000B /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		5F000000000000000000000C /* SwiftVM.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SwiftVM.entitlements; sourceTree = "<group>"; };
+		5F000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		5F0000000000000000000005 /* App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5F0000000000000000000016 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5F0000000000000000000046 /* VMCore in Frameworks */,
+				5F0000000000000000000047 /* VZEngine in Frameworks */,
+				5F0000000000000000000048 /* VMNetworking in Frameworks */,
+				5F0000000000000000000049 /* SSHIntegration in Frameworks */,
+				5F000000000000000000004A /* DiskTools in Frameworks */,
+				5F000000000000000000004B /* Installers in Frameworks */,
+				5F000000000000000000004C /* VMControl in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5F0000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				5F0000000000000000000005 /* App */,
+				5F0000000000000000000004 /* Config */,
+				5F0000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5F0000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5F000000000000000000000A /* SwiftVM.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5F0000000000000000000004 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				5F000000000000000000000B /* Base.xcconfig */,
+				5F000000000000000000000D /* Info.plist */,
+				5F000000000000000000000C /* SwiftVM.entitlements */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5F0000000000000000000014 /* SwiftVM */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5F000000000000000000001F /* Build configuration list for PBXNativeTarget "SwiftVM" */;
+			buildPhases = (
+				5F0000000000000000000015 /* Sources */,
+				5F0000000000000000000016 /* Frameworks */,
+				5F0000000000000000000017 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5F0000000000000000000005 /* App */,
+			);
+			name = SwiftVM;
+			packageProductDependencies = (
+				5F0000000000000000000032 /* VMCore */,
+				5F0000000000000000000033 /* VZEngine */,
+				5F0000000000000000000034 /* VMNetworking */,
+				5F0000000000000000000035 /* SSHIntegration */,
+				5F0000000000000000000036 /* DiskTools */,
+				5F0000000000000000000037 /* Installers */,
+				5F0000000000000000000038 /* VMControl */,
+			);
+			productName = SwiftVM;
+			productReference = 5F000000000000000000000A /* SwiftVM.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5F0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					5F0000000000000000000014 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+				};
+			};
+			buildConfigurationList = 5F000000000000000000001E /* Build configuration list for PBXProject "SwiftVM" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5F0000000000000000000002;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5F0000000000000000000028 /* XCLocalSwiftPackageReference "Packages/SwiftVMKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5F0000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5F0000000000000000000014 /* SwiftVM */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5F0000000000000000000017 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5F0000000000000000000015 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5F0000000000000000000020 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5F0000000000000000000021 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		5F0000000000000000000022 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5F000000000000000000000B /* Base.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		5F0000000000000000000023 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5F000000000000000000000B /* Base.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5F000000000000000000001E /* Build configuration list for PBXProject "SwiftVM" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F0000000000000000000020 /* Debug */,
+				5F0000000000000000000021 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5F000000000000000000001F /* Build configuration list for PBXNativeTarget "SwiftVM" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F0000000000000000000022 /* Debug */,
+				5F0000000000000000000023 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		5F0000000000000000000028 /* XCLocalSwiftPackageReference "Packages/SwiftVMKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/SwiftVMKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5F0000000000000000000032 /* VMCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VMCore;
+		};
+		5F0000000000000000000033 /* VZEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VZEngine;
+		};
+		5F0000000000000000000034 /* VMNetworking */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VMNetworking;
+		};
+		5F0000000000000000000035 /* SSHIntegration */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SSHIntegration;
+		};
+		5F0000000000000000000036 /* DiskTools */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = DiskTools;
+		};
+		5F0000000000000000000037 /* Installers */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Installers;
+		};
+		5F0000000000000000000038 /* VMControl */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VMControl;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5F0000000000000000000001 /* Project object */;
+}
