@@ -5,10 +5,12 @@ import VMCore
 struct MachineToolbar: ToolbarContent {
     let machine: VirtualMachine
     @Binding var isShowingSettings: Bool
+    @Binding var isShowingSnapshots: Bool
 
     @Environment(AppModel.self) private var model
     @State private var isShowingNetwork = false
     @State private var isShowingFolders = false
+    @State private var isShowingDrives = false
     @State private var restartNotice: RestartNotice?
 
     private enum RestartNotice: Identifiable {
@@ -24,7 +26,8 @@ struct MachineToolbar: ToolbarContent {
                 MachineMenu(
                     machine: machine,
                     onStart: { Task { await machine.start() } },
-                    onSettings: { isShowingSettings = true }
+                    onSettings: { isShowingSettings = true },
+                    onSnapshots: { isShowingSnapshots = true }
                 )
             }
             .menuIndicator(.hidden)
@@ -47,6 +50,14 @@ struct MachineToolbar: ToolbarContent {
             .help("Shared folders")
             .popover(isPresented: $isShowingFolders, arrowEdge: .bottom) {
                 SharedFoldersPopover(machine: machine)
+            }
+
+            Button("Disc and Disk Images", systemImage: machine.configuration.removableImages.isEmpty ? "opticaldisc" : "opticaldisc.fill") {
+                isShowingDrives.toggle()
+            }
+            .help("Disc and disk images")
+            .popover(isPresented: $isShowingDrives, arrowEdge: .bottom) {
+                RemovableDrivesPopover(machine: machine)
             }
         }
 
@@ -152,9 +163,22 @@ private struct NetworkPopover: View {
                 }
                 .disabled(machine.state != .running)
             }
+
+            if !machine.configuration.networkInterfaces.isEmpty {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Port Forwarding")
+                        .font(.headline)
+                    Text("Reach a port in the guest as localhost on this Mac.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                PortForwardsEditor(machine: machine)
+            }
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: 380)
     }
 
     private var isConnected: Bool {

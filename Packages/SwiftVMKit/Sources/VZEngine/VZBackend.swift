@@ -13,6 +13,7 @@ public final class VZBackend: NSObject, VMBackend {
     /// Creates a fresh attachment when an interface is plugged back in.
     private let attachmentProvider: @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment
     private var view: VZVirtualMachineView?
+    private var capturesSystemKeys: Bool
 
     init(
         vzConfiguration: VZVirtualMachineConfiguration,
@@ -21,6 +22,7 @@ public final class VZBackend: NSObject, VMBackend {
     ) {
         self.vzConfiguration = vzConfiguration
         self.machineConfiguration = machineConfiguration
+        self.capturesSystemKeys = machineConfiguration.keyboard.capturesSystemKeys
         self.attachmentProvider = attachmentProvider
         // Without an explicit queue the machine uses the main queue, matching this class's isolation.
         self.virtualMachine = VZVirtualMachine(configuration: vzConfiguration)
@@ -36,7 +38,7 @@ public final class VZBackend: NSObject, VMBackend {
         }
         let view = VZVirtualMachineView()
         view.virtualMachine = virtualMachine
-        view.capturesSystemKeys = true
+        view.capturesSystemKeys = capturesSystemKeys
         view.automaticallyReconfiguresDisplay = machineConfiguration.display.automaticallyResizes
         self.view = view
         return view
@@ -139,6 +141,26 @@ public final class VZBackend: NSObject, VMBackend {
             .compactMap { $0 as? VZVirtioFileSystemDevice }
             .first { $0.tag == tag }
         device?.share = VZConfigurationBuilder.makeShare(for: folders)
+    }
+
+    public func attachRemovableImage(_ image: RemovableImage) async throws {
+        guard let controller = virtualMachine.usbControllers.first else {
+            throw VMError.invalidConfiguration("This virtual machine has no USB controller.")
+        }
+        let drive = VZUSBMassStorageDevice(configuration: try VZConfigurationBuilder.makeRemovableDrive(for: image))
+        try await perform { controller.attach(device: drive, completionHandler: $0) }
+    }
+
+    public func detachRemovableImage(_ id: UUID) async throws {
+        guard let controller = virtualMachine.usbControllers.first,
+              let drive = controller.usbDevices.first(where: { $0.uuid == id })
+        else { return }
+        try await perform { controller.detach(device: drive, completionHandler: $0) }
+    }
+
+    public func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {
+        self.capturesSystemKeys = capturesSystemKeys
+        view?.capturesSystemKeys = capturesSystemKeys
     }
 }
 

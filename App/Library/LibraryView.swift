@@ -15,8 +15,10 @@ struct LibraryView: View {
     @Environment(\.openWindow) private var openWindow
 
     @State private var selection: UUID?
-    @State private var isCreating = false
+    @State private var creationRequest: NewMachineRequest?
+    @State private var isDropTargeted = false
     @State private var machineBeingEdited: VirtualMachine?
+    @State private var machineShowingSnapshots: VirtualMachine?
     @State private var machinePendingDeletion: VirtualMachine?
     @AppStorage("library.sortOrder") private var sortOrder = SortOrder.created
     @State private var familyFilter: GuestFamily?
@@ -51,6 +53,16 @@ struct LibraryView: View {
                 ContentUnavailableView("No Matching Machines", systemImage: "line.3.horizontal.decrease", description: Text("No virtual machine matches the current filter."))
             }
         }
+        .overlay {
+            if isDropTargeted {
+                dropHighlight
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            handleDrop(of: urls)
+        } isTargeted: { isTargeted in
+            withAnimation(.easeOut(duration: 0.15)) { isDropTargeted = isTargeted }
+        }
         .focusable()
         .focusEffectDisabled()
         .focused($isListFocused)
@@ -69,12 +81,12 @@ struct LibraryView: View {
             ToolbarSpacer(.flexible, placement: .primaryAction)
             ToolbarItemGroup(placement: .primaryAction) {
                 filterMenu
-                Button("New Virtual Machine", systemImage: "plus") { isCreating = true }
+                Button("New Virtual Machine", systemImage: "plus") { creationRequest = NewMachineRequest() }
                     .help("Create a virtual machine")
             }
         }
-        .sheet(isPresented: $isCreating) {
-            NewMachineView { machine, startsImmediately in
+        .sheet(item: $creationRequest) { request in
+            NewMachineView(request: request) { machine, startsImmediately in
                 selection = machine.id
                 if startsImmediately {
                     start(machine)
@@ -84,6 +96,16 @@ struct LibraryView: View {
         .sheet(item: $machineBeingEdited) { machine in
             MachineSettingsView(machine: machine)
         }
+        .sheet(item: $machineShowingSnapshots) { machine in
+            SnapshotsView(machine: machine)
+        }
+        .focusedSceneValue(\.machine, selectedMachine)
+        .focusedSceneValue(\.machineActions, selectedMachine.map { machine in
+            MachineActions(
+                showSettings: { machineBeingEdited = machine },
+                showSnapshots: { machineShowingSnapshots = machine }
+            )
+        })
         .confirmationDialog(
             "Delete “\(machinePendingDeletion?.name ?? "")”?",
             isPresented: Binding(get: { machinePendingDeletion != nil }, set: { if !$0 { machinePendingDeletion = nil } }),
@@ -108,7 +130,7 @@ struct LibraryView: View {
             Text(error.message)
         }
         .onReceive(NotificationCenter.default.publisher(for: .newMachineRequested)) { _ in
-            isCreating = true
+            creationRequest = NewMachineRequest()
         }
     }
 
@@ -127,12 +149,17 @@ struct LibraryView: View {
         }
     }
 
+    private var selectedMachine: VirtualMachine? {
+        selection.flatMap { model.library.machine(id: $0) }
+    }
+
     private func row(for machine: VirtualMachine) -> some View {
         let menu = MachineMenu(
             machine: machine,
             onStart: { start(machine) },
             onOpen: { open(machine) },
             onSettings: { machineBeingEdited = machine },
+            onSnapshots: { machineShowingSnapshots = machine },
             onDelete: { machinePendingDeletion = machine }
         )
         return MachineRow(machine: machine, isSelected: selection == machine.id, onStart: { start(machine) }, menu: menu)
@@ -150,7 +177,7 @@ struct LibraryView: View {
         } description: {
             Text("Create a virtual machine to run macOS, Linux or Windows on this Mac.")
         } actions: {
-            Button("New Virtual Machine") { isCreating = true }
+            Button("New Virtual Machine") { creationRequest = NewMachineRequest() }
                 .buttonStyle(.glassProminent)
         }
     }
@@ -174,6 +201,43 @@ struct LibraryView: View {
         }
         .menuIndicator(.hidden)
         .help("Sort and filter")
+    }
+
+    // MARK: Dropped files
+
+    private var dropHighlight: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(.tint, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+            .background(.tint.opacity(0.08), in: .rect(cornerRadius: 22))
+            .overlay {
+                Label("Drop an installer disc or restore image to create a virtual machine", systemImage: "plus.square.dashed")
+                    .font(.headline)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+            }
+            .padding(10)
+            .allowsHitTesting(false)
+    }
+
+    /// Takes what was dropped on the window: machines join the library, and an installer disc (ISO) or a
+    /// macOS restore image (IPSW) opens the New Virtual Machine sheet with that file chosen.
+    private func handleDrop(of urls: [URL]) -> Bool {
+        var didAccept = false
+        for url in urls where url.pathExtension == VMBundle.pathExtension {
+            do {
+                selection = try model.library.add(VMBundle(url: url)).id
+                didAccept = true
+            } catch {
+                model.generalError = VMErrorInfo(title: "Couldn't open “\(url.lastPathComponent)”", message: error.localizedDescription)
+            }
+        }
+        // One sheet at a time: the first file a machine can be made from.
+        if let request = urls.lazy.compactMap(NewMachineRequest.init(droppedFile:)).first {
+            creationRequest = request
+            didAccept = true
+        }
+        return didAccept
     }
 
     // MARK: Actions

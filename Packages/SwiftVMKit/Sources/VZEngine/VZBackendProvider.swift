@@ -26,7 +26,7 @@ public final class VZBackendProvider: VMBackendProvider {
         self.networkManager = networkManager
     }
 
-    public func makeBackend(for machine: VirtualMachine) async throws -> any VMBackend {
+    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
         let configuration = machine.configuration
         guard configuration.engine == .virtualization else {
             throw VMError.unsupportedEngine(configuration.engine)
@@ -46,7 +46,8 @@ public final class VZBackendProvider: VMBackendProvider {
             let vzConfiguration = try VZConfigurationBuilder(
                 bundle: machine.bundle,
                 configuration: configuration,
-                networkAttachments: attachments
+                networkAttachments: attachments,
+                console: console
             ).build()
             return VZBackend(
                 vzConfiguration: vzConfiguration,

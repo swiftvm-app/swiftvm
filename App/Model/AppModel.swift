@@ -16,6 +16,8 @@ final class AppModel {
     let downloader = ImageDownloader()
     let sshWriter: SSHConfigWriter
     let keyManager = SSHKeyManager()
+    /// Relays the ports that machines forward from this Mac.
+    let portForwarder = PortForwarder()
 
     /// `nil` if the virtual network couldn't be set up; machines then can't start.
     private(set) var networkManager: NetworkManager?
@@ -34,6 +36,9 @@ final class AppModel {
     /// Shows a machine's window; set by the library window, which owns the SwiftUI window actions.
     @ObservationIgnored var showMachineWindow: ((UUID) -> Void)?
     @ObservationIgnored private var controlServer: ControlServer?
+    /// The last duplication that was started. Each waits for the one before it, so that two of them can't
+    /// pick the same name or SSH alias for their copies.
+    @ObservationIgnored var lastDuplication: Task<Void, Never>?
 
     private init() {
         library = VMLibrary()
@@ -54,7 +59,11 @@ final class AppModel {
             generalError = VMErrorInfo(title: "Virtual networking isn't available", message: error.localizedDescription)
         }
 
-        library.onChange = { [weak self] in self?.syncSSHConfiguration() }
+        library.onChange = { [weak self] in
+            self?.syncSSHConfiguration()
+            self?.syncPortForwards()
+        }
+        library.onMachineResume = { [weak self] machine in self?.correctClock(of: machine) }
         // Whatever was being created when the app last quit can't be finished.
         library.removeStagedBundles()
         library.load()
@@ -67,9 +76,14 @@ final class AppModel {
     /// Lets the `swiftvm` command-line tool drive the app.
     private func startControlServer() {
         do {
-            controlServer = try ControlServer { [weak self] request in
-                await self?.handle(request) ?? .failure("SwiftVM is shutting down.")
-            }
+            controlServer = try ControlServer(
+                handler: { [weak self] request in
+                    await self?.handle(request) ?? .failure("SwiftVM is shutting down.")
+                },
+                streamHandler: { [weak self] request, connection in
+                    await self?.serveConsole(request, connection: connection)
+                }
+            )
         } catch {
             // The app works without the command-line tool; don't interrupt launch for this.
             NSLog("SwiftVM: control socket unavailable: \(error.localizedDescription)")
@@ -83,7 +97,7 @@ final class AppModel {
 
     // MARK: Networking
 
-    /// Reservations and forwards for every machine, applied when the default network is created.
+    /// The address reserved for every machine, applied when the default network is created.
     private func networkPlan() -> NetworkPlan {
         var plan = NetworkPlan()
         for machine in library.machines {
@@ -92,15 +106,56 @@ final class AppModel {
                       let address = interface.ipv4Address.flatMap(IPv4Address.init)
                 else { continue }
                 plan.reservations.append(.init(macAddress: macAddress, address: address))
-                for forward in interface.portForwards {
-                    plan.forwards.append(.init(
-                        transport: forward.transport, hostPort: forward.hostPort,
-                        guestAddress: address, guestPort: forward.guestPort
-                    ))
-                }
             }
         }
         return plan
+    }
+
+    /// Forwards a port on this Mac to a port in `machine`. Takes effect at once if the machine is running.
+    func addPortForward(_ forward: PortForward, to machine: VirtualMachine) throws {
+        guard forward.hostPort > 0, forward.guestPort > 0 else {
+            throw VMError.invalidConfiguration("Ports are numbers from 1 to 65535.")
+        }
+        guard !machine.configuration.networkInterfaces.isEmpty else {
+            throw VMError.invalidConfiguration("“\(machine.name)” has no network interface.")
+        }
+        for other in library.machines {
+            let taken = other.configuration.networkInterfaces.flatMap(\.portForwards)
+                .contains { $0.hostPort == forward.hostPort && $0.transport == forward.transport }
+            if taken {
+                let owner = other.id == machine.id ? "this virtual machine" : "“\(other.name)”"
+                throw VMError.invalidConfiguration(
+                    "\(forward.transport.rawValue.uppercased()) port \(forward.hostPort) on this Mac already leads to \(owner)."
+                )
+            }
+        }
+        try machine.updateConfiguration { $0.networkInterfaces[0].portForwards.append(forward) }
+    }
+
+    func removePortForward(_ id: UUID, from machine: VirtualMachine) throws {
+        try machine.updateConfiguration { configuration in
+            for index in configuration.networkInterfaces.indices {
+                configuration.networkInterfaces[index].portForwards.removeAll { $0.id == id }
+            }
+        }
+    }
+
+    /// Opens the forwarded ports of machines that are running and closes those of machines that aren't.
+    /// Called whenever something they depend on may have changed, and regularly to retry ports that
+    /// couldn't be opened.
+    func syncPortForwards() {
+        var routes: [UUID: PortRelay.Route] = [:]
+        for machine in library.machines where machine.state == .running || machine.state == .paused {
+            guard let address = address(for: machine).flatMap(IPv4Address.init) else { continue }
+            for forward in machine.configuration.networkInterfaces.flatMap(\.portForwards) {
+                routes[forward.id] = PortRelay.Route(
+                    transport: forward.transport, hostPort: forward.hostPort,
+                    guestAddress: address, guestPort: forward.guestPort,
+                    allowsOtherDevices: forward.allowsOtherDevices
+                )
+            }
+        }
+        portForwarder.apply(routes)
     }
 
     /// Moves every machine's reserved address along when the default network changes subnet.
@@ -168,9 +223,11 @@ final class AppModel {
             }
             updated[machine.id] = chosen.description
         }
-        guard updated != observedAddresses else { return }
-        observedAddresses = updated
-        syncSSHConfiguration()
+        if updated != observedAddresses {
+            observedAddresses = updated
+            syncSSHConfiguration()
+        }
+        syncPortForwards()
     }
 
     /// Keeps observed addresses current while machines run. Reading the small lease file is cheap.
@@ -246,9 +303,33 @@ final class AppModel {
             NSWorkspace.shared.open(url)
             return
         }
-        let script = FileManager.default.temporaryDirectory.appending(path: "swiftvm-ssh-\(alias).command")
+        runInTerminal(["exec \(command)"], scriptName: "swiftvm-ssh-\(alias)")
+    }
+
+    /// The `swiftvm` tool that ships inside the app, if this build has one.
+    var commandLineToolURL: URL? {
+        let url = Bundle.main.bundleURL.appending(path: "Contents/Helpers/swiftvm")
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
+    /// Opens a terminal window on the guest's serial console, which works without a network and before
+    /// the guest has finished starting.
+    func openSerialConsole(for machine: VirtualMachine) {
+        guard let tool = commandLineToolURL else { return }
+        var lines: [String] = []
+        // A copy of the app that keeps its data elsewhere has to be told apart by the tool as well.
+        if let home = ProcessInfo.processInfo.environment[VMLibrary.rootDirectoryEnvironmentKey], !home.isEmpty {
+            lines.append("export \(VMLibrary.rootDirectoryEnvironmentKey)=\(Self.shellQuoted(home))")
+        }
+        lines.append("exec \(Self.shellQuoted(tool.path)) console \(machine.id.uuidString)")
+        runInTerminal(lines, scriptName: "swiftvm-console-\(machine.id.uuidString.prefix(8))")
+    }
+
+    /// Runs shell commands in a new window of the user's terminal app.
+    private func runInTerminal(_ lines: [String], scriptName: String) {
+        let script = FileManager.default.temporaryDirectory.appending(path: "\(scriptName).command")
         do {
-            try "#!/bin/zsh\nexec \(command)\n".write(to: script, atomically: true, encoding: .utf8)
+            try (["#!/bin/zsh"] + lines).joined(separator: "\n").appending("\n").write(to: script, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
             NSWorkspace.shared.open(script)
         } catch {
@@ -258,6 +339,23 @@ final class AppModel {
 
     private static func shellQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Sets the clock of a guest that has just been resumed and thinks it is still the moment it was
+    /// suspended. Works for Linux guests that let the host sign in and use `sudo`; others are left to
+    /// their own time service.
+    private func correctClock(of machine: VirtualMachine) {
+        let configuration = machine.configuration
+        guard configuration.os.family == .linux, !configuration.ssh.alias.isEmpty else { return }
+        let alias = configuration.ssh.alias
+        let configURL = sshWriter.generatedConfigURL
+        Task.detached(priority: .utility) {
+            // The guest's network needs a moment to notice it is back.
+            for _ in 0..<5 {
+                if (try? GuestClock.setFromHardwareClock(on: alias, configURL: configURL)) != nil { return }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
     // MARK: Machines
@@ -308,6 +406,19 @@ final class AppModel {
 
     var activeMachines: [VirtualMachine] {
         library.machines.filter(\.state.isActive)
+    }
+
+    /// Whether a snapshot, a copy or a resize is under way on any machine.
+    var isWorkingOnMachineFiles: Bool {
+        library.machines.contains { $0.activity != nil }
+    }
+
+    /// Returns once no machine's files are being worked on. That work is short, and stopping the app in
+    /// the middle of it could leave a machine half saved.
+    func waitForWorkOnMachineFiles() async {
+        while isWorkingOnMachineFiles {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     /// Creations that are still working (not failed and waiting to be dismissed).

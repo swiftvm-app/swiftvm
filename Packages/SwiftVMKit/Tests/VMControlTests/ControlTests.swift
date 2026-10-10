@@ -48,5 +48,79 @@ import Testing
     @Test func commandsUseDashedNames() throws {
         let data = try JSONEncoder().encode(ControlRequest(command: .forceStop, machine: "vm"))
         #expect(String(decoding: data, as: UTF8.self).contains("\"force-stop\""))
+        let snapshot = try JSONEncoder().encode(ControlRequest(command: .deleteSnapshot, machine: "vm", snapshot: "Before"))
+        #expect(String(decoding: snapshot, as: UTF8.self).contains("\"delete-snapshot\""))
+    }
+
+    @Test func newerRequestsAndAnswersRoundTrip() throws {
+        let request = ControlRequest(
+            command: .forward, machine: "web",
+            forward: .init(hostPort: 8080, guestPort: 80, udp: true, allowsOtherDevices: true)
+        )
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(request)) == request)
+
+        let response = ControlResponse(ok: true, snapshots: [
+            SnapshotSummary(id: UUID(), name: "Before upgrade", createdAt: Date(timeIntervalSince1970: 1_790_000_000), includesMemory: true),
+        ])
+        #expect(try JSONDecoder().decode(ControlResponse.self, from: JSONEncoder().encode(response)) == response)
+
+        // An answer from an app that knows nothing of snapshots or details still reads.
+        let older = #"{"ok":true,"machines":[{"id":"7B0C8D56-3A8E-4B43-9C0E-0C5E7B2B8A11","name":"Web","state":"running","system":"Linux","cpuCount":2,"memorySize":1,"diskAllocated":0,"diskCapacity":1}]}"#
+        let decoded = try JSONDecoder().decode(ControlResponse.self, from: Data(older.utf8))
+        #expect(decoded.snapshots == nil)
+        #expect(decoded.machines.first?.details == nil)
+    }
+
+    @Test func onlyTheConsoleRequestOpensAStream() {
+        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console])
+    }
+
+    @Test func aStreamRequestTurnsTheConnectionIntoAPipe() async throws {
+        let socketURL = URL(fileURLWithPath: "/tmp/swiftvm-test-\(UInt32.random(in: 0...UInt32.max)).sock")
+        defer { try? FileManager.default.removeItem(at: socketURL) }
+
+        let server = try ControlServer(
+            socketURL: socketURL,
+            handler: { request in
+                request.machine == "known" ? ControlResponse(ok: true) : .failure("No virtual machine named “\(request.machine ?? "")”.")
+            },
+            streamHandler: { _, connection in
+                // Answers everything in upper case until the client hangs up.
+                var buffer = [UInt8](repeating: 0, count: 256)
+                while true {
+                    let count = read(connection, &buffer, buffer.count)
+                    guard count > 0 else { return }
+                    let reply = Array(String(decoding: buffer[0..<count], as: UTF8.self).uppercased().utf8)
+                    _ = write(connection, reply, reply.count)
+                }
+            }
+        )
+        defer { server.invalidate() }
+        let client = ControlClient(socketURL: socketURL)
+
+        let reply = try await Task.detached { () -> String in
+            let (response, descriptor) = try client.openStream(ControlRequest(command: .console, machine: "known"))
+            #expect(response.ok)
+            let stream = try #require(descriptor)
+            defer { close(stream) }
+            var received = ""
+            for word in ["hello", "console"] {
+                _ = write(stream, word, word.utf8.count)
+                var buffer = [UInt8](repeating: 0, count: 64)
+                let count = read(stream, &buffer, buffer.count)
+                received += String(decoding: buffer[0..<max(count, 0)], as: UTF8.self) + " "
+            }
+            return received
+        }.value
+        #expect(reply == "HELLO CONSOLE ")
+
+        // A refusal leaves nothing open, and says why.
+        let refused = try await Task.detached { try client.openStream(ControlRequest(command: .console, machine: "missing")) }.value
+        #expect(refused.descriptor == nil)
+        #expect(refused.response.error == "No virtual machine named “missing”.")
+
+        // An ordinary request to the same server is still a question and an answer.
+        let ordinary = try await Task.detached { try client.send(ControlRequest(command: .list, machine: "known")) }.value
+        #expect(ordinary.ok)
     }
 }

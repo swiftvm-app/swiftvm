@@ -48,6 +48,24 @@ public enum DiskService {
         try setRawImageSize(at: url, to: capacity)
     }
 
+    /// Grows the image at `url` to `capacity` bytes. The added space is sparse and costs nothing on the host
+    /// until the guest uses it. The machine the disk belongs to must be shut down.
+    public static func growDisk(at url: URL, format: DiskConfiguration.Format, to capacity: UInt64) throws {
+        switch format {
+        case .raw:
+            try growRawImage(at: url, to: capacity)
+        case .asif:
+            let image = try DiskImage(opening: .open(url: url, mode: .readWrite))
+            let current = UInt64(image.size)
+            guard capacity >= current else {
+                throw DiskError.cannotShrink(current: current, requested: capacity)
+            }
+            guard capacity > current, image.blockCount > 0 else { return }
+            let bytesPerBlock = current / UInt64(image.blockCount)
+            try image.truncate(blockCount: Int((capacity + bytesPerBlock - 1) / bytesPerBlock))
+        }
+    }
+
     /// Virtual size in bytes of the image at `url`.
     public static func capacity(of url: URL, format: DiskConfiguration.Format) throws -> UInt64 {
         switch format {

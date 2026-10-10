@@ -18,9 +18,57 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case delete
         /// Quit the app. Refused while a machine is running.
         case quit
+        /// Throw away a suspended machine's saved memory, so that it starts up fresh.
+        case discardState = "discard-state"
         /// Share a host folder with the machine (applies to a running guest immediately).
         case share
         case unshare
+        /// Everything the app knows about one machine.
+        case info
+        /// Plug a disc or disk image in as a USB drive (applies to a running guest immediately).
+        case attach
+        case eject
+        /// Grow the machine's disk.
+        case resize
+        /// Make a copy of a machine that is shut down.
+        case clone
+        case snapshot
+        case snapshots
+        case revert
+        case deleteSnapshot = "delete-snapshot"
+        /// Forward a port on this Mac to a port in the machine.
+        case forward
+        case unforward
+        /// Attach to the machine's serial console. After the answer, the connection carries the console's
+        /// bytes in both directions until either side closes it.
+        case console
+    }
+
+    public struct ForwardParameters: Codable, Sendable, Equatable {
+        public var hostPort: UInt16
+        /// `nil` means the same port as on the host.
+        public var guestPort: UInt16?
+        public var udp: Bool
+        /// Accept connections from other devices on the network, not only from this Mac.
+        public var allowsOtherDevices: Bool
+
+        public init(hostPort: UInt16, guestPort: UInt16? = nil, udp: Bool = false, allowsOtherDevices: Bool = false) {
+            self.hostPort = hostPort
+            self.guestPort = guestPort
+            self.udp = udp
+            self.allowsOtherDevices = allowsOtherDevices
+        }
+    }
+
+    public struct DriveParameters: Codable, Sendable, Equatable {
+        /// Absolute host path of the image. For `eject`, a file name is enough.
+        public var path: String
+        public var readOnly: Bool
+
+        public init(path: String, readOnly: Bool = false) {
+            self.path = path
+            self.readOnly = readOnly
+        }
     }
 
     public struct ShareParameters: Codable, Sendable, Equatable {
@@ -72,12 +120,36 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var machine: String?
     public var create: CreateParameters?
     public var share: ShareParameters?
+    public var drive: DriveParameters?
+    /// The name for a copy of a machine or for a new snapshot.
+    public var name: String?
+    /// Name or UUID of the snapshot the command applies to.
+    public var snapshot: String?
+    /// The disk size to grow to, in GB.
+    public var diskGigabytes: Int?
+    public var forward: ForwardParameters?
 
-    public init(command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil) {
+    public init(
+        command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
+        drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
+        forward: ForwardParameters? = nil
+    ) {
         self.command = command
         self.machine = machine
         self.create = create
         self.share = share
+        self.drive = drive
+        self.name = name
+        self.snapshot = snapshot
+        self.diskGigabytes = diskGigabytes
+        self.forward = forward
+    }
+}
+
+extension ControlRequest.Command {
+    /// Whether a successful answer is followed by a byte stream instead of further requests.
+    public var opensStream: Bool {
+        self == .console
     }
 }
 
@@ -93,10 +165,12 @@ public struct MachineSummary: Codable, Sendable, Equatable {
     public var memorySize: UInt64
     public var diskAllocated: UInt64
     public var diskCapacity: UInt64
+    /// Only filled in for `info`.
+    public var details: MachineDetails?
 
     public init(
         id: UUID, name: String, state: String, system: String, address: String?, sshAlias: String?,
-        cpuCount: Int, memorySize: UInt64, diskAllocated: UInt64, diskCapacity: UInt64
+        cpuCount: Int, memorySize: UInt64, diskAllocated: UInt64, diskCapacity: UInt64, details: MachineDetails? = nil
     ) {
         self.id = id
         self.name = name
@@ -108,6 +182,85 @@ public struct MachineSummary: Codable, Sendable, Equatable {
         self.memorySize = memorySize
         self.diskAllocated = diskAllocated
         self.diskCapacity = diskCapacity
+        self.details = details
+    }
+}
+
+/// The parts of a machine that don't fit in a table row.
+public struct MachineDetails: Codable, Sendable, Equatable {
+    public struct Drive: Codable, Sendable, Equatable {
+        public var path: String
+        public var readOnly: Bool
+
+        public init(path: String, readOnly: Bool) {
+            self.path = path
+            self.readOnly = readOnly
+        }
+    }
+
+    public struct Folder: Codable, Sendable, Equatable {
+        public var name: String
+        public var path: String
+        public var readOnly: Bool
+
+        public init(name: String, path: String, readOnly: Bool) {
+            self.name = name
+            self.path = path
+            self.readOnly = readOnly
+        }
+    }
+
+    public struct Forward: Codable, Sendable, Equatable {
+        public var hostPort: UInt16
+        public var guestPort: UInt16
+        public var udp: Bool
+        public var allowsOtherDevices: Bool
+        /// `listening`, `starting`, the reason the port couldn't be opened, or `nil` while the machine isn't running.
+        public var status: String?
+
+        public init(hostPort: UInt16, guestPort: UInt16, udp: Bool, allowsOtherDevices: Bool, status: String?) {
+            self.hostPort = hostPort
+            self.guestPort = guestPort
+            self.udp = udp
+            self.allowsOtherDevices = allowsOtherDevices
+            self.status = status
+        }
+    }
+
+    /// Where the machine's bundle is on the host.
+    public var location: String
+    public var macAddress: String?
+    public var drives: [Drive]
+    public var sharedFolders: [Folder]
+    public var forwards: [Forward]?
+    public var snapshotCount: Int
+
+    public init(
+        location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
+        snapshotCount: Int
+    ) {
+        self.location = location
+        self.macAddress = macAddress
+        self.drives = drives
+        self.sharedFolders = sharedFolders
+        self.forwards = forwards
+        self.snapshotCount = snapshotCount
+    }
+}
+
+/// One snapshot of a machine.
+public struct SnapshotSummary: Codable, Sendable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var createdAt: Date
+    /// Going back to it resumes the guest where it was instead of booting it.
+    public var includesMemory: Bool
+
+    public init(id: UUID, name: String, createdAt: Date, includesMemory: Bool) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.includesMemory = includesMemory
     }
 }
 
@@ -116,11 +269,14 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     public var error: String?
     /// The machines the command touched, or all of them for `list`.
     public var machines: [MachineSummary]
+    /// The machine's snapshots, for the commands that deal with them.
+    public var snapshots: [SnapshotSummary]?
 
-    public init(ok: Bool, error: String? = nil, machines: [MachineSummary] = []) {
+    public init(ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil) {
         self.ok = ok
         self.error = error
         self.machines = machines
+        self.snapshots = snapshots
     }
 
     public static func failure(_ message: String) -> ControlResponse {

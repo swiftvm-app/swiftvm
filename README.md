@@ -16,14 +16,36 @@ Early development. Working today:
 - **Networking**: an app-managed NAT network with a stable address per machine
 - **SSH from the host**: every machine gets a host alias; `swiftvm ssh <machine>` or, after turning on
   *Add machines to ~/.ssh/config* in Settings, plain `ssh <alias>`
+- **Port forwarding**: reach a port in a guest as `localhost:<port>` on the Mac, and optionally from other
+  devices on the network. Forwards can be added and removed while the guest runs
 - **Shared folders** that can be added and removed while the guest runs
+- **Disc and disk images** (ISO, raw, ASIF) plugged in as USB drives, also while the guest runs
+- **Snapshots**: save a machine as it is, running or not, and go back to it later. A running guest pauses
+  for a moment and comes back exactly where it was
+- **Duplicate** a machine in an instant; the copy shares disk space with the original until they differ
+- **Grow a disk** after the fact
 - **Suspend and resume** to disk, graceful shutdown, pause
+- **Serial console** for Linux guests, for when the network or the display isn't there
 - **`swiftvm`** command-line tool that drives the running app
 
-Planned: Windows guests (QEMU engine), USB passthrough, snapshots, guest tools.
+Planned: Windows guests (QEMU engine), USB passthrough, guest tools.
 
-Good to know: macOS guests ask on their own screen before they shut down, so *Shut Down* and `swiftvm stop`
-need someone to confirm in the machine's window. Suspend needs no confirmation.
+Good to know:
+
+- macOS guests ask on their own screen before they shut down, so *Shut Down* and `swiftvm stop` need someone
+  to confirm in the machine's window. Suspend needs no confirmation.
+- Snapshots and duplicates are instant because APFS shares the unchanged parts of the disk. On a volume
+  with another file system they are full copies.
+- A snapshot covers the machine's own disks. While a disk image that the guest can write to is attached,
+  a running machine can't be snapshotted: eject the image or shut the machine down first.
+- While the Mac is locked, a suspended machine can't be resumed: the system refuses to read its saved
+  memory. SwiftVM says so when that happens, and won't suspend a running machine for a snapshot while the
+  Mac is locked.
+- A grown disk is only bigger hardware. Linux guests set up by Quick Create grow into it at their next
+  start; other Linux guests need `growpart` and `resize2fs` or the like. macOS can't grow its startup
+  volume (its recovery system is in the way), but Disk Utility in the guest can add a volume in the new
+  space, so pick a generous size when you create a Mac. Disks only take up what the guest has written.
+
 See `docs/spikes.md` for platform findings that shaped the design.
 
 ## Build
@@ -39,20 +61,30 @@ team, see the comment at the top of `Config/Base.xcconfig`.
 
 ## Command line
 
-The app must be running.
+The `swiftvm` tool is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`. SwiftVM › Settings shows the
+command that puts it on your `PATH`. The app must be running.
 
 ```sh
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
 swiftvm create macos --name "Build Mac" --password 'a password for the account'
 swiftvm list
+swiftvm info web-server
 swiftvm ssh web-server
 swiftvm share web-server ~/Projects
+swiftvm forward web-server 8080:80          # http://localhost:8080 is the guest's port 80
+swiftvm attach web-server ~/Downloads/data.img
+swiftvm snapshot web-server "Before upgrade"
+swiftvm revert web-server "Before upgrade"
 swiftvm suspend web-server
-swiftvm start web-server
+swiftvm start web-server                    # resumes; `swiftvm discard-state` starts it fresh instead
+swiftvm console web-server                  # serial console; Control-] to leave
 swiftvm stop web-server
+swiftvm clone web-server --name "Web Server 2"
+swiftvm resize web-server 64
 ```
 
-The tool is built at `Packages/SwiftVMKit/.build/out/Products/Debug/swiftvm`.
+`swiftvm help` lists every command. `scripts/build.sh` also builds the tool on its own at
+`Packages/SwiftVMKit/.build/out/Products/Debug/swiftvm`.
 
 `swiftvm create macos` downloads the latest macOS restore image (about 25 GB) unless it is already in
 `~/Library/Caches/SwiftVM/Downloads` or you pass `--ipsw <file>`.
@@ -73,7 +105,7 @@ swiftvm quit
 
 | Path | What |
 |---|---|
-| `App/` | The SwiftUI app |
+| `App/` | The SwiftUI app, and its icon (`AppIcon.icon`, an Icon Composer document) |
 | `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, and the `swiftvm` tool |
 | `Config/` | Build settings, entitlements, Info.plist |
 | `docs/` | Notes |

@@ -17,7 +17,10 @@ private final class FakeBackend: VMBackend {
         if let startError { throw startError }
     }
 
-    func requestStop() throws {}
+    /// How many times the guest was asked to shut down.
+    var stopRequests = 0
+
+    func requestStop() throws { stopRequests += 1 }
     func stop() async throws {}
     func pause() async throws {}
     func resume() async throws {}
@@ -25,13 +28,32 @@ private final class FakeBackend: VMBackend {
     func setNetworkInterface(_ id: UUID, connected: Bool) throws {}
     func setSharedFolders(_ folders: [SharedFolder]) throws {}
     func invalidate() {}
+
+    /// Drives plugged into the running guest, in order.
+    var drives: [RemovableImage] = []
+    var driveError: (any Error)?
+    var capturesSystemKeys: Bool?
+
+    func attachRemovableImage(_ image: RemovableImage) async throws {
+        if let driveError { throw driveError }
+        drives.append(image)
+    }
+
+    func detachRemovableImage(_ id: UUID) async throws {
+        if let driveError { throw driveError }
+        drives.removeAll { $0.id == id }
+    }
+
+    func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {
+        self.capturesSystemKeys = capturesSystemKeys
+    }
 }
 
 @MainActor
 private final class FakeProvider: VMBackendProvider {
     let backend = FakeBackend()
 
-    func makeBackend(for machine: VirtualMachine) async throws -> any VMBackend { backend }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { backend }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -46,6 +68,7 @@ private final class FakeProvider: VMBackendProvider {
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
+        machine.isHostLocked = { false }
         return machine
     }
 
@@ -116,11 +139,12 @@ private final class FakeProvider: VMBackendProvider {
     private let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
     private let provider = FakeProvider()
 
-    private func makeRunningMachine() async throws -> VirtualMachine {
-        let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
+    private func makeRunningMachine(family: GuestFamily = .macOS) async throws -> VirtualMachine {
+        let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: family), cpuCount: 4, memorySize: 8 << 30, disks: [])
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
+        machine.isHostLocked = { false }
         await machine.start()
         return machine
     }
@@ -174,6 +198,38 @@ private final class FakeProvider: VMBackendProvider {
         provider.backend.eventHandler?(.guestDidStop)
         try await Task.sleep(for: .milliseconds(150))
         #expect(machine.state == .stopped)
+    }
+
+    @Test func keepsAskingAGuestThatWasNotListeningYet() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeRunningMachine(family: .linux)
+        machine.shutdownRequestTimeout = .milliseconds(400)
+        machine.shutdownRequestRepeatInterval = .milliseconds(30)
+
+        await machine.shutDown()
+        #expect(provider.backend.stopRequests == 1)
+        for _ in 0..<100 where provider.backend.stopRequests < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(provider.backend.stopRequests >= 3)
+
+        // Once the guest has gone, nobody asks any more.
+        provider.backend.eventHandler?(.guestDidStop)
+        let requests = provider.backend.stopRequests
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(provider.backend.stopRequests == requests)
+        #expect(machine.state == .stopped)
+    }
+
+    @Test func aGuestThatAsksOnItsScreenIsOnlyAskedOnce() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeRunningMachine(family: .macOS)
+        machine.shutdownRequestTimeout = .milliseconds(200)
+        machine.shutdownRequestRepeatInterval = .milliseconds(20)
+
+        await machine.shutDown()
+        await wait(for: machine, toBe: .running)
+        #expect(provider.backend.stopRequests == 1)
     }
 
     @Test func macOSGuestsAskBeforeShuttingDown() {

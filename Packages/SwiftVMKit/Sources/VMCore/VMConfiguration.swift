@@ -16,7 +16,10 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     /// Guest memory in bytes.
     public var memorySize: UInt64
     public var disks: [DiskConfiguration]
+    /// Disc and disk images plugged in as USB drives. They can be attached and ejected while the machine runs.
+    public var removableImages: [RemovableImage]
     public var display: DisplayConfiguration
+    public var keyboard: KeyboardConfiguration
     public var networkInterfaces: [NetworkInterfaceConfiguration]
     public var sharedFolders: [SharedFolder]
     public var audio: AudioConfiguration
@@ -34,7 +37,9 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         cpuCount: Int,
         memorySize: UInt64,
         disks: [DiskConfiguration],
+        removableImages: [RemovableImage] = [],
         display: DisplayConfiguration = .init(),
+        keyboard: KeyboardConfiguration = .init(),
         networkInterfaces: [NetworkInterfaceConfiguration] = [],
         sharedFolders: [SharedFolder] = [],
         audio: AudioConfiguration = .init(),
@@ -52,7 +57,9 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         self.cpuCount = cpuCount
         self.memorySize = memorySize
         self.disks = disks
+        self.removableImages = removableImages
         self.display = display
+        self.keyboard = keyboard
         self.networkInterfaces = networkInterfaces
         self.sharedFolders = sharedFolders
         self.audio = audio
@@ -77,6 +84,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         memorySize = try c.decode(UInt64.self, forKey: .memorySize)
         disks = try c.decode(.disks, default: [])
         display = try c.decode(.display, default: .init())
+        keyboard = try c.decode(.keyboard, default: .init())
         networkInterfaces = try c.decode(.networkInterfaces, default: [])
         sharedFolders = try c.decode(.sharedFolders, default: [])
         audio = try c.decode(.audio, default: .init())
@@ -85,6 +93,22 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         ssh = try c.decode(.ssh, default: .init())
         installation = try c.decode(.installation, default: .init())
         createdAt = try c.decode(.createdAt, default: Date())
+        if c.contains(.removableImages) {
+            removableImages = try c.decode([RemovableImage].self, forKey: .removableImages)
+        } else {
+            // Before removable images existed, the one installer disc was part of the installation section.
+            // It takes the machine's identifier so that it is the same drive every time this is read.
+            let legacy = try c.decodeIfPresent(LegacyInstallation.self, forKey: .installation)
+            if let path = legacy?.installMediaPath {
+                removableImages = [RemovableImage(id: id, path: path, readOnly: true)]
+            } else {
+                removableImages = []
+            }
+        }
+    }
+
+    private struct LegacyInstallation: Decodable {
+        var installMediaPath: String?
     }
 
     /// Whether the guest mounts shared folders by itself. macOS guests always do; Linux guests do when
@@ -103,8 +127,31 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         os.family == .macOS
     }
 
+    /// Whether the guest offers a login on its serial port. Linux systems with systemd do so on their own;
+    /// macOS leaves its serial port unused.
+    public var hasSerialConsole: Bool {
+        os.family == .linux
+    }
+
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
+
+    /// The configuration of a copy of this machine: the same hardware and disks under a new identity.
+    ///
+    /// The copy gets its own network card and no address yet. Forwarded ports stay with the original,
+    /// since a port on the host can only lead to one machine, and so do drives that can be written to.
+    public func duplicated(name: String, sshAlias: String) -> VMConfiguration {
+        var copy = self
+        copy.id = UUID()
+        copy.name = name
+        copy.createdAt = Date()
+        copy.ssh.alias = sshAlias
+        copy.removableImages = removableImages.filter(\.readOnly).map { RemovableImage(path: $0.path, readOnly: true) }
+        copy.networkInterfaces = networkInterfaces.map { interface in
+            NetworkInterfaceConfiguration(networkID: interface.networkID, isConnected: interface.isConnected)
+        }
+        return copy
+    }
 
     /// Total capacity of all writable disks, in bytes.
     public var totalDiskCapacity: UInt64 {
@@ -165,6 +212,34 @@ public struct DiskConfiguration: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+/// A disc or disk image on the host that is plugged into the machine as a USB drive.
+public struct RemovableImage: Codable, Sendable, Hashable, Identifiable {
+    /// Also identifies the USB device to the guest, so a suspended machine finds its drives again.
+    public var id: UUID
+    /// Absolute host path of the image.
+    public var path: String
+    public var readOnly: Bool
+
+    public init(id: UUID = UUID(), path: String, readOnly: Bool) {
+        self.id = id
+        self.path = path
+        self.readOnly = readOnly
+    }
+
+    /// Attaches the image at `url`. Disc images (ISO) can't be written to, whatever is asked for.
+    public init(url: URL, readOnly: Bool = false) {
+        self.init(path: url.standardizedFileURL.path, readOnly: readOnly || Self.isDiscImage(url))
+    }
+
+    public var url: URL { URL(fileURLWithPath: path) }
+    /// The file name, which is how the image is shown.
+    public var name: String { url.lastPathComponent }
+
+    public static func isDiscImage(_ url: URL) -> Bool {
+        ["iso", "cdr"].contains(url.pathExtension.lowercased())
+    }
+}
+
 // MARK: - Display
 
 public struct DisplayConfiguration: Codable, Sendable, Hashable {
@@ -183,6 +258,15 @@ public struct DisplayConfiguration: Codable, Sendable, Hashable {
 
     /// A Retina display the size of the default machine window, for macOS guests.
     public static let macOS = DisplayConfiguration(widthInPixels: 2560, heightInPixels: 1600, pixelsPerInch: 220)
+}
+
+public struct KeyboardConfiguration: Codable, Sendable, Hashable {
+    /// Send shortcuts such as Command-Tab to the guest instead of the host while its window has focus.
+    public var capturesSystemKeys: Bool
+
+    public init(capturesSystemKeys: Bool = true) {
+        self.capturesSystemKeys = capturesSystemKeys
+    }
 }
 
 // MARK: - Networking
@@ -226,14 +310,36 @@ public struct PortForward: Codable, Sendable, Hashable, Identifiable {
 
     public var id: UUID
     public var transport: TransportProtocol
+    /// The port on this Mac.
     public var hostPort: UInt16
+    /// The port in the guest that it leads to.
     public var guestPort: UInt16
+    /// Accept connections from other devices on the network, not only from this Mac.
+    public var allowsOtherDevices: Bool
 
-    public init(id: UUID = UUID(), transport: TransportProtocol = .tcp, hostPort: UInt16, guestPort: UInt16) {
+    public init(
+        id: UUID = UUID(), transport: TransportProtocol = .tcp, hostPort: UInt16, guestPort: UInt16,
+        allowsOtherDevices: Bool = false
+    ) {
         self.id = id
         self.transport = transport
         self.hostPort = hostPort
         self.guestPort = guestPort
+        self.allowsOtherDevices = allowsOtherDevices
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(.id, default: UUID())
+        transport = try c.decode(.transport, default: .tcp)
+        hostPort = try c.decode(UInt16.self, forKey: .hostPort)
+        guestPort = try c.decode(UInt16.self, forKey: .guestPort)
+        allowsOtherDevices = try c.decode(.allowsOtherDevices, default: false)
+    }
+
+    /// `8080 → 80`, or `8080 → 80 (UDP)`.
+    public var summary: String {
+        "\(hostPort) → \(guestPort)" + (transport == .udp ? " (UDP)" : "")
     }
 }
 
@@ -321,17 +427,20 @@ public struct SSHConfiguration: Codable, Sendable, Hashable {
 }
 
 public struct InstallationConfiguration: Codable, Sendable, Hashable {
-    /// Absolute path of installer media (ISO) attached as a USB drive until ejected.
-    public var installMediaPath: String?
     /// Attach `seed.iso` from the bundle (cloud-init / unattended setup data).
     public var attachesSeedImage: Bool
     /// The guest finished its first-boot setup.
     public var isProvisioned: Bool
 
-    public init(installMediaPath: String? = nil, attachesSeedImage: Bool = false, isProvisioned: Bool = false) {
-        self.installMediaPath = installMediaPath
+    public init(attachesSeedImage: Bool = false, isProvisioned: Bool = false) {
         self.attachesSeedImage = attachesSeedImage
         self.isProvisioned = isProvisioned
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        attachesSeedImage = try c.decode(.attachesSeedImage, default: false)
+        isProvisioned = try c.decode(.isProvisioned, default: false)
     }
 }
 

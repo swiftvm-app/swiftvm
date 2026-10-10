@@ -48,6 +48,10 @@ public struct CloudInitSeed: Sendable, Hashable {
     // MARK: Documents
 
     public var metaData: String {
+        Self.metaData(instanceID: instanceID, hostName: hostName)
+    }
+
+    static func metaData(instanceID: String, hostName: String) -> String {
         """
         instance-id: \(yaml(instanceID))
         local-hostname: \(yaml(hostName))
@@ -123,8 +127,11 @@ public struct CloudInitSeed: Sendable, Hashable {
     /// The interface identifies itself to DHCP by MAC address. The default (a generated client ID) would
     /// never match the host's MAC-based address reservation.
     public var networkConfig: String? {
-        guard let macAddress else { return nil }
-        return """
+        macAddress.map(Self.networkConfig)
+    }
+
+    static func networkConfig(macAddress: String) -> String {
+        """
         version: 2
         ethernets:
           primary:
@@ -140,13 +147,48 @@ public struct CloudInitSeed: Sendable, Hashable {
     /// Writes the seed ISO (volume label `cidata`) at `url`.
     public func writeImage(to url: URL) throws {
         var files: [String: Data] = [
-            "meta-data": Data(metaData.utf8),
-            "user-data": Data(userData.utf8),
+            Self.metaDataFileName: Data(metaData.utf8),
+            Self.userDataFileName: Data(userData.utf8),
         ]
         if let networkConfig {
-            files["network-config"] = Data(networkConfig.utf8)
+            files[Self.networkConfigFileName] = Data(networkConfig.utf8)
         }
-        try ISOImageBuilder.makeISO(volumeName: "cidata", files: files, at: url)
+        try ISOImageBuilder.makeISO(volumeName: Self.volumeName, files: files, at: url)
+    }
+
+    // MARK: Copies
+
+    static let volumeName = "cidata"
+    static let metaDataFileName = "meta-data"
+    static let userDataFileName = "user-data"
+    static let networkConfigFileName = "network-config"
+
+    /// Rewrites the seed image at `url` for a copy of the machine it was written for.
+    ///
+    /// The copy shares the original's disk, so as far as it knows it *is* the original. A new instance ID
+    /// makes cloud-init treat the next start as a first boot: it takes the new host name, configures the
+    /// network for the new MAC address and generates SSH host keys of its own.
+    ///
+    /// The account is left out of the new seed. It is on the copied disk already, as it is today, and
+    /// setting it up again would bring back the password and sign-in rules of the day the original was made.
+    public static func reissue(at url: URL, hostName: String, macAddress: String?, instanceID: String = UUID().uuidString.lowercased()) throws {
+        let userData = try ISOImageBuilder.text(of: userDataFileName, in: url)
+        var files: [String: Data] = [
+            metaDataFileName: Data(metaData(instanceID: instanceID, hostName: hostName).utf8),
+            userDataFileName: Data(removingAccountSetup(from: replacingHostName(in: userData, with: hostName)).utf8),
+        ]
+        if let macAddress {
+            files[networkConfigFileName] = Data(networkConfig(macAddress: macAddress).utf8)
+        }
+        try ISOImageBuilder.makeISO(volumeName: volumeName, files: files, at: url)
+    }
+
+    /// Changes the `hostname:` line of a cloud-config document written by ``userData``.
+    static func replacingHostName(in userData: String, with hostName: String) -> String {
+        userData
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.hasPrefix("hostname:") ? "hostname: \(yaml(hostName))" : String($0) }
+            .joined(separator: "\n")
     }
 
     // MARK: Helpers
@@ -159,8 +201,35 @@ public struct CloudInitSeed: Sendable, Hashable {
             + " --magic '\(magic)' --mask '\(mask)' --credentials yes --preserve no --fix-binary yes || true"
     }
 
+    /// Takes the sections that create the account and set its password out of a cloud-config document
+    /// written by ``userData``, and tells cloud-init to create no account at all (without that it would
+    /// add the image's default one).
+    static func removingAccountSetup(from userData: String) -> String {
+        let accountSections: Set<Substring> = ["users", "chpasswd", "ssh_pwauth"]
+        var lines: [String] = []
+        var isInAccountSection = false
+        for line in userData.split(separator: "\n", omittingEmptySubsequences: false) {
+            // A section starts at the left margin and runs until the next line that does.
+            if let first = line.first, first != " " {
+                let key = line.prefix { $0 != ":" }
+                isInAccountSection = accountSections.contains(key)
+                if key == "users" {
+                    lines.append("users: []")
+                }
+            }
+            if line.isEmpty || !isInAccountSection {
+                lines.append(String(line))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// Encodes a scalar as a double-quoted YAML string (JSON string syntax is valid YAML).
     private func yaml(_ value: String) -> String {
+        Self.yaml(value)
+    }
+
+    private static func yaml(_ value: String) -> String {
         let data = (try? JSONEncoder.yamlScalar.encode(value)) ?? Data("\"\"".utf8)
         return String(decoding: data, as: UTF8.self)
     }

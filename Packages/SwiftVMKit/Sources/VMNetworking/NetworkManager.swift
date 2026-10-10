@@ -9,14 +9,11 @@ public final class VmnetNetwork: @unchecked Sendable {
     public let subnet: IPv4Subnet
     /// Reservations that were applied when the network was created.
     public let reservations: [MACAddress: IPv4Address]
-    /// Port forwards that couldn't be installed, with the reason.
-    public let rejectedForwards: [NetworkPlan.Forward]
 
-    init(reference: OpaquePointer, subnet: IPv4Subnet, reservations: [MACAddress: IPv4Address], rejectedForwards: [NetworkPlan.Forward]) {
+    init(reference: OpaquePointer, subnet: IPv4Subnet, reservations: [MACAddress: IPv4Address]) {
         self.reference = reference
         self.subnet = subnet
         self.reservations = reservations
-        self.rejectedForwards = rejectedForwards
     }
 
     deinit {
@@ -24,7 +21,11 @@ public final class VmnetNetwork: @unchecked Sendable {
     }
 }
 
-/// What a network should provide when it comes up: fixed addresses and forwarded ports.
+/// What a network should provide when it comes up: a fixed address for each machine.
+///
+/// Forwarded ports are not part of this, although vmnet offers them: like reservations they can only be
+/// set while the network is created, so changing one would mean shutting down every machine. They are
+/// relayed by the app instead (``PortRelay``).
 public struct NetworkPlan: Sendable, Hashable {
     public struct Reservation: Sendable, Hashable {
         public var macAddress: MACAddress
@@ -36,26 +37,10 @@ public struct NetworkPlan: Sendable, Hashable {
         }
     }
 
-    public struct Forward: Sendable, Hashable {
-        public var transport: PortForward.TransportProtocol
-        public var hostPort: UInt16
-        public var guestAddress: IPv4Address
-        public var guestPort: UInt16
-
-        public init(transport: PortForward.TransportProtocol, hostPort: UInt16, guestAddress: IPv4Address, guestPort: UInt16) {
-            self.transport = transport
-            self.hostPort = hostPort
-            self.guestAddress = guestAddress
-            self.guestPort = guestPort
-        }
-    }
-
     public var reservations: [Reservation]
-    public var forwards: [Forward]
 
-    public init(reservations: [Reservation] = [], forwards: [Forward] = []) {
+    public init(reservations: [Reservation] = []) {
         self.reservations = reservations
-        self.forwards = forwards
     }
 }
 
@@ -76,15 +61,15 @@ public enum NetworkError: Error, LocalizedError {
 /// Owns the app-managed virtual networks that machines attach to.
 ///
 /// The default network is a NAT network with a fixed subnet. It is created when the first machine starts
-/// and released when the last one stops. Two vmnet behaviors force this: DHCP reservations and port
-/// forwards can only be set while a network is being created, and reservations stop being honored once
-/// every interface has left the network, even if the network object is kept.
+/// and released when the last one stops. Two vmnet behaviors force this: DHCP reservations can only be
+/// set while a network is being created, and they stop being honored once every interface has left the
+/// network, even if the network object is kept.
 @MainActor
 public final class NetworkManager {
     /// The subnet of the default network; persisted so guest addresses stay stable across launches.
     public private(set) var defaultSubnet: IPv4Subnet
 
-    /// Supplies the reservations and forwards to apply the next time the network is created.
+    /// Supplies the reservations to apply the next time the network is created.
     public var planProvider: (@MainActor () -> NetworkPlan)?
 
     /// Called when the default network moves to another subnet, with the old and new subnets.
@@ -245,28 +230,10 @@ public final class NetworkManager {
             }
         }
 
-        var rejected: [NetworkPlan.Forward] = []
-        var seenHostPorts: Set<String> = []
-        for forward in plan.forwards {
-            let key = "\(forward.transport.rawValue):\(forward.hostPort)"
-            guard subnet.contains(forward.guestAddress), seenHostPorts.insert(key).inserted else {
-                rejected.append(forward)
-                continue
-            }
-            var guest = forward.guestAddress.inAddr
-            let transport = UInt8(forward.transport == .tcp ? IPPROTO_TCP : IPPROTO_UDP)
-            let result = vmnet_network_configuration_add_port_forwarding_rule(
-                configuration, transport, sa_family_t(AF_INET), forward.guestPort, forward.hostPort, &guest
-            )
-            if result != .VMNET_SUCCESS {
-                rejected.append(forward)
-            }
-        }
-
         guard let reference = vmnet_network_create(configuration, &status) else {
             throw NetworkError.creationFailed(code: Int(status.rawValue), subnet: subnet)
         }
-        return VmnetNetwork(reference: reference, subnet: subnet, reservations: applied, rejectedForwards: rejected)
+        return VmnetNetwork(reference: reference, subnet: subnet, reservations: applied)
     }
 
     // MARK: Settings

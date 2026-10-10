@@ -1,9 +1,15 @@
 import SwiftUI
 import VMCore
 
-/// Menu bar commands for the machine in the focused window.
+/// Menu bar commands for the machine in the focused window, or the one selected in the library.
 struct MachineCommands: Commands {
     @FocusedValue(\.machine) private var machine
+    @FocusedValue(\.machineActions) private var actions
+
+    /// Nothing can be asked of a machine while its files are being worked on.
+    private var state: VMState? {
+        machine?.activity == nil ? machine?.state : nil
+    }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -15,7 +21,7 @@ struct MachineCommands: Commands {
         }
 
         CommandMenu("Virtual Machine") {
-            Button(machine?.state == .suspended || machine?.state == .paused ? "Resume" : "Start") {
+            Button(state == .suspended || state == .paused ? "Resume" : "Start") {
                 guard let machine else { return }
                 Task {
                     if machine.state == .paused {
@@ -26,40 +32,64 @@ struct MachineCommands: Commands {
                 }
             }
             .keyboardShortcut("r")
-            .disabled(!(machine?.state == .stopped || machine?.state == .suspended || machine?.state == .paused))
+            .disabled(!(state == .stopped || state == .suspended || state == .paused))
 
             Button("Suspend") {
                 guard let machine else { return }
                 Task { await machine.suspend() }
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
-            .disabled(!(machine?.state == .running || machine?.state == .paused))
+            .disabled(!(state == .running || state == .paused))
 
             Button("Pause") {
                 guard let machine else { return }
                 Task { await machine.pause() }
             }
-            .disabled(machine?.state != .running)
+            .disabled(state != .running)
 
             Divider()
 
             Button("Restart") {
                 guard let machine else { return }
-                Task { await machine.restart() }
+                Task { await AppModel.shared.shutDown(machine, thenRestart: true) }
             }
-            .disabled(machine?.state != .running)
+            .disabled(state != .running)
 
             Button("Shut Down") {
                 guard let machine else { return }
-                Task { await machine.shutDown() }
+                Task { await AppModel.shared.shutDown(machine) }
             }
-            .disabled(machine?.state != .running)
+            .disabled(state != .running)
 
             Button("Force Stop") {
                 guard let machine else { return }
                 Task { await machine.forceStop() }
             }
-            .disabled(machine?.state.isActive != true)
+            .disabled(state?.isActive != true)
+
+            Divider()
+
+            Button("Take Snapshot") {
+                guard let machine else { return }
+                AppModel.shared.takeSnapshotReportingErrors(of: machine)
+                // Taking one is over in a moment; the list is where it shows up and can be given a name.
+                actions?.showSnapshots()
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(state == nil || state?.isTransitioning == true)
+
+            Button("Snapshots…") { actions?.showSnapshots() }
+                .disabled(machine == nil || actions == nil)
+
+            Button("Duplicate") {
+                guard let machine else { return }
+                AppModel.shared.duplicateReportingErrors(machine)
+            }
+            .keyboardShortcut("d")
+            .disabled(state != .stopped)
+
+            Button("Settings…") { actions?.showSettings() }
+                .disabled(machine == nil || actions == nil)
 
             Divider()
 
@@ -76,6 +106,12 @@ struct MachineCommands: Commands {
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
             .disabled(machine?.state != .running)
+
+            Button("Open Serial Console") {
+                guard let machine else { return }
+                AppModel.shared.openSerialConsole(for: machine)
+            }
+            .disabled(machine?.configuration.hasSerialConsole != true || AppModel.shared.commandLineToolURL == nil)
         }
     }
 }

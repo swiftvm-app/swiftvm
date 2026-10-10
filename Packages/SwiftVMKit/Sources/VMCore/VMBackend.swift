@@ -123,6 +123,12 @@ public protocol VMBackend: AnyObject {
     func setNetworkInterface(_ id: UUID, connected: Bool) throws
     /// Replaces the folders shared with the running guest.
     func setSharedFolders(_ folders: [SharedFolder]) throws
+    /// Plugs a disc or disk image into the running guest as a USB drive.
+    func attachRemovableImage(_ image: RemovableImage) async throws
+    /// Unplugs a drive the guest started with or that was plugged in later.
+    func detachRemovableImage(_ id: UUID) async throws
+    /// Sends shortcuts such as Command-Tab to the guest, or leaves them to the host.
+    func setCapturesSystemKeys(_ capturesSystemKeys: Bool)
 
     /// Lets go of host resources (network attachments, the display) after the guest has stopped, without
     /// waiting for the backend object itself to be deallocated.
@@ -132,7 +138,8 @@ public protocol VMBackend: AnyObject {
 /// Creates backends and manages the host resources (networks, …) they hold.
 @MainActor
 public protocol VMBackendProvider: AnyObject {
-    func makeBackend(for machine: VirtualMachine) async throws -> any VMBackend
+    /// - Parameter console: The guest's end of the machine's serial console, to wire up as its serial port.
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend
     /// Called after a machine's backend is gone so shared resources can be released.
     func backendDidStop(for machine: VirtualMachine)
 }
@@ -153,6 +160,10 @@ public enum VMError: Error, LocalizedError {
     case noBackendProvider
     case unsupportedEngine(VMEngineKind)
     case invalidConfiguration(String)
+    /// Something else is being done to the machine right now.
+    case busy(name: String, VMActivity)
+    /// The operation needs the machine to be shut down.
+    case notStopped(name: String, VMState)
 
     public var errorDescription: String? {
         switch self {
@@ -162,6 +173,29 @@ public enum VMError: Error, LocalizedError {
             "The \(engine.rawValue) engine isn't available in this build."
         case .invalidConfiguration(let reason):
             reason
+        case .busy(let name, let activity):
+            "“\(name)” is busy (\(activity.label.lowercased())). Try again in a moment."
+        case .notStopped(let name, let state):
+            state == .suspended
+                ? "“\(name)” is suspended. Resume it and shut it down first."
+                : "Shut down “\(name)” first."
+        }
+    }
+}
+
+/// Work on a machine's files during which it can't be started, stopped or changed.
+public enum VMActivity: Sendable, Hashable {
+    case takingSnapshot
+    case reverting
+    case duplicating
+    case resizingDisk
+
+    public var label: String {
+        switch self {
+        case .takingSnapshot: "Taking Snapshot"
+        case .reverting: "Reverting"
+        case .duplicating: "Duplicating"
+        case .resizingDisk: "Resizing Disk"
         }
     }
 }

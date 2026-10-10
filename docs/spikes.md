@@ -132,3 +132,189 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
   restore images). The stitched file matches the original.
 - **Consequence:** `ImageDownloader` carries on after a dropped connection instead of starting a 25 GB
   download over. Resume data is kept in memory only, so quitting the app still loses a partial download.
+
+## Disc and disk images can be plugged in while a guest runs — works
+
+- **Tried:** `swiftvm attach` and `swiftvm eject` on running Ubuntu 26.04 and macOS 27.0.1 guests:
+  `VZUSBMassStorageDevice(configuration:)` handed to `VZUSBController.attach(device:)`, and `detach(device:)`
+  for the drive with the matching `uuid`. A 900 KB ISO (read-only) and a 64 MB raw image (writable).
+- **Outcome:** The drive shows up within a second or two: `sda`/`sdb` with `TRAN usb` in Linux, an external
+  disk that macOS mounts under `/Volumes` by itself. Writing a file system to the raw image, ejecting it and
+  attaching it again at the next boot gives the file back.
+- **Suspend:** A guest suspended with drives plugged in resumes with them, mounted file system included, as
+  long as the configuration it is restored with lists the same drives with the same `uuid`
+  (`VZUSBDeviceConfiguration.uuid` is generated otherwise). The app uses the image's own identifier for it.
+  A drive that was ejected before suspending must not be in that configuration, and wasn't: both ways resume.
+- **Consequence:** Drives can change while a machine is running or shut down, but not while it is
+  suspended, because the saved memory expects the drives it was saved with.
+- **Also learned:** A drive configured on the USB controller (`VZXHCIControllerConfiguration.usbDevices`)
+  rather than among the storage devices still boots: a machine with the Ubuntu desktop ISO attached that way
+  came up in the live session.
+
+## Snapshots are copies of the disk, not layers on top of it
+
+- **Considered:** DiskImageKit overlay layers (`.asifLayer(url:type: .overlay)`). They can only be stacked
+  and dropped from the top: there is no call to merge a layer into the one below, so deleting an old
+  snapshot could neither free its space nor shorten the stack, and every layer costs a lookup on each read.
+  They also only apply to ASIF disks, and Quick Create machines have raw ones.
+- **Tried instead:** Copying the disk, the firmware variables or auxiliary storage, and the saved memory with
+  `FileManager.copyItem`, which clones on APFS.
+- **Outcome:** A 31 GB macOS bundle was duplicated in 24 ms, a 26 GB Linux disk in under 0.2 s. Going back to
+  a snapshot took 0.1 s (Linux) and 0.16 s (macOS). Disks of either format work, and a snapshot can be
+  deleted without touching the others.
+- **A running guest** is suspended, copied and resumed: 0.85 s in all for a 2 GB Ubuntu guest, 4.6 s for an
+  8 GB macOS guest. That detour is deliberate. Copying the image of a paused guest would be faster, but the
+  disk image is only known to be complete on the host once the machine has let go of it, and a snapshot
+  whose memory and disk disagree corrupts the guest. Reverting brings back the same processes (a `sleep`
+  started before the snapshot was still running under the same PID) and the same plugged-in drives.
+- **Cost:** A snapshot of a running guest keeps the saved memory (302 MB for the idle 2 GB Ubuntu guest,
+  2.6 GB for the 8 GB macOS guest). On a volume that isn't APFS every copy is a full copy.
+
+## A copy of a Mac starts with a new machine identifier — works
+
+- **Tried:** Duplicating a shut-down macOS 27.0.1 machine: clone the disk and the auxiliary storage, keep the
+  hardware model, write a new `VZMacMachineIdentifier`, new MAC address.
+- **Outcome:** The copy booted and answered SSH in 13 s while the original was running next to it. The two
+  report different serial numbers, and the copy renamed itself with a "(2)" when it found the original on
+  the network.
+- **Linux copies** need more than a new MAC address when cloud-init set them up: the network configuration
+  it wrote matches the old MAC, so the copy would come up without a network. The copy's seed image gets a
+  new instance ID, host name and MAC address, which makes cloud-init treat the next start as a first boot.
+  A copy made that way came up with its own host name, reserved address and SSH host keys.
+
+## A macOS guest can't grow its startup volume
+
+- **Tried:** Growing the ASIF disk of a shut-down macOS guest from 64 to 80 GB with
+  `DiskImage.truncate(blockCount:)`, then `diskutil apfs resizeContainer disk1s2 0` in the guest.
+- **Outcome:** The guest boots and sees the larger disk, with the new space at the end. The container
+  can't take it (error -69519): the recovery container (`Apple_APFS_Recovery`, 5.4 GB) sits between them.
+  Removing that is refused while System Integrity Protection is on.
+- **What works:** `diskutil addPartition disk1s3 APFS <name> 0` (or Disk Utility) turns the new space into a
+  second volume.
+- **Linux guests set up from a cloud image** grow their root file system by themselves at the next start
+  (16 GB to 24 GB: `/dev/vda1` went from 15G to 23G).
+- **Consequence:** Resizing says per guest what happens next, and the default macOS disk stays generous
+  (128 GB, sparse).
+
+## vmnet can forward ports, but only decides once
+
+- **Tried:** `vmnet_network_configuration_add_port_forwarding_rule` for TCP 2222 → 22 and 8088 → 8000 of a
+  guest with a reserved address.
+- **Outcome:** Both work, from `127.0.0.1` and from the host's LAN address (so other devices can get in as
+  well), though not from the bridge address. No listening socket shows up in `lsof` or `netstat`. The guest
+  sees the connections coming from the host's address on the virtual network.
+- **Problem:** Like reservations, the rules are fixed when the network is created, and the network only goes
+  away when the last machine stops. Adding a forward to one machine would mean shutting down all of them.
+- **Consequence:** Forwarded ports are relayed by the app (`PortRelay`, on Network.framework): they open and
+  close while the machine runs, listen on the loopback interface only unless asked otherwise, and a port
+  that is taken is retried. A 512 MB download through a relay arrived intact at 3.9 GB/s (7.5 GB/s direct).
+
+## A finished connection reports failure before its last bytes
+
+- **Symptom:** Large transfers through the relay sometimes lost their last 3 to 400 KB.
+- **Cause:** When one side has sent everything and the other then closes, `NWConnection` moves to
+  `.failed(ENETDOWN)` while received data is still waiting to be read. The relay treated that state as the
+  end and dropped the rest.
+- **Fix:** Once a connection has been ready, its state is ignored. The end of a conversation is found by
+  reading until the receive call says complete or fails.
+
+## A resumed guest thinks no time has passed
+
+- **Seen:** After 25 s suspended, an Ubuntu guest's clock was 24 s behind; after 30 s a macOS guest's was
+  33 s behind. A guest that goes back to a snapshot is behind by the snapshot's age.
+- **macOS** puts this right by itself: 5 s after resuming the difference was gone.
+- **Ubuntu** (chrony) only nudges the clock, which for a large difference takes a very long time. The
+  guest's hardware clock is the host's clock, though, so `sudo hwclock --hctosys` fixes it at once.
+- **Consequence:** After resuming a Linux guest the app runs that over SSH where it can (key sign-in and
+  `sudo` without a password, as in guests it set up). The difference was gone within 2 s of resuming.
+
+## What Linux puts on the serial port
+
+- **Seen:** Ubuntu 26.04 starts a login prompt on `/dev/hvc0`, the port behind
+  `VZVirtioConsoleDeviceSerialPortConfiguration`, without being asked (systemd does that for the first
+  hypervisor console). Kernel messages don't go there: the cloud image boots with
+  `console=tty1 console=ttyAMA0`.
+- **Why the log looked empty:** It was started over at every start, and a guest that is resumed prints
+  nothing new. The login prompt of a cold boot was always there.
+- **Now:** The port is attached to pipes (`VZFileHandleSerialPortAttachment`) instead of a file, so it can be
+  typed into: `swiftvm console <machine>` logs in on `hvc0`. The terminal's size is picked up through the
+  escape-sequence query systemd sends, which is also why the recent output isn't replayed to a terminal
+  that connects later: it would answer queries nobody is waiting for any more.
+- **Also seen:** The login banner says `Try contacting this VM's SSH server via 'ssh vsock%3' from host`.
+  systemd already makes sshd listen on the vsock device, which is what SSH without a network (planned for
+  the guest tools phase) needs.
+
+## A terminal view inside the app — put off
+
+- **Considered:** SwiftTerm for a serial console window.
+- **Found:** Its 1.99.0 release of 8 October 2026 is a preview of 2.0 with changed APIs, and the package
+  now brings build-tool plug-ins (which `xcodebuild` won't run without a flag or a click in Xcode) and a
+  dependency of its own.
+- **Consequence:** For now the console opens in the user's terminal app through the `swiftvm` tool, which is
+  therefore built into the app (`Contents/Helpers/swiftvm`). Worth another look when SwiftTerm 2.0 is out.
+
+## A shutdown request during startup is lost
+
+- **Seen:** `swiftvm stop` three seconds after `swiftvm start` on an Ubuntu guest gave up after 90 s with the
+  guest still up. The request is the virtual power button, and nothing in the guest listens for it until
+  the system is far enough along.
+- **Fix:** While a machine is shutting down the request is repeated every 5 s. A system that is already
+  shutting down ignores the extra presses. The same stop now takes 8.5 s.
+- **Not for macOS guests:** they answer the first press with a confirmation on their screen. What further
+  presses would do to it wasn't tried, so they are asked once.
+
+## A suspended guest can't be resumed while the Mac is locked
+
+- **Symptom:** Resuming suddenly failed for every guest, Linux and macOS: `VZErrorDomain`, "The virtual
+  machine failed to restore with error “permission denied”". Suspending still worked and wrote its file.
+- **Cause:** The Mac's screen had locked two minutes earlier (`CGSSessionScreenIsLocked` in
+  `CGSessionCopyCurrentDictionary()`; nobody had touched the Mac for a while). The saved memory can't be
+  read back while the session is locked.
+- **Checked with:** The last committed build, in a data folder of its own: a new Ubuntu guest, suspended and
+  resumed, failed the same way while the screen was locked. With the screen unlocked, that build and
+  the current one had both resumed guests earlier in the day. So it isn't something this code does.
+- **After unlocking:** Guests suspended and resumed again as before, in the same build. Whether memory
+  that was saved *while* the Mac was locked resumes after unlocking wasn't seen: those files were gone by
+  then.
+- **Consequence:**
+  - A failed resume on a locked Mac says so, and doesn't suggest discarding the saved state.
+  - A snapshot of a *running* guest is refused while the Mac is locked: the guest would be suspended for
+    it and then stay down until someone unlocks. Snapshots of machines that are shut down or already
+    suspended don't need a resume and still work.
+  - `swiftvm suspend` works either way.
+
+## The disk copy of a live snapshot holds up under load
+
+- **Question:** A live snapshot copies the disk image right after the machine is stopped. For ASIF, is
+  everything the guest wrote in the file by then, or could the framework still be holding some of it?
+- **Tried:** A macOS guest writing 48 MB files in a loop (random data, a checksum file after each, `sync`),
+  snapshotted in the middle of that through the normal path. Later the machine was put back on the
+  snapshot's disk and booted from it cold, as after a power cut at that moment.
+- **Outcome:** 24 rounds on record, all six data files matched their checksum files, a 200 MB file written
+  before the load matched its checksum, and `diskutil verifyVolume` passed for the data and system volumes.
+- **With its memory:** The first run couldn't resume the snapshot, because the Mac was locked by then (see
+  above). Run again on an unlocked Mac: the snapshot took 5 s with the loop writing, and after going back
+  to it and resuming, the loop carried on from the round it had been in. Stopped a few rounds later, all
+  six files matched their checksums and the data volume verified.
+
+## What a snapshot leaves out, and the order things go back in
+
+- **A drive the guest can write to** is an image file outside the machine, and it keeps changing after a
+  snapshot. A guest brought back with its memory would still have that drive mounted as it was and write
+  old bookkeeping over newer contents. So a snapshot that would hold memory is refused while such a drive
+  is attached. Read-only images are fine, and so is a snapshot of a machine that is shut down.
+- **Going back** first copies the snapshot's files next to the machine's (the guest, if running, is still
+  untouched, so a snapshot that turns out to be unusable costs nothing), then stops the guest, removes the
+  machine's own saved memory, swaps in disks and firmware with `rename(2)`, and the snapshot's saved
+  memory last. If that is cut short, the machine ends up shut down on some disk; it never ends up with
+  memory saved next to a disk it doesn't belong to. For the same reason a cold boot deletes saved memory
+  it isn't resuming.
+
+## A copy of a cloud-init guest keeps its account as it is
+
+- **Seen coming:** The copy's seed gets a new instance ID so that cloud-init redoes the network and host
+  name. Left as it was, the seed would also redo the account: the password and sign-in rules of the day
+  the original was created, over whatever they are now.
+- **Fix:** The copy's seed has `users: []` and no password sections. The account is on the copied disk.
+- **Checked with:** An Ubuntu guest created without a password, given one later with `chpasswd`. Its copy
+  had the same password hash, `sudo` without a password, key sign-in, and no extra default account.

@@ -26,6 +26,10 @@ public enum HostResources {
         }
     }
 
+    /// The largest disk that can be asked for, in GB. Disks are sparse, so this isn't about space on the
+    /// host; it catches a size typed in the wrong unit, which can't be undone because disks don't shrink.
+    public static let maximumDiskGigabytes = 8192
+
     /// The largest memory size offered in the UI, leaving headroom for the host.
     public static var maximumGuestMemorySize: UInt64 {
         max(memorySize - 4 * gibibyte, 2 * gibibyte)

@@ -123,6 +123,29 @@ public struct ControlClient: Sendable {
     public func send(_ request: ControlRequest) throws -> ControlResponse {
         let descriptor = try ControlSocket.connect(to: socketURL)
         defer { close(descriptor) }
+        return try exchange(request, over: descriptor)
+    }
+
+    /// Sends a request that turns the connection into a byte stream, such as ``ControlRequest/Command/console``.
+    ///
+    /// If the app agrees, the returned descriptor carries the stream and is the caller's to close. If it
+    /// refuses, the descriptor is `nil` and the response says why.
+    public func openStream(_ request: ControlRequest) throws -> (response: ControlResponse, descriptor: Int32?) {
+        let descriptor = try ControlSocket.connect(to: socketURL)
+        do {
+            let response = try exchange(request, over: descriptor)
+            guard response.ok else {
+                close(descriptor)
+                return (response, nil)
+            }
+            return (response, descriptor)
+        } catch {
+            close(descriptor)
+            throw error
+        }
+    }
+
+    private func exchange(_ request: ControlRequest, over descriptor: Int32) throws -> ControlResponse {
         try ControlSocket.writeLine(JSONEncoder().encode(request), to: descriptor)
         guard let line = ControlSocket.readLine(from: descriptor) else {
             throw ControlSocketError.connectionClosed
@@ -137,12 +160,15 @@ public struct ControlClient: Sendable {
 /// Accepts control connections on a background thread and hands each request to `handler`.
 public final class ControlServer: @unchecked Sendable {
     public typealias Handler = @Sendable (ControlRequest) async -> ControlResponse
+    /// Takes over a connection as a byte stream after a stream request was answered with success. The
+    /// connection is closed when it returns.
+    public typealias StreamHandler = @Sendable (ControlRequest, Int32) async -> Void
 
     private let descriptor: Int32
     private let socketURL: URL
     private let handler: Handler
 
-    public init(socketURL: URL = ControlPaths.socket, handler: @escaping Handler) throws {
+    public init(socketURL: URL = ControlPaths.socket, handler: @escaping Handler, streamHandler: StreamHandler? = nil) throws {
         try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         self.socketURL = socketURL
         self.handler = handler
@@ -156,7 +182,7 @@ public final class ControlServer: @unchecked Sendable {
                     return
                 }
                 Task.detached {
-                    await Self.serve(connection, handler: handler)
+                    await Self.serve(connection, handler: handler, streamHandler: streamHandler)
                 }
             }
         }
@@ -174,11 +200,12 @@ public final class ControlServer: @unchecked Sendable {
         unlink(socketURL.path)
     }
 
-    private static func serve(_ connection: Int32, handler: Handler) async {
+    private static func serve(_ connection: Int32, handler: Handler, streamHandler: StreamHandler?) async {
         defer { close(connection) }
         while let line = ControlSocket.readLine(from: connection) {
+            let request = try? JSONDecoder().decode(ControlRequest.self, from: line)
             let response: ControlResponse
-            if let request = try? JSONDecoder().decode(ControlRequest.self, from: line) {
+            if let request {
                 response = await handler(request)
             } else {
                 response = .failure("The request couldn't be understood.")
@@ -187,6 +214,10 @@ public final class ControlServer: @unchecked Sendable {
             do {
                 try ControlSocket.writeLine(data, to: connection)
             } catch {
+                return
+            }
+            if let request, request.command.opensStream, response.ok {
+                await streamHandler?(request, connection)
                 return
             }
         }

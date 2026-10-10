@@ -10,6 +10,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quitting with machines running would cut their power, so offer to suspend or shut them down first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let model = AppModel.shared
+        if model.isWorkingOnMachineFiles {
+            // A snapshot, a copy or a resize is over in a moment. Let it finish, then ask again.
+            Task {
+                await model.waitForWorkOnMachineFiles()
+                sender.terminate(nil)
+            }
+            return .terminateCancel
+        }
         let creating = model.creationsInProgress
         if !creating.isEmpty {
             // An installation that is cut short has to start from the beginning.
@@ -40,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             Task {
+                // Something may have begun while the question was on the screen.
+                await model.waitForWorkOnMachineFiles()
                 for machine in active {
                     await machine.suspend()
                     // A machine that can't save its state is stopped instead, so quitting always completes.
@@ -52,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateLater
         case .alertThirdButtonReturn:
             Task {
+                await model.waitForWorkOnMachineFiles()
                 for machine in active {
                     await machine.forceStop()
                 }

@@ -209,9 +209,9 @@ extension AppModel {
             cpuCount: request.cpuCount,
             memorySize: request.memorySize,
             disks: [disk],
+            removableImages: [RemovableImage(url: mediaURL, readOnly: true)],
             networkInterfaces: [NetworkInterfaceConfiguration()],
-            ssh: SSHConfiguration(alias: uniqueAlias(for: request.name)),
-            installation: InstallationConfiguration(installMediaPath: mediaURL.path)
+            ssh: SSHConfiguration(alias: uniqueAlias(for: request.name))
         )
         let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
         do {
@@ -294,7 +294,7 @@ extension AppModel {
     ///
     /// The address is picked here rather than when creation starts: creations run side by side, and two of
     /// them must not end up with the same one.
-    private func addToLibrary(staged bundle: VMBundle) throws -> VirtualMachine {
+    func addToLibrary(staged bundle: VMBundle) throws -> VirtualMachine {
         var configuration = try bundle.loadConfiguration()
         if let index = configuration.networkInterfaces.firstIndex(where: { $0.ipv4Address == nil }) {
             configuration.networkInterfaces[index].ipv4Address = allocateAddress()?.description

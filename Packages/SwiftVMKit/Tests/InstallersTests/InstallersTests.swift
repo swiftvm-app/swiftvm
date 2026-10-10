@@ -63,6 +63,76 @@ import VMCore
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         #expect(size > 32 * 1024)
     }
+
+    @Test func aCopyOfTheMachineGetsASeedOfItsOwn() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "swiftvm-seed-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try seed.writeImage(to: url)
+        #expect(try ISOImageBuilder.text(of: "user-data", in: url) == seed.userData)
+
+        try CloudInitSeed.reissue(at: url, hostName: "ubuntu-copy", macAddress: "02:AA:BB:CC:DD:EE", instanceID: "new-456")
+        // A new instance with the new name and network card…
+        #expect(try ISOImageBuilder.text(of: "meta-data", in: url) == "instance-id: \"new-456\"\nlocal-hostname: \"ubuntu-copy\"\n")
+        let network = try ISOImageBuilder.text(of: "network-config", in: url)
+        #expect(network.contains("macaddress: \"02:aa:bb:cc:dd:ee\""))
+        #expect(!network.contains("02:1a:2b:3c:4d:5e"))
+        // …under its new name. The account isn't set up again: it is on the copied disk as it is now, and
+        // the password of the day the original was made must not come back.
+        let userData = try ISOImageBuilder.text(of: "user-data", in: url)
+        #expect(userData.contains("hostname: \"ubuntu-copy\""))
+        #expect(userData.contains("users: []"))
+        #expect(!userData.contains("p@ss: word"))
+        #expect(!userData.contains("saeed"))
+        #expect(!userData.contains("chpasswd"))
+        #expect(!userData.contains("ssh_pwauth"))
+        #expect(!userData.contains("ssh-ed25519"))
+        // Everything else is as it was.
+        #expect(userData.contains("timezone: \"Europe/Berlin\""))
+        #expect(userData.contains("growpart:\n  mode: auto\n  devices: [\"/\"]"))
+        #expect(userData.contains("  - [\"swiftvm\", \"/mnt/shared\", virtiofs, \"rw,nofail\", \"0\", \"0\"]"))
+        #expect(userData.hasPrefix("#cloud-config\n"))
+        #expect(userData.hasSuffix("\n"))
+    }
+
+    @Test func accountSectionsAreRemovedWhole() {
+        let document = """
+        #cloud-config
+        hostname: "a"
+        users:
+          - name: "me"
+            ssh_authorized_keys:
+              - "key"
+        ssh_pwauth: true
+        chpasswd:
+          expire: false
+          users:
+            - name: "me"
+              password: "secret"
+        growpart:
+          mode: auto
+        runcmd:
+          - "echo users: stay"
+
+        """
+        #expect(CloudInitSeed.removingAccountSetup(from: document) == """
+        #cloud-config
+        hostname: "a"
+        users: []
+        growpart:
+          mode: auto
+        runcmd:
+          - "echo users: stay"
+
+        """)
+        // A document without an account section is left alone.
+        #expect(CloudInitSeed.removingAccountSetup(from: "#cloud-config\nhostname: \"a\"\n") == "#cloud-config\nhostname: \"a\"\n")
+    }
+
+    @Test func onlyTheHostNameLineChanges() {
+        let document = "#cloud-config\nhostname: \"old\"\nusers:\n  - name: \"hostname: tricky\"\n"
+        #expect(CloudInitSeed.replacingHostName(in: document, with: "new")
+            == "#cloud-config\nhostname: \"new\"\nusers:\n  - name: \"hostname: tricky\"\n")
+    }
 }
 
 @Suite struct ImageDownloaderTests {

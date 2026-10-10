@@ -19,7 +19,7 @@ struct MachineRow: View {
                 Text(machine.name)
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
-                Text(Formatting.summary(of: machine))
+                Text(machine.activity.map { $0.label + "…" } ?? Formatting.summary(of: machine))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -53,11 +53,22 @@ struct MachineRow: View {
         .contentShape(.rect(cornerRadius: RowHighlight.cornerRadius))
         .onHover { isHovering = $0 }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(machine.name), \(machine.state.label)")
+        .accessibilityLabel("\(machine.name), \(machine.activity?.label ?? machine.state.label)")
     }
 
     @ViewBuilder
     private var primaryButton: some View {
+        if let activity = machine.activity {
+            ProgressView()
+                .controlSize(.small)
+                .help(activity.label)
+        } else {
+            stateButton
+        }
+    }
+
+    @ViewBuilder
+    private var stateButton: some View {
         switch machine.state {
         case .stopped, .suspended:
             iconButton("play", label: machine.state == .suspended ? "Resume" : "Start", action: onStart)

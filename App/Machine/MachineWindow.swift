@@ -26,21 +26,36 @@ struct MachineView: View {
 
     @Environment(AppModel.self) private var model
     @State private var isShowingSettings = false
+    @State private var isShowingSnapshots = false
 
     var body: some View {
         ZStack {
             Color.black
-            content
+            if let activity = machine.activity {
+                // A snapshot of a running guest suspends and resumes it; show one steady message instead
+                // of every step in between.
+                display
+                progressOverlay(activity.label + "…")
+            } else {
+                content
+            }
         }
         .frame(minWidth: 640, minHeight: 400)
         .navigationTitle(machine.name)
         .toolbar {
-            MachineToolbar(machine: machine, isShowingSettings: $isShowingSettings)
+            MachineToolbar(machine: machine, isShowingSettings: $isShowingSettings, isShowingSnapshots: $isShowingSnapshots)
         }
         .windowToolbarFullScreenVisibility(.onHover)
         .focusedSceneValue(\.machine, machine)
+        .focusedSceneValue(\.machineActions, MachineActions(
+            showSettings: { isShowingSettings = true },
+            showSnapshots: { isShowingSnapshots = true }
+        ))
         .sheet(isPresented: $isShowingSettings) {
             MachineSettingsView(machine: machine)
+        }
+        .sheet(isPresented: $isShowingSnapshots) {
+            SnapshotsView(machine: machine)
         }
         .alert(
             machine.lastError?.title ?? "",
@@ -181,7 +196,14 @@ final class DisplayContainerView: NSView {
     }
 }
 
+/// What the focused window can show for its machine, for menu commands.
+struct MachineActions {
+    var showSettings: () -> Void
+    var showSnapshots: () -> Void
+}
+
 extension FocusedValues {
-    /// The machine shown in the focused window, for menu commands.
+    /// The machine shown in the focused window, or selected in the library, for menu commands.
     @Entry var machine: VirtualMachine?
+    @Entry var machineActions: MachineActions?
 }

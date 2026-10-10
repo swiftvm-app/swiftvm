@@ -17,6 +17,8 @@ public final class VMLibrary {
     }
     /// Called whenever the set of machines or one of their configurations changes.
     @ObservationIgnored public var onChange: (@MainActor () -> Void)?
+    /// Called when a machine's guest has been resumed from saved memory.
+    @ObservationIgnored public var onMachineResume: (@MainActor (VirtualMachine) -> Void)?
 
     public init(rootDirectory: URL = VMLibrary.defaultRootDirectory) {
         self.rootDirectory = rootDirectory
@@ -119,7 +121,14 @@ public final class VMLibrary {
         let name = try bundle.loadConfiguration().name
         let destination = availableBundleURL(forName: name)
         try FileManager.default.moveItem(at: bundle.url, to: destination)
-        return try add(VMBundle(url: destination))
+        do {
+            return try add(VMBundle(url: destination))
+        } catch {
+            // Back to where the caller keeps track of it, rather than a bundle in the machines folder
+            // that the library refused.
+            try? FileManager.default.moveItem(at: destination, to: bundle.url)
+            throw error
+        }
     }
 
     /// Deletes bundles left in the staging directory by a creation that never finished, for example because
@@ -150,6 +159,9 @@ public final class VMLibrary {
         guard !machine.state.isActive else {
             throw VMError.invalidConfiguration("Stop “\(machine.name)” before deleting it.")
         }
+        if let activity = machine.activity {
+            throw VMError.busy(name: machine.name, activity)
+        }
         if movingToTrash {
             try FileManager.default.trashItem(at: machine.bundle.url, resultingItemURL: nil)
         }
@@ -163,6 +175,7 @@ public final class VMLibrary {
     private func adopt(_ machine: VirtualMachine) {
         machine.backendProvider = backendProvider
         machine.onConfigurationChange = { [weak self] _ in self?.onChange?() }
+        machine.onResume = { [weak self] machine in self?.onMachineResume?(machine) }
     }
 
     private func saveIndex() {

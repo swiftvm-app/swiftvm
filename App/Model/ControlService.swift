@@ -14,6 +14,15 @@ extension AppModel {
                 return success(machine)
             }
             return ControlResponse(ok: true, machines: library.machines.map { summary(of: $0) })
+        case .info:
+            guard let identifier = request.machine else { return .failure("Missing machine name.") }
+            guard let machine = findMachine(identifier) else { return notFound(identifier) }
+            return details(machine)
+        case .console:
+            // The stream itself is served by `serveConsole` once this answer has gone out.
+            guard let identifier = request.machine else { return .failure("Missing machine name.") }
+            guard let machine = findMachine(identifier) else { return notFound(identifier) }
+            return success(machine)
         case .create:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
             return await createMachine(parameters)
@@ -24,6 +33,9 @@ extension AppModel {
             }
             guard creationsInProgress.isEmpty else {
                 return .failure("A virtual machine is still being created.")
+            }
+            guard !isWorkingOnMachineFiles else {
+                return .failure("A virtual machine is busy with a snapshot, a copy or a resize. Try again in a moment.")
             }
             Task {
                 // Let the answer reach the caller before the app goes away.
@@ -99,7 +111,119 @@ extension AppModel {
                 return .failure("“\(share.path)” isn't shared with “\(machine.name)”.")
             }
             changeConfiguration(of: machine) { $0.sharedFolders.removeAll { $0.path == share.path } }
-        case .list, .create, .quit:
+        case .attach:
+            guard let drive = request.drive else { return .failure("Missing disk image.") }
+            do {
+                try await machine.attachImage(RemovableImage(url: URL(fileURLWithPath: drive.path), readOnly: drive.readOnly))
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return details(machine)
+        case .eject:
+            guard let drive = request.drive else { return .failure("Missing disk image.") }
+            let images = machine.configuration.removableImages
+            // A full path names one image; a bare file name is enough when only one image has it.
+            let matches = drive.path.contains("/")
+                ? images.filter { $0.path == drive.path }
+                : images.filter { $0.name == drive.path }
+            guard let image = matches.first else {
+                return .failure("“\(drive.path)” isn't attached to “\(machine.name)”.")
+            }
+            guard matches.count == 1 else {
+                return .failure("More than one attached image is called “\(drive.path)”. Give its full path.")
+            }
+            do {
+                try await machine.ejectImage(image.id)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return details(machine)
+        case .forward:
+            guard let parameters = request.forward else { return .failure("Missing port.") }
+            let forward = PortForward(
+                transport: parameters.udp ? .udp : .tcp, hostPort: parameters.hostPort,
+                guestPort: parameters.guestPort ?? parameters.hostPort, allowsOtherDevices: parameters.allowsOtherDevices
+            )
+            do {
+                try addPortForward(forward, to: machine)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            // For a running machine the port is opened right away; say so if that didn't work.
+            if machine.state == .running {
+                let deadline = ContinuousClock.now + .seconds(3)
+                while portForwarder.statuses[forward.id] ?? .starting == .starting, ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                if case .failed(let reason) = portForwarder.statuses[forward.id] {
+                    return .failure("The forward was added, but the port isn't open: \(reason) SwiftVM keeps trying while “\(machine.name)” runs.")
+                }
+            }
+            return details(machine)
+        case .unforward:
+            guard let parameters = request.forward else { return .failure("Missing port.") }
+            let transport: PortForward.TransportProtocol = parameters.udp ? .udp : .tcp
+            let forwards = machine.configuration.networkInterfaces.flatMap(\.portForwards)
+            guard let forward = forwards.first(where: { $0.hostPort == parameters.hostPort && $0.transport == transport }) else {
+                return .failure("“\(machine.name)” doesn't forward \(transport.rawValue.uppercased()) port \(parameters.hostPort).")
+            }
+            do {
+                try removePortForward(forward.id, from: machine)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return details(machine)
+        case .discardState:
+            guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
+            machine.discardSavedState()
+        case .resize:
+            guard let gigabytes = request.diskGigabytes, gigabytes > 0 else { return .failure("Missing disk size.") }
+            guard gigabytes <= HostResources.maximumDiskGigabytes else {
+                return .failure("\(gigabytes) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
+            }
+            do {
+                try await resizeDisk(of: machine, to: UInt64(gigabytes) * HostResources.gibibyte)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+        case .clone:
+            do {
+                return success(try await duplicate(machine, named: request.name))
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+        case .snapshot:
+            do {
+                try await machine.takeSnapshot(named: request.name)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            // The guest is resumed afterwards; if that failed, say so rather than report success.
+            if let error = machine.lastError {
+                machine.lastError = nil
+                return .failure("The snapshot was taken, but: \(error.title): \(error.message)")
+            }
+            return snapshots(of: machine)
+        case .snapshots:
+            return snapshots(of: machine)
+        case .revert, .deleteSnapshot:
+            guard let identifier = request.snapshot else { return .failure("Missing snapshot name.") }
+            let found = findSnapshot(identifier, of: machine)
+            guard case .success(let snapshot) = found else {
+                if case .failure(let problem) = found { return .failure(problem.message) }
+                return .failure("No such snapshot.")
+            }
+            do {
+                if request.command == .revert {
+                    try await machine.revert(to: snapshot)
+                } else {
+                    try machine.deleteSnapshot(snapshot)
+                    return snapshots(of: machine)
+                }
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+        case .list, .info, .console, .create, .quit:
             break
         }
 
@@ -109,6 +233,50 @@ extension AppModel {
             return .failure("\(error.title): \(error.message)")
         }
         return success(machine)
+    }
+
+    // MARK: Serial console
+
+    /// Connects a `swiftvm console` session to a machine's serial console and returns when the tool hangs
+    /// up. Like a cable, the session survives the machine being stopped and started.
+    nonisolated func serveConsole(_ request: ControlRequest, connection: Int32) async {
+        let target: (console: SerialConsole, name: String)? = await MainActor.run {
+            guard let machine = request.machine.flatMap(self.findMachine) else { return nil }
+            return (machine.console, machine.name)
+        }
+        guard let (console, name) = target else { return }
+
+        let writer = ConsoleClientWriter(descriptor: connection)
+        let token = console.addListener { event in
+            switch event {
+            case .output(let data):
+                writer.write(data)
+            case .connectionChanged(let isConnected):
+                writer.write(Data("\r\n[“\(name)” \(isConnected ? "is starting" : "has stopped")]\r\n".utf8))
+            }
+        }
+        if !console.isConnected {
+            writer.write(Data("[“\(name)” isn't running. The console comes to life when it starts.]\r\n".utf8))
+        }
+
+        // What is typed goes to the guest. This holds a thread, not the main actor, until the tool leaves.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Thread.detachNewThread {
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while true {
+                    let count = read(connection, &buffer, buffer.count)
+                    if count > 0 {
+                        console.send(Data(buffer[0..<count]))
+                    } else if count == 0 || errno != EINTR {
+                        break
+                    }
+                }
+                continuation.resume()
+            }
+        }
+        console.removeListener(token)
+        // The connection is closed after this returns; nothing may be written to its number any more.
+        writer.close()
     }
 
     // MARK: Creating
@@ -131,6 +299,13 @@ extension AppModel {
             }
         } else if isNameTaken(name) {
             return .failure("A virtual machine named “\(name)” already exists.")
+        }
+        // Sizes are in GB. One typed in bytes would overflow further down.
+        if let memory = parameters.memoryGigabytes, !(1...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
+            return .failure("\(memory) GB of memory is more than this Mac has. The size is in GB.")
+        }
+        if let disk = parameters.diskGigabytes, !(1...HostResources.maximumDiskGigabytes).contains(disk) {
+            return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
         }
         let cpuCount = parameters.cpuCount ?? HostResources.recommendedCPUCount(for: family)
         let memorySize = parameters.memoryGigabytes.map { UInt64($0) * HostResources.gibibyte }
@@ -216,13 +391,63 @@ extension AppModel {
     // MARK: Helpers
 
     /// Finds a machine by UUID, name or SSH alias (case-insensitive).
-    private func findMachine(_ identifier: String) -> VirtualMachine? {
+    func findMachine(_ identifier: String) -> VirtualMachine? {
         if let id = UUID(uuidString: identifier), let machine = library.machine(id: id) {
             return machine
         }
         let lowered = identifier.lowercased()
         return library.machines.first { $0.name.lowercased() == lowered }
             ?? library.machines.first { $0.configuration.ssh.alias == lowered }
+    }
+
+    private struct SnapshotLookupProblem: Error {
+        var message: String
+    }
+
+    /// Finds a snapshot by UUID or by name (case-insensitive).
+    private func findSnapshot(_ identifier: String, of machine: VirtualMachine) -> Result<VMSnapshot, SnapshotLookupProblem> {
+        if let id = UUID(uuidString: identifier), let snapshot = machine.snapshots.first(where: { $0.id == id }) {
+            return .success(snapshot)
+        }
+        let matches = machine.snapshots.filter { $0.name.lowercased() == identifier.lowercased() }
+        guard let snapshot = matches.first else {
+            return .failure(.init(message: "“\(machine.name)” has no snapshot named “\(identifier)”."))
+        }
+        guard matches.count == 1 else {
+            return .failure(.init(message: "More than one snapshot is named “\(identifier)”. Use its ID from `swiftvm snapshots`."))
+        }
+        return .success(snapshot)
+    }
+
+    private func snapshots(of machine: VirtualMachine) -> ControlResponse {
+        ControlResponse(ok: true, machines: [summary(of: machine)], snapshots: machine.snapshots.map { snapshot in
+            SnapshotSummary(id: snapshot.id, name: snapshot.name, createdAt: snapshot.createdAt, includesMemory: snapshot.includesMemory)
+        })
+    }
+
+    private func details(_ machine: VirtualMachine) -> ControlResponse {
+        let configuration = machine.configuration
+        var summary = summary(of: machine)
+        summary.details = MachineDetails(
+            location: machine.bundle.url.path,
+            macAddress: configuration.networkInterfaces.first?.macAddress,
+            drives: configuration.removableImages.map { .init(path: $0.path, readOnly: $0.readOnly) },
+            sharedFolders: configuration.sharedFolders.map { .init(name: $0.name, path: $0.path, readOnly: $0.readOnly) },
+            forwards: configuration.networkInterfaces.flatMap(\.portForwards).map { forward in
+                let status: String? = switch portForwarder.statuses[forward.id] {
+                case .listening: "listening"
+                case .starting: "starting"
+                case .failed(let reason): reason
+                case nil: nil
+                }
+                return .init(
+                    hostPort: forward.hostPort, guestPort: forward.guestPort, udp: forward.transport == .udp,
+                    allowsOtherDevices: forward.allowsOtherDevices, status: status
+                )
+            },
+            snapshotCount: machine.snapshots.count
+        )
+        return ControlResponse(ok: true, machines: [summary])
     }
 
     private func changeConfiguration(of machine: VirtualMachine, _ body: (inout VMConfiguration) -> Void) {
@@ -265,5 +490,60 @@ extension AppModel {
 
     private func notFound(_ identifier: String) -> ControlResponse {
         .failure("No virtual machine named “\(identifier)”.")
+    }
+}
+
+/// Writes console output to one `swiftvm console` session without ever holding up the guest: the writes
+/// queue up behind a slow terminal instead. A terminal that has stopped taking output altogether (a
+/// tool that was stopped or sent to the background) is cut off once too much has piled up.
+private nonisolated final class ConsoleClientWriter: @unchecked Sendable {
+    private let descriptor: Int32
+    private let queue = DispatchQueue(label: "SwiftVM console session")
+    private let lock = NSLock()
+    /// Bytes handed to ``write(_:)`` that haven't reached the terminal yet.
+    private var backlog = 0
+    /// Set when nothing more may be done with the descriptor, either way.
+    private var isFinished = false
+
+    static let backlogLimit = 4 << 20
+
+    init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    func write(_ data: Data) {
+        let isAccepted = lock.withLock {
+            guard !isFinished else { return false }
+            backlog += data.count
+            if backlog > Self.backlogLimit {
+                isFinished = true
+                // Ends the read that waits for the terminal's typing, and with it the session.
+                shutdown(descriptor, SHUT_RDWR)
+                return false
+            }
+            return true
+        }
+        guard isAccepted else { return }
+        queue.async { [self] in
+            defer { lock.withLock { backlog -= data.count } }
+            data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    guard !lock.withLock({ isFinished }) else { return }
+                    let written = Darwin.write(descriptor, bytes.baseAddress! + offset, bytes.count - offset)
+                    if written > 0 {
+                        offset += written
+                    } else if errno != EINTR {
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns once nothing more will be written, so that the descriptor can be closed.
+    func close() {
+        lock.withLock { isFinished = true }
+        queue.sync {}
     }
 }

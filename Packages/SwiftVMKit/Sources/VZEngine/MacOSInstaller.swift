@@ -30,6 +30,12 @@ public enum MacOSInstaller {
         _ = try VZMacAuxiliaryStorage(creatingStorageAt: bundle.auxiliaryStorageURL, hardwareModel: hardwareModel, options: [.allowOverwrite])
     }
 
+    /// Gives the Mac in `bundle` a new identifier (the virtual counterpart of a serial number), so that a
+    /// copy of a machine can run next to the original.
+    public nonisolated static func assignNewMachineIdentifier(to bundle: VMBundle) throws {
+        try VZMacMachineIdentifier().dataRepresentation.write(to: bundle.machineIdentifierURL, options: .atomic)
+    }
+
     /// Installs macOS from `image` onto the machine's disk. Takes several minutes.
     ///
     /// The bundle must have been prepared with ``prepare(_:for:)`` and hold the (empty) disks named in

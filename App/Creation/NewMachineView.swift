@@ -5,6 +5,32 @@ import VMCore
 import VZEngine
 import Virtualization
 
+/// A request to show the New Virtual Machine sheet, and what it starts with.
+struct NewMachineRequest: Identifiable {
+    enum Source {
+        /// Ask which system to install.
+        case chooser
+        /// A Linux installer disc image, for example one that was dropped on the library.
+        case installerDisc(URL)
+        /// A macOS restore image (IPSW).
+        case restoreImage(URL)
+    }
+
+    let id = UUID()
+    var source = Source.chooser
+
+    /// The request for a file dropped on the library, or `nil` if a machine can't be made from it.
+    init?(droppedFile url: URL) {
+        switch url.pathExtension.lowercased() {
+        case "iso": source = .installerDisc(url)
+        case "ipsw": source = .restoreImage(url)
+        default: return nil
+        }
+    }
+
+    init() {}
+}
+
 /// The sheet that creates a new virtual machine.
 struct NewMachineView: View {
     /// Called when the new machine is in the library; the flag says whether to start it right away.
@@ -12,6 +38,18 @@ struct NewMachineView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var family: GuestFamily?
+    /// The file the sheet was opened for. Going back to the chooser forgets it.
+    @State private var source: NewMachineRequest.Source
+
+    init(request: NewMachineRequest = NewMachineRequest(), onReady: @escaping (VirtualMachine, Bool) -> Void) {
+        self.onReady = onReady
+        _source = State(initialValue: request.source)
+        switch request.source {
+        case .chooser: _family = State(initialValue: nil)
+        case .installerDisc: _family = State(initialValue: .linux)
+        case .restoreImage: _family = State(initialValue: .macOS)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,15 +57,30 @@ struct NewMachineView: View {
             case nil:
                 SystemChooser(selection: $family)
             case .linux:
-                LinuxMachineForm(onBack: { family = nil }, onReady: onReady)
+                LinuxMachineForm(initialDisc: initialDisc, onBack: goBack, onReady: onReady)
             case .macOS:
-                MacMachineForm(onBack: { family = nil }, onReady: onReady)
+                MacMachineForm(initialImage: initialImage, onBack: goBack, onReady: onReady)
             case .windows:
                 // Not reachable yet: the chooser only offers systems that can be created.
                 SystemChooser(selection: $family)
             }
         }
         .frame(width: 600)
+    }
+
+    private var initialDisc: URL? {
+        if case .installerDisc(let url) = source { return url }
+        return nil
+    }
+
+    private var initialImage: URL? {
+        if case .restoreImage(let url) = source { return url }
+        return nil
+    }
+
+    private func goBack() {
+        source = .chooser
+        family = nil
     }
 }
 
@@ -102,10 +155,19 @@ private struct LinuxMachineForm: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    @State private var method = Method.quickCreate
+    @State private var method: Method
     @State private var distributionID = DistributionCatalog.quickCreate.first?.id ?? ""
     @State private var installerURL: URL?
     @State private var localISO: URL?
+
+    /// - Parameter initialDisc: An installer disc image to start with, instead of Quick Create.
+    init(initialDisc: URL? = nil, onBack: @escaping () -> Void, onReady: @escaping (VirtualMachine, Bool) -> Void) {
+        self.onBack = onBack
+        self.onReady = onReady
+        _method = State(initialValue: initialDisc == nil ? .quickCreate : .installer)
+        _installerURL = State(initialValue: initialDisc)
+        _localISO = State(initialValue: initialDisc)
+    }
     @State private var name = ""
     @State private var hasEditedName = false
     @State private var cpuCount = HostResources.recommendedCPUCount(for: .linux)
@@ -383,6 +445,8 @@ private struct MacMachineForm: View {
         case unavailable(String)
     }
 
+    /// A restore image to start with, instead of the latest macOS.
+    var initialImage: URL?
     let onBack: () -> Void
     let onReady: (VirtualMachine, Bool) -> Void
 
@@ -503,6 +567,11 @@ private struct MacMachineForm: View {
         }
         .frame(height: 620)
         .task(id: lookupAttempt) { await lookUpLatest() }
+        .task {
+            if let initialImage {
+                await useLocalImage(at: initialImage)
+            }
+        }
         .onAppear { suggestName() }
         .onChange(of: selectedImage) {
             suggestName()
@@ -593,14 +662,16 @@ private struct MacMachineForm: View {
         panel.message = "Choose a macOS restore image (IPSW) for Apple silicon."
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task {
-            do {
-                localImage = try await MacRestoreImage.load(from: url)
-                localImageProblem = nil
-                usesLocalImage = true
-            } catch {
-                localImageProblem = "“\(url.lastPathComponent)” isn't a usable restore image: \(error.localizedDescription)"
-            }
+        Task { await useLocalImage(at: url) }
+    }
+
+    private func useLocalImage(at url: URL) async {
+        do {
+            localImage = try await MacRestoreImage.load(from: url)
+            localImageProblem = nil
+            usesLocalImage = true
+        } catch {
+            localImageProblem = "“\(url.lastPathComponent)” isn't a usable restore image: \(error.localizedDescription)"
         }
     }
 

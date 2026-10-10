@@ -23,6 +23,16 @@ struct AppSettingsView: View {
                 LabeledContent("This Mac", value: model.networkManager?.defaultSubnet.hostAddress.description ?? "Unavailable")
             }
 
+            if let tool = model.commandLineToolURL {
+                Section {
+                    CopyableCommand(command: "sudo mkdir -p /usr/local/bin && sudo ln -sf \(AppSettingsView.shellQuoted(tool.path)) /usr/local/bin/swiftvm")
+                } header: {
+                    Text("Command Line")
+                } footer: {
+                    Text("The swiftvm tool creates, starts and connects to virtual machines from Terminal. It is inside the app; run this once to put it on your PATH, then try “swiftvm help”.")
+                }
+            }
+
             Section("Storage") {
                 LabeledContent("Virtual Machines") {
                     Button((model.library.machinesDirectory.path as NSString).abbreviatingWithTildeInPath) {
@@ -42,5 +52,9 @@ struct AppSettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

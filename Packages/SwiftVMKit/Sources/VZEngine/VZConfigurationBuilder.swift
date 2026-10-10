@@ -9,6 +9,7 @@ public struct VZConfigurationBuilder {
     public enum BuildError: Error, LocalizedError {
         case unsupportedGuest(GuestFamily)
         case missingFile(String)
+        case missingImage(String)
         case unsupportedHardwareModel
         case invalidMACAddress(String)
         case rosettaNotInstalled
@@ -19,6 +20,8 @@ public struct VZConfigurationBuilder {
                 "\(family.displayName) guests can't run on the Virtualization engine."
             case .missingFile(let name):
                 "The virtual machine is missing “\(name)”."
+            case .missingImage(let name):
+                "The disk image “\(name)” can't be found. Put it back, or eject it in the virtual machine's settings."
             case .unsupportedHardwareModel:
                 "This Mac can't run the macOS version installed in this virtual machine."
             case .invalidMACAddress(let address):
@@ -33,11 +36,18 @@ public struct VZConfigurationBuilder {
     public var configuration: VMConfiguration
     /// Attachments for connected interfaces, keyed by interface ID. Interfaces without an entry start unplugged.
     public var networkAttachments: [UUID: VZNetworkDeviceAttachment]
+    /// The guest's end of the machine's serial console. Without one, the serial port is written to the
+    /// console log and nothing can be typed into it.
+    public var console: SerialConsole.GuestEnd?
 
-    public init(bundle: VMBundle, configuration: VMConfiguration, networkAttachments: [UUID: VZNetworkDeviceAttachment] = [:]) {
+    public init(
+        bundle: VMBundle, configuration: VMConfiguration, networkAttachments: [UUID: VZNetworkDeviceAttachment] = [:],
+        console: SerialConsole.GuestEnd? = nil
+    ) {
         self.bundle = bundle
         self.configuration = configuration
         self.networkAttachments = networkAttachments
+        self.console = console
     }
 
     public func build() throws -> VZVirtualMachineConfiguration {
@@ -56,7 +66,9 @@ public struct VZConfigurationBuilder {
         }
 
         vz.storageDevices = try makeStorageDevices()
-        vz.usbControllers = [VZXHCIControllerConfiguration()]
+        let usbController = VZXHCIControllerConfiguration()
+        usbController.usbDevices = try configuration.removableImages.map(Self.makeRemovableDrive)
+        vz.usbControllers = [usbController]
         vz.networkDevices = try makeNetworkDevices()
         vz.directorySharingDevices = try makeDirectorySharingDevices()
         vz.audioDevices = makeAudioDevices()
@@ -211,14 +223,25 @@ public struct VZConfigurationBuilder {
             devices.append(VZVirtioBlockDeviceConfiguration(attachment: attachment))
         }
 
-        if let mediaPath = configuration.installation.installMediaPath {
-            guard FileManager.default.fileExists(atPath: mediaPath) else {
-                throw BuildError.missingFile(URL(fileURLWithPath: mediaPath).lastPathComponent)
-            }
-            let attachment = try VZDiskImageStorageDeviceAttachment(url: URL(fileURLWithPath: mediaPath), readOnly: true)
-            devices.append(VZUSBMassStorageDeviceConfiguration(attachment: attachment))
-        }
         return devices
+    }
+
+    /// A USB drive backed by a disc or disk image. It keeps the image's identifier, which a suspended
+    /// guest uses to find its drives again.
+    static func makeRemovableDrive(for image: RemovableImage) throws -> VZUSBMassStorageDeviceConfiguration {
+        guard FileManager.default.fileExists(atPath: image.path) else {
+            throw BuildError.missingImage(image.name)
+        }
+        let attachment: VZDiskImageStorageDeviceAttachment
+        if image.url.pathExtension.lowercased() == "asif" {
+            let diskImage = try DiskImage(opening: .open(url: image.url, mode: image.readOnly ? .readOnly : .readWrite))
+            attachment = try VZDiskImageStorageDeviceAttachment(diskImage: diskImage)
+        } else {
+            attachment = try VZDiskImageStorageDeviceAttachment(url: image.url, readOnly: image.readOnly)
+        }
+        let drive = VZUSBMassStorageDeviceConfiguration(attachment: attachment)
+        drive.uuid = image.id
+        return drive
     }
 
     // MARK: Network
@@ -299,11 +322,15 @@ public struct VZConfigurationBuilder {
         return [device]
     }
 
-    /// The guest's serial console is written to a log file in the bundle.
+    /// The guest's serial port (`hvc0` in Linux) is the machine's serial console.
     private func makeSerialPorts() throws -> [VZSerialPortConfiguration] {
-        try FileManager.default.createDirectory(at: bundle.logsDirectory, withIntermediateDirectories: true)
         let port = VZVirtioConsoleDeviceSerialPortConfiguration()
-        port.attachment = try VZFileSerialPortAttachment(url: bundle.consoleLogURL, append: false)
+        if let console {
+            port.attachment = VZFileHandleSerialPortAttachment(fileHandleForReading: console.input, fileHandleForWriting: console.output)
+        } else {
+            try FileManager.default.createDirectory(at: bundle.logsDirectory, withIntermediateDirectories: true)
+            port.attachment = try VZFileSerialPortAttachment(url: bundle.consoleLogURL, append: false)
+        }
         return [port]
     }
 

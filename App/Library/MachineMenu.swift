@@ -9,6 +9,7 @@ struct MachineMenu: View {
     /// Shows the machine's window; `nil` hides the item (already in that window).
     var onOpen: (() -> Void)?
     let onSettings: () -> Void
+    let onSnapshots: () -> Void
     /// `nil` hides the item.
     var onDelete: (() -> Void)?
 
@@ -22,12 +23,18 @@ struct MachineMenu: View {
             Button("Open Window", systemImage: "macwindow", action: onOpen)
         }
         Button("Settings…", systemImage: "slider.horizontal.3", action: onSettings)
+        Button("Snapshots…", systemImage: "clock.arrow.circlepath", action: onSnapshots)
+        Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicateReportingErrors(machine) }
+            .disabled(machine.state != .stopped || machine.activity != nil)
 
         Divider()
         Button("Copy SSH Command", systemImage: "terminal") { model.copySSHCommand(for: machine) }
             .disabled(model.sshCommand(for: machine) == nil)
         Button("Open in Terminal", systemImage: "apple.terminal") { model.openTerminal(for: machine) }
             .disabled(model.sshCommand(for: machine) == nil || machine.state != .running)
+        if machine.configuration.hasSerialConsole, model.commandLineToolURL != nil {
+            Button("Open Serial Console", systemImage: "cable.connector") { model.openSerialConsole(for: machine) }
+        }
         Button("Copy IP Address", systemImage: "network") {
             guard let address = model.address(for: machine) else { return }
             NSPasteboard.general.clearContents()
@@ -39,12 +46,22 @@ struct MachineMenu: View {
         Button("Show in Finder", systemImage: "folder") { model.revealInFinder(machine) }
         if let onDelete {
             Button("Delete…", systemImage: "trash", role: .destructive, action: onDelete)
-                .disabled(machine.state.isActive)
+                .disabled(machine.state.isActive || machine.activity != nil)
         }
     }
 
     @ViewBuilder
     private var lifecycleItems: some View {
+        if let activity = machine.activity {
+            Button(activity.label + "…") {}
+                .disabled(true)
+        } else {
+            stateItems
+        }
+    }
+
+    @ViewBuilder
+    private var stateItems: some View {
         switch machine.state {
         case .stopped:
             Button("Start", systemImage: "play", action: onStart)

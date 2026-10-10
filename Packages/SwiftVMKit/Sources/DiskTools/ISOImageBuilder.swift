@@ -9,6 +9,12 @@ public enum ISOImageBuilder {
     ///   - volumeName: The volume label, e.g. `cidata` for cloud-init.
     ///   - files: File name → contents.
     ///   - url: Destination; replaced if it exists.
+    /// Reads a text file from the root of the ISO at `url`.
+    public static func text(of fileName: String, in url: URL) throws -> String {
+        // bsdtar reads ISO 9660 and picks the Joliet names, which are the ones the files were written under.
+        try ProcessRunner.run("/usr/bin/tar", ["-xOf", url.path, fileName]).standardOutput
+    }
+
     public static func makeISO(volumeName: String, files: [String: Data], at url: URL) throws {
         let fileManager = FileManager.default
         let staging = fileManager.temporaryDirectory.appending(path: "swiftvm-iso-\(UUID().uuidString)", directoryHint: .isDirectory)

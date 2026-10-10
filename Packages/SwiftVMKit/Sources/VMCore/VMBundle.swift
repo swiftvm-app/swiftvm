@@ -59,6 +59,31 @@ public struct VMBundle: Sendable, Hashable {
         return bundle
     }
 
+    // MARK: Duplicating
+
+    /// Copies this machine's disks and firmware into a new bundle at `destination`, for the machine that
+    /// `configuration` describes. On APFS the copies share their blocks with the originals.
+    ///
+    /// What makes this machine itself stays behind: its identifier, saved memory, snapshots and logs. The
+    /// copy needs an identifier of its own before it starts.
+    @discardableResult
+    public func duplicate(to destination: URL, configuration: VMConfiguration) throws -> VMBundle {
+        let copy = try VMBundle.create(at: destination, configuration: configuration)
+        let fileManager = FileManager.default
+        let fileNames = configuration.disks.map(\.fileName) + [
+            auxiliaryStorageURL, hardwareModelURL, efiVariableStoreURL, seedImageURL,
+        ].map(\.lastPathComponent)
+        do {
+            for fileName in fileNames where fileManager.fileExists(atPath: url.appending(path: fileName).path) {
+                try fileManager.copyItem(at: url.appending(path: fileName), to: copy.url.appending(path: fileName))
+            }
+        } catch {
+            try? fileManager.removeItem(at: copy.url)
+            throw error
+        }
+        return copy
+    }
+
     // MARK: State on disk
 
     public var hasSavedState: Bool {
@@ -80,14 +105,14 @@ public struct VMBundle: Sendable, Hashable {
 
     // MARK: Coding
 
-    private static let encoder: JSONEncoder = {
+    static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }()
 
-    private static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder

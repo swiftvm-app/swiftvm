@@ -10,6 +10,7 @@ struct MachineSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var sshUser = ""
+    @State private var isResizingDisk = false
 
     private var configuration: VMConfiguration { machine.configuration }
     private var isActive: Bool { machine.state != .stopped }
@@ -19,9 +20,14 @@ struct MachineSettingsView: View {
             Form {
                 generalSection
                 resourcesSection
+                storageSection
                 sharingSection
                 networkSection
+                if !configuration.networkInterfaces.isEmpty {
+                    portForwardingSection
+                }
                 devicesSection
+                keyboardSection
                 if configuration.os.family == .linux {
                     bootSection
                 }
@@ -82,9 +88,29 @@ struct MachineSettingsView: View {
                         .frame(width: 56, alignment: .trailing)
                 }
             }
-            LabeledContent("Disk", value: "\(Formatting.bytes(machine.allocatedDiskSize)) used of \(Formatting.bytes(configuration.totalDiskCapacity))")
         }
         .disabled(isActive)
+    }
+
+    private var storageSection: some View {
+        Section {
+            LabeledContent("Disk") {
+                HStack {
+                    Text("\(Formatting.bytes(machine.allocatedDiskSize)) used of \(Formatting.bytes(configuration.totalDiskCapacity))")
+                    Button("Resize…") { isResizingDisk = true }
+                        .disabled(machine.state != .stopped || machine.activity != nil || configuration.systemDisk == nil)
+                        .help(machine.state == .stopped ? "Make the disk larger" : "Shut down the virtual machine to resize its disk")
+                        .popover(isPresented: $isResizingDisk, arrowEdge: .bottom) {
+                            ResizeDiskView(machine: machine)
+                        }
+                }
+            }
+            RemovableDrivesEditor(machine: machine)
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("The disk only takes up what the guest has written to it. Disc and disk images are plugged in as USB drives and can be changed while the virtual machine runs.")
+        }
     }
 
     private var sharingSection: some View {
@@ -126,25 +152,33 @@ struct MachineSettingsView: View {
         }
     }
 
+    private var portForwardingSection: some View {
+        Section {
+            PortForwardsEditor(machine: machine)
+        } header: {
+            Text("Port Forwarding")
+        } footer: {
+            Text("A forwarded port makes a service in the guest reachable as localhost on this Mac, for example localhost:8080 for a web server on port 80. The guest can always be reached at its own address without forwarding.")
+        }
+    }
+
     private var devicesSection: some View {
         Section("Devices") {
             Toggle("Sound Output", isOn: binding(\.audio.outputEnabled))
             Toggle("Microphone", isOn: binding(\.audio.inputEnabled))
             Toggle("Resize Display with Window", isOn: binding(\.display.automaticallyResizes))
-            if let mediaPath = configuration.installation.installMediaPath {
-                LabeledContent("Installer Disc") {
-                    HStack {
-                        Text(URL(fileURLWithPath: mediaPath).lastPathComponent)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Button("Eject") {
-                            update { $0.installation.installMediaPath = nil }
-                        }
-                    }
-                }
-            }
         }
         .disabled(isActive)
+    }
+
+    private var keyboardSection: some View {
+        Section {
+            Toggle("Send System Shortcuts to the Guest", isOn: binding(\.keyboard.capturesSystemKeys))
+        } header: {
+            Text("Keyboard")
+        } footer: {
+            Text("Shortcuts such as Command-Tab and Command-Space go to the guest while its window has focus. Turn this off to keep them for your Mac.")
+        }
     }
 
     private var bootSection: some View {

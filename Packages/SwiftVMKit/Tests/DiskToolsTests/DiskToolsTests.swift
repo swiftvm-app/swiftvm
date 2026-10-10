@@ -140,6 +140,25 @@ private extension Data {
         let allocated = try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize ?? 0
         #expect(allocated < 64 << 20)
     }
+
+    @Test func growsDisksOfBothFormats() throws {
+        let gibibyte: UInt64 = 1 << 30
+        for format in [DiskConfiguration.Format.raw, .asif] {
+            let url = FileManager.default.temporaryDirectory.appending(path: "swiftvm-disk-\(UUID().uuidString).\(format.rawValue)")
+            defer { try? FileManager.default.removeItem(at: url) }
+            try DiskService.createBlankDisk(at: url, capacity: 2 * gibibyte, format: format)
+
+            try DiskService.growDisk(at: url, format: format, to: 8 * gibibyte)
+            #expect(try DiskService.capacity(of: url, format: format) == 8 * gibibyte)
+            let allocated = try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize ?? 0
+            #expect(allocated < 64 << 20)
+
+            // Asking for the size it already has is fine; asking for less is refused.
+            try DiskService.growDisk(at: url, format: format, to: 8 * gibibyte)
+            #expect(throws: DiskService.DiskError.self) { try DiskService.growDisk(at: url, format: format, to: 4 * gibibyte) }
+            #expect(try DiskService.capacity(of: url, format: format) == 8 * gibibyte)
+        }
+    }
 }
 
 @Suite struct ISOImageBuilderTests {
