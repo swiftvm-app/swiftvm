@@ -1,0 +1,418 @@
+/* What every page shares: colours, type, the header and footer, buttons, and the command field. */
+
+:root {
+    /* The page is light or dark with the system, unless the visitor chose the other with the button for
+       it: then the page's root says which. Every colour that differs is written once, as light-dark(). */
+    color-scheme: light;
+    /* 1 in the dark appearance and 0 in the light one, for what isn't a colour. */
+    --dark: 0;
+    /* Whether what only shows by day, or only by night, moves. */
+    --by-day: running;
+    --by-night: paused;
+
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+    --background: light-dark(#ffffff, #111214);
+    --background-tinted: light-dark(#f5f5f7, #18191c);
+    --surface: light-dark(#ffffff, #1e1f23);
+    --text: light-dark(#1d1d1f, #f5f5f7);
+    --text-secondary: light-dark(#6e6e73, #a1a1a6);
+    --text-tertiary: light-dark(#6f6f74, #8a8a90);
+    --separator: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.12));
+    --fill: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.07));
+    --fill-strong: light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.12));
+    --accent: light-dark(#1563e8, #5aa2ff);
+    --header: light-dark(rgba(255, 255, 255, 0.78), rgba(17, 18, 20, 0.76));
+
+    --content: 1120px;
+    --gutter: 24px;
+    --header-height: 52px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --dark: 1;
+        --by-day: paused;
+        --by-night: running;
+    }
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --dark: 1;
+    --by-day: paused;
+    --by-night: running;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scroll-padding-top: calc(var(--header-height) + 16px);
+}
+
+body {
+    margin: 0;
+    background: var(--background);
+    color: var(--text);
+    font: 16px/1.55 var(--font);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+}
+
+button {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+code,
+pre {
+    font-family: var(--mono);
+}
+
+img,
+svg {
+    display: block;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+/* There for whoever has the page read out, and nowhere on the screen. */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/* The way past the header and the list of pages, for the keyboard: on the screen only when it is on it. */
+.skip-link {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 30;
+    padding: 8px 14px;
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 0 0 1px var(--separator);
+    font-size: 14px;
+    transform: translateY(-200%);
+}
+
+.skip-link:focus {
+    transform: none;
+}
+
+.symbols {
+    position: absolute;
+}
+
+.container {
+    width: 100%;
+    max-width: calc(var(--content) + 2 * var(--gutter));
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+}
+
+/* The header of every page but the landing page, whose hero has a menu bar of its own. */
+
+.site-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    height: var(--header-height);
+    border-bottom: 1px solid var(--separator);
+    background: var(--header);
+    -webkit-backdrop-filter: saturate(1.8) blur(20px);
+    backdrop-filter: saturate(1.8) blur(20px);
+}
+
+.site-header .container {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+}
+
+.site-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-right: 10px;
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.site-brand:hover {
+    text-decoration: none;
+}
+
+.site-nav {
+    display: flex;
+    gap: 2px;
+    margin-right: auto;
+}
+
+.site-nav a {
+    padding: 5px 10px;
+    border-radius: 7px;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.site-nav a:hover,
+.site-nav a[aria-current] {
+    color: var(--text);
+    text-decoration: none;
+}
+
+.site-nav a:hover {
+    background: var(--fill);
+}
+
+/* The button that turns the page from one appearance to the other: the sun by day, the moon by night.
+   It is hidden until the script that makes it work is there. */
+.appearance {
+    display: grid;
+    place-items: center;
+}
+
+.appearance svg {
+    grid-area: 1 / 1;
+    width: 16px;
+    height: 16px;
+    transition:
+        opacity 0.3s,
+        transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.appearance-sun {
+    opacity: calc(1 - var(--dark));
+    transform: rotate(calc(var(--dark) * 90deg));
+}
+
+.appearance-moon {
+    opacity: var(--dark);
+    transform: rotate(calc((var(--dark) - 1) * 90deg));
+}
+
+.site-header .appearance {
+    width: 32px;
+    height: 32px;
+    margin-right: 6px;
+    border-radius: 50%;
+    color: var(--text-secondary);
+    transition:
+        background-color 0.15s,
+        color 0.15s;
+}
+
+.site-header .appearance:hover {
+    background: var(--fill);
+    color: var(--text);
+}
+
+/* Buttons are capsules, as push buttons are on macOS. */
+
+.button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 22px;
+    border-radius: 999px;
+    font-size: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background-color 0.15s, transform 0.15s;
+}
+
+.button:hover {
+    text-decoration: none;
+}
+
+.button:active {
+    transform: scale(0.98);
+}
+
+.button-small {
+    min-height: 30px;
+    padding: 0 14px;
+    font-size: 13px;
+}
+
+.button-primary {
+    background: #1f6bf3;
+    color: #fff;
+}
+
+.button-primary:hover {
+    background: #175fe0;
+}
+
+.button-plain {
+    background: var(--fill);
+    color: var(--text);
+}
+
+.button-plain:hover {
+    background: var(--fill-strong);
+}
+
+/* A command to copy, in a field. */
+
+.command {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    padding: 5px 5px 5px 16px;
+    border: 1px solid var(--separator);
+    border-radius: 12px;
+    background: var(--surface);
+}
+
+.command code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    font-size: 13.5px;
+    line-height: 34px;
+    white-space: nowrap;
+    scrollbar-width: none;
+    background: none !important;
+}
+
+.command code::-webkit-scrollbar {
+    display: none;
+}
+
+.command-copy {
+    flex: none;
+    min-width: 64px;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 8px;
+    background: var(--fill);
+    font-size: 13px;
+    font-weight: 500;
+    transition: background-color 0.15s;
+}
+
+.command-copy:hover {
+    background: var(--fill-strong);
+}
+
+.command-copy.is-copied {
+    color: var(--accent);
+}
+
+.site-footer {
+    border-top: 1px solid var(--separator);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.site-footer .container {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 24px;
+    padding-block: 28px;
+}
+
+.site-footer p {
+    margin: 0 auto 0 0;
+}
+
+.site-footer nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+}
+
+.site-footer a {
+    color: var(--text-secondary);
+}
+
+.site-footer a:hover {
+    color: var(--text);
+}
+
+.not-found {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 6px;
+    min-height: 60vh;
+    padding: 64px var(--gutter);
+    text-align: center;
+}
+
+.not-found h1 {
+    margin: 0;
+    font-size: 34px;
+    letter-spacing: -0.02em;
+}
+
+.not-found p {
+    margin: 0 0 18px;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 560px) {
+    :root {
+        --gutter: 18px;
+    }
+}
+
+/* Too narrow for everything in the header: the way to the download is on the page itself. */
+@media (max-width: 380px) {
+    .site-header .button {
+        display: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}

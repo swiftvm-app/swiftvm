@@ -1,0 +1,1349 @@
+/* The landing page. Its hero is a Mac's desktop: the menu bar is the site's navigation, and the panel
+   that drops from SwiftVM's item is made after App/MenuBar, in the app's own points. It is night there
+   in the dark appearance and day in the light one. */
+
+/* The glass of the panel, as colours of their own, so that it turns from one appearance to the other
+   instead of jumping. */
+@property --pn-glass-top {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: transparent;
+}
+
+@property --pn-glass-upper {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: transparent;
+}
+
+@property --pn-glass-middle {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: transparent;
+}
+
+@property --pn-glass-lower {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: transparent;
+}
+
+@property --pn-glass-bottom {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: transparent;
+}
+
+/* MARK: Hero */
+
+.hero {
+    /* How much larger than life the menu bar and the panel are drawn. */
+    --scale: 1;
+    --menubar-height: 30px;
+    --panel-width: 360px;
+
+    --hero-text: light-dark(#0b2545, #ffffff);
+    --hero-text-secondary: light-dark(rgba(11, 37, 69, 0.8), rgba(255, 255, 255, 0.8));
+    --hero-text-tertiary: light-dark(rgba(11, 37, 69, 0.62), rgba(255, 255, 255, 0.58));
+    --hero-glass: light-dark(rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.13));
+    --hero-glass-hover: light-dark(rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.2));
+    --hero-glass-edge: light-dark(rgba(11, 37, 69, 0.12), rgba(255, 255, 255, 0.14));
+    --hero-field: light-dark(rgba(255, 255, 255, 0.62), rgba(5, 16, 34, 0.45));
+    --hero-chip: light-dark(rgba(11, 37, 69, 0.07), rgba(255, 255, 255, 0.12));
+    --hero-chip-hover: light-dark(rgba(11, 37, 69, 0.13), rgba(255, 255, 255, 0.2));
+    --hero-copied: light-dark(#1563e8, #9ec8ff);
+
+    /* macOS writes its menu bar in black over a light wallpaper and in white over a dark one. */
+    --menubar-text: light-dark(rgba(0, 0, 0, 0.86), #ffffff);
+    --menubar-link: light-dark(rgba(0, 0, 0, 0.66), rgba(255, 255, 255, 0.84));
+    --menubar-shadow: light-dark(rgba(255, 255, 255, 0), rgba(0, 10, 30, 0.35));
+    --menubar-hover: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.14));
+    --menubar-open: light-dark(rgba(0, 0, 0, 0.1), rgba(190, 222, 255, 0.18));
+    --menubar-ring: light-dark(rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.5));
+
+    position: relative;
+    /* Above the sections that follow, which the panel's menus may reach into. */
+    z-index: 1;
+    color: var(--hero-text);
+    transition: color 0.6s;
+}
+
+/* The ring around what the keyboard is on, in the colour of the text: the page's blue is lost on the sky. */
+.hero :focus-visible {
+    outline-color: var(--hero-text);
+}
+
+/* MARK: Sky */
+
+.sky,
+.sky-night,
+.sky-day {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+.sky-night {
+    background:
+        radial-gradient(70% 60% at 86% 12%, rgba(13, 26, 40, 0.6), transparent 72%),
+        linear-gradient(180deg, #0c2342 0%, #0e284c 44%, #1f3b62 76%, #3a5677 100%);
+}
+
+/* Each sky ends in the colour the page has under it, so that the hero has no edge: the night's stars
+   go out in the dark page, and the day goes over into the white one. */
+.sky-night::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(17, 18, 20, 0) 66%, rgba(17, 18, 20, 0.6) 86%, #111214 100%);
+}
+
+/* The day is over the night, and there in the light appearance only: the sun rises when it comes. */
+.sky-day {
+    background:
+        radial-gradient(60% 70% at 90% -10%, rgba(255, 250, 236, 0.95), rgba(255, 250, 236, 0) 70%),
+        linear-gradient(180deg, #69aef2 0%, #8fc4f7 40%, #c2dffb 76%, #ffffff 100%);
+    opacity: calc(1 - var(--dark));
+    transition: opacity 0.9s ease;
+}
+
+.stars,
+.cloud {
+    position: absolute;
+    transform: translate3d(calc(var(--pointer-x, 0) * var(--drift)), calc(var(--pointer-y, 0) * var(--drift)), 0);
+    transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.stars {
+    inset: -24px;
+    background-repeat: repeat;
+}
+
+.stars-far {
+    --drift: -4px;
+    background-image: url("/assets/stars-far.svg");
+    background-size: 420px 420px;
+}
+
+.stars-mid {
+    --drift: -9px;
+    background-image: url("/assets/stars-mid.svg");
+    background-size: 610px 610px;
+}
+
+.stars-near {
+    --drift: -16px;
+    background-image: url("/assets/stars-near.svg");
+    background-size: 890px 890px;
+}
+
+/* A cloud is a few soft puffs next to each other. */
+.cloud {
+    background:
+        radial-gradient(closest-side, #fff 25%, rgba(255, 255, 255, 0)) 2% 82% / 42% 54% no-repeat,
+        radial-gradient(closest-side, #fff 30%, rgba(255, 255, 255, 0)) 32% 34% / 46% 88% no-repeat,
+        radial-gradient(closest-side, #fff 28%, rgba(255, 255, 255, 0)) 70% 60% / 48% 72% no-repeat,
+        radial-gradient(closest-side, #fff 20%, rgba(255, 255, 255, 0)) 100% 88% / 38% 42% no-repeat;
+}
+
+.cloud-near {
+    --drift: -18px;
+    bottom: 5%;
+    left: 4%;
+    width: 520px;
+    height: 150px;
+    opacity: 0.92;
+}
+
+.cloud-mid {
+    --drift: -10px;
+    right: 6%;
+    bottom: 18%;
+    width: 420px;
+    height: 120px;
+    opacity: 0.8;
+}
+
+.cloud-far {
+    --drift: -5px;
+    bottom: 34%;
+    left: 38%;
+    width: 300px;
+    height: 84px;
+    opacity: 0.6;
+}
+
+.hero-inner {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    max-width: calc(var(--content) + 2 * var(--gutter));
+    min-height: 620px;
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+}
+
+/* MARK: Menu bar */
+
+/* As tall as the header of the other pages and with the same name and links in it, so that they stay
+   where they are from one page to the next. What is at its right is a Mac's menu bar. */
+.menubar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    height: var(--header-height);
+    border-bottom: 1px solid transparent;
+    color: var(--menubar-text);
+    text-shadow: 0 1px 3px var(--menubar-shadow);
+    transition: color 0.6s;
+}
+
+.menubar .site-brand {
+    color: inherit;
+}
+
+.menubar .site-nav a {
+    color: var(--menubar-link);
+    transition: color 0.6s;
+}
+
+.menubar .site-nav a:hover {
+    background: var(--menubar-hover);
+    color: var(--menubar-text);
+    /* At once under the pointer. The slow change is for the turn from night to day. */
+    transition-duration: 0.12s;
+}
+
+.menubar-extras {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    /* As wide as the panel under it, which starts two points to the right of SwiftVM's item. */
+    width: calc(var(--panel-width) + 2px);
+    font-size: 13px;
+    line-height: 16px;
+    /* Text as heavy as macOS draws its own, which is heavier than the rest of the page's. */
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
+    transform: scale(var(--scale));
+    transform-origin: right center;
+}
+
+.menubar-extra {
+    display: grid;
+    place-items: center;
+    min-width: 30px;
+    height: 24px;
+}
+
+.menubar-clock {
+    padding-left: 4px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* The two items that do something: SwiftVM's, and the one that turns day into night. */
+.menubar-swiftvm,
+.menubar-appearance {
+    position: relative;
+    border-radius: 12px;
+    transition: background-color 0.2s;
+}
+
+.menubar-swiftvm {
+    width: 39px;
+}
+
+.menubar-appearance:hover {
+    background: var(--menubar-hover);
+}
+
+.menubar-swiftvm:hover,
+[data-panel-state="open"] .menubar-swiftvm {
+    background: var(--menubar-open);
+}
+
+/* With the panel put away, the item shows where it went. */
+[data-panel-state="closed"] .menubar-swiftvm::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: 0 0 0 1px var(--menubar-ring);
+    animation: beckon 1.8s ease-out infinite;
+}
+
+/* MARK: Panel */
+
+.panel-slot {
+    position: absolute;
+    /* Two points under the menu bar, which is in the middle of the header's height. */
+    top: calc(var(--header-height) / 2 + (var(--menubar-height) / 2 + 2px) * var(--scale));
+    right: var(--gutter);
+    width: var(--panel-width);
+}
+
+.panel-scale {
+    transform: scale(var(--scale));
+    transform-origin: top right;
+}
+
+/* The dark colours are the ones of the screenshot the panel is made after. The light ones are the same
+   panel in the light appearance: SwiftUI's fills are the same shares of black instead of white. */
+.panel {
+    --pn-text: light-dark(rgba(0, 0, 0, 0.88), #ffffff);
+    --pn-secondary: light-dark(rgba(60, 60, 67, 0.64), rgba(127, 155, 192, 0.84));
+    --pn-symbol: light-dark(rgba(60, 60, 67, 0.62), rgba(128, 151, 180, 0.84));
+    --pn-fill-faint: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.06));
+    --pn-fill: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.08));
+    --pn-fill-strong: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
+    --pn-divider: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
+    --pn-tile: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.025));
+    --pn-tile-symbol: light-dark(rgba(60, 60, 67, 0.62), rgba(132, 165, 205, 0.9));
+    --pn-accent: light-dark(#0a7aff, #2f7df6);
+    --pn-accent-hover: light-dark(#3b94ff, #4a8ff8);
+    --pn-destructive: light-dark(#e0352b, #ff6f66);
+    --pn-push: light-dark(#ffffff, rgba(255, 255, 255, 0.14));
+    --pn-push-hover: light-dark(#f1f2f4, rgba(255, 255, 255, 0.2));
+    --pn-push-edge: light-dark(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0));
+    --pn-menu: light-dark(#f5f6f8, #232d3f);
+    --pn-menu-quiet: light-dark(rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.45));
+    --pn-menu-off: light-dark(rgba(0, 0, 0, 0.26), rgba(255, 255, 255, 0.3));
+    --pn-edge: light-dark(rgba(0, 0, 0, 0.2), rgba(0, 3, 8, 0.95));
+    --pn-rim: light-dark(rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.26));
+    --pn-rim-foot: light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.2));
+    --pn-rim-side: light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.09));
+    --pn-shadow: light-dark(rgba(20, 60, 110, 0.2), rgba(0, 6, 20, 0.45));
+    --pn-shadow-near: light-dark(rgba(20, 60, 110, 0.14), rgba(0, 6, 20, 0.3));
+    --pn-focus: light-dark(rgba(10, 100, 240, 0.75), rgba(120, 176, 255, 0.9));
+
+    /* Glass over the sky: lighter towards the foot, and at night a little bluer at the left than at the right. */
+    --pn-glass-top: light-dark(rgba(253, 254, 255, 0.82), rgba(35, 60, 91, 0.86));
+    --pn-glass-upper: light-dark(rgba(250, 252, 255, 0.8), rgba(39, 65, 95, 0.86));
+    --pn-glass-middle: light-dark(rgba(247, 250, 254, 0.78), rgba(42, 71, 101, 0.86));
+    --pn-glass-lower: light-dark(rgba(244, 248, 253, 0.76), rgba(51, 82, 115, 0.86));
+    --pn-glass-bottom: light-dark(rgba(241, 246, 252, 0.74), rgba(61, 93, 128, 0.86));
+    --pn-glass-left: light-dark(rgba(40, 90, 170, 0), rgba(40, 90, 170, 0.07));
+    --pn-glass-right: light-dark(rgba(20, 24, 30, 0), rgba(20, 24, 30, 0.1));
+
+    position: relative;
+    border-radius: 14px;
+    background:
+        linear-gradient(90deg, var(--pn-glass-left), transparent 45%, transparent 60%, var(--pn-glass-right)),
+        linear-gradient(
+            180deg,
+            var(--pn-glass-top) 0%,
+            var(--pn-glass-upper) 36%,
+            var(--pn-glass-middle) 55%,
+            var(--pn-glass-lower) 80%,
+            var(--pn-glass-bottom) 100%
+        );
+    -webkit-backdrop-filter: blur(30px) saturate(1.5);
+    backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow:
+        0 0 0 0.5px var(--pn-edge),
+        0 24px 60px var(--pn-shadow),
+        0 6px 18px var(--pn-shadow-near);
+    color: var(--pn-text);
+    font-size: 13px;
+    line-height: 17px;
+    text-align: left;
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
+    cursor: default;
+    -webkit-user-select: none;
+    user-select: none;
+    transform-origin: 20px -16px;
+    transition:
+        opacity 0.16s ease-out,
+        transform 0.16s ease-out,
+        visibility 0s,
+        color 0.6s,
+        box-shadow 0.6s,
+        --pn-glass-top 0.6s,
+        --pn-glass-upper 0.6s,
+        --pn-glass-middle 0.6s,
+        --pn-glass-lower 0.6s,
+        --pn-glass-bottom 0.6s;
+}
+
+/* The rim of the glass: bright where the light catches it at the top and the bottom. */
+.panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow:
+        inset 0 1px 0 var(--pn-rim),
+        inset 0 -1px 0 var(--pn-rim-foot),
+        inset 1px 0 0 var(--pn-rim-side),
+        inset -1px 0 0 var(--pn-rim-side);
+    pointer-events: none;
+}
+
+[data-panel-state="closed"] .panel {
+    visibility: hidden;
+    opacity: 0;
+    transform: scale(0.97);
+    transition:
+        opacity 0.14s ease-in,
+        transform 0.14s ease-in,
+        visibility 0s 0.14s;
+}
+
+.pn-header {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 10.5px 10px 10.5px 16px;
+}
+
+.pn-heading {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.5px;
+    min-width: 0;
+    margin-right: 6px;
+}
+
+/* The app sets its text a little higher in its line than a browser does: the lines are shorter by what
+   is added under them. */
+.pn-title {
+    padding-bottom: 2px;
+    font-weight: 700;
+    line-height: 15px;
+}
+
+.pn-headline,
+.pn-section,
+.pn-status,
+.pn-card-text,
+.pn-empty-text {
+    color: var(--pn-secondary);
+    transition: color 0.6s;
+}
+
+.pn-headline {
+    font-size: 10px;
+    line-height: 15px;
+}
+
+.pn-divider {
+    height: 1px;
+    background: var(--pn-divider);
+}
+
+.pn-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px;
+}
+
+.pn-list.is-resizing {
+    overflow: clip;
+}
+
+.pn-section {
+    padding: 6px 8px 2px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+}
+
+.pn-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 6px 6px 8px;
+    border-radius: 9px;
+    transition: background-color 0.12s;
+}
+
+.pn-row:hover,
+.pn-row:has(.pn-menu) {
+    background: var(--pn-fill);
+}
+
+.pn-badge {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 7.5px;
+    background: var(--pn-tile);
+    color: var(--pn-tile-symbol);
+    transition:
+        background-color 0.25s,
+        color 0.25s;
+}
+
+.pn-badge .pn-symbol {
+    width: 30px;
+    height: 30px;
+}
+
+.pn-badge.is-lit {
+    color: #fff;
+}
+
+/* The tints of OSGlyph.swift, as SwiftUI draws their gradients in each appearance. */
+.pn-badge-macos.is-lit {
+    background: linear-gradient(180deg, light-dark(#4ba6ff, #63b3ff), light-dark(#0a7aff, #4697f9));
+}
+
+.pn-badge-ubuntu.is-lit {
+    background: linear-gradient(180deg, light-dark(#ffb340, #ffb955), light-dark(#ff9500, #fb9c1c));
+}
+
+.pn-badge-debian.is-lit {
+    background: linear-gradient(180deg, light-dark(#ff6961, #ff7a70), light-dark(#ff3b30, #f9493e));
+}
+
+.pn-badge.is-pulsing {
+    animation: pulse 0.7s ease-in-out infinite alternate;
+}
+
+.pn-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.pn-name,
+.pn-status {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pn-name {
+    padding-bottom: 1px;
+    font-weight: 500;
+    line-height: 16px;
+}
+
+.pn-status {
+    font-size: 10px;
+    line-height: 15px;
+}
+
+.pn-controls {
+    position: relative;
+    display: flex;
+    flex: none;
+    gap: 2px;
+}
+
+/* A symbol button: quiet next to the machine's name until the pointer is over it. */
+.pn-button {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    color: var(--pn-symbol);
+    cursor: default;
+    transition:
+        background-color 0.12s,
+        color 0.12s,
+        transform 0.12s;
+}
+
+.pn-button:hover,
+.pn-button[aria-expanded="true"] {
+    background: var(--pn-fill-strong);
+    color: var(--pn-text);
+}
+
+.pn-button:active {
+    transform: scale(0.9);
+}
+
+.pn-button:disabled {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+.pn-symbol {
+    width: 26px;
+    height: 26px;
+}
+
+/* The system's small progress indicator: eight spokes, the brightest going round. */
+.pn-spinner {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    animation: spin 0.8s steps(8) infinite;
+}
+
+.pn-progress {
+    height: 4px;
+    margin-top: 3px;
+    border-radius: 2px;
+    background: var(--pn-divider);
+    overflow: hidden;
+}
+
+.pn-progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--pn-accent);
+}
+
+.pn-progress.is-indeterminate span {
+    animation: pulse 0.6s ease-in-out infinite alternate;
+}
+
+/* What a row turns into to ask whether to delete its machine. */
+.pn-card {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    border-radius: 9px;
+    background: var(--pn-fill-faint);
+}
+
+.pn-card-title {
+    font-weight: 500;
+}
+
+.pn-card-text {
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 13px;
+}
+
+.pn-card-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.pn-push {
+    height: 20px;
+    padding: 0 9px;
+    border-radius: 10px;
+    background: var(--pn-push);
+    box-shadow:
+        0 0 0 0.5px var(--pn-push-edge),
+        0 0.5px 1.5px var(--pn-push-edge);
+    font-size: 11px;
+    line-height: 20px;
+    cursor: default;
+}
+
+.pn-push:hover {
+    background: var(--pn-push-hover);
+}
+
+.pn-push.is-destructive {
+    color: var(--pn-destructive);
+}
+
+.pn-push.is-prominent {
+    height: 24px;
+    margin-top: 6px;
+    padding: 0 12px;
+    border-radius: 12px;
+    background: var(--pn-accent);
+    box-shadow: none;
+    color: #fff;
+    font-size: 13px;
+    line-height: 24px;
+}
+
+.pn-push.is-prominent:hover {
+    background: var(--pn-accent-hover);
+}
+
+.pn-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 18px 20px;
+    text-align: center;
+}
+
+.pn-empty.is-compact {
+    gap: 8px;
+    padding: 10px 20px;
+}
+
+.pn-empty-symbol {
+    width: 36px;
+    height: 30px;
+    margin-bottom: 6px;
+    color: var(--pn-secondary);
+}
+
+.pn-empty-title {
+    font-weight: 700;
+}
+
+.pn-empty-text {
+    font-size: 12px;
+    line-height: 15px;
+}
+
+.pn-footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 8px 4.5px;
+}
+
+.pn-footer button {
+    padding: 4.5px 8px 5.5px;
+    border-radius: 7px;
+    cursor: default;
+    transition: background-color 0.12s;
+}
+
+.pn-footer button:hover {
+    background: var(--pn-fill);
+}
+
+.pn-footer button:active {
+    background: var(--pn-fill-strong);
+}
+
+.panel :focus-visible {
+    outline: 2px solid var(--pn-focus);
+    outline-offset: 1px;
+}
+
+/* MARK: Menus */
+
+.pn-menu {
+    position: absolute;
+    top: calc(100% + 3px);
+    right: 0;
+    z-index: 5;
+    min-width: 196px;
+    padding: 5px;
+    border-radius: 11px;
+    /* Opaque: a menu can't blur what is behind it from inside the panel's glass. */
+    background: var(--pn-menu);
+    box-shadow:
+        0 0 0 0.5px var(--pn-edge),
+        inset 0 0 0 1px var(--pn-rim-side),
+        0 16px 40px var(--pn-shadow),
+        0 3px 10px var(--pn-shadow-near);
+    font-size: 13px;
+    line-height: 16px;
+    transform-origin: top right;
+    animation: menu-in 0.12s ease-out;
+}
+
+.pn-menu.opens-up {
+    top: auto;
+    bottom: calc(100% + 3px);
+    transform-origin: bottom right;
+}
+
+.pn-menu-item {
+    position: relative;
+    display: block;
+    width: 100%;
+    padding: 3px 12px 3px 24px;
+    border-radius: 6px;
+    text-align: left;
+    white-space: nowrap;
+    cursor: default;
+}
+
+/* The tick of the choice that is made, in the colour of the item's text. */
+.pn-menu-item[aria-checked="true"]::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 7px;
+    width: 11px;
+    height: 11px;
+    margin-top: -5.5px;
+    background: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.4 6.5l2.5 2.6 4.8-6' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.4 6.5l2.5 2.6 4.8-6' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.pn-menu-item:hover:not(:disabled),
+.pn-menu-item:focus-visible {
+    background: var(--pn-accent);
+    color: #fff;
+    outline: none;
+}
+
+.pn-menu-item:disabled {
+    color: var(--pn-menu-off);
+}
+
+.pn-menu-heading {
+    padding: 4px 12px 2px;
+    color: var(--pn-menu-quiet);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.pn-menu-separator {
+    height: 1px;
+    margin: 5px 12px;
+    background: var(--pn-divider);
+}
+
+/* MARK: Hero text */
+
+.hero-copy {
+    width: calc(100% - var(--panel-width) * var(--scale) - 56px);
+    max-width: 600px;
+    margin-block: auto;
+    padding-block: 64px 80px;
+}
+
+.hero-copy h1 {
+    margin: 0;
+    font-size: clamp(38px, 5vw, 60px);
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+}
+
+.hero-lead {
+    max-width: 31em;
+    margin: 20px 0 0;
+    color: var(--hero-text-secondary);
+    font-size: clamp(17px, 1.6vw, 20px);
+    line-height: 1.45;
+    text-wrap: pretty;
+    transition: color 0.6s;
+}
+
+.hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 30px;
+}
+
+.button-glass {
+    background: var(--hero-glass);
+    color: var(--hero-text);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    box-shadow: inset 0 0 0 1px var(--hero-glass-edge);
+}
+
+.button-glass:hover {
+    background: var(--hero-glass-hover);
+}
+
+.command-glass {
+    width: fit-content;
+    margin-top: 18px;
+    border-color: var(--hero-glass-edge);
+    background: var(--hero-field);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    color: var(--hero-text);
+}
+
+.command-glass .command-copy {
+    background: var(--hero-chip);
+}
+
+.command-glass .command-copy:hover {
+    background: var(--hero-chip-hover);
+}
+
+.command-glass .command-copy.is-copied {
+    color: var(--hero-copied);
+}
+
+.hero-note {
+    margin: 16px 0 0;
+    color: var(--hero-text-tertiary);
+    font-size: 13px;
+    transition: color 0.6s;
+}
+
+/* MARK: Sections */
+
+.section {
+    padding-block: 88px;
+}
+
+.section-tinted {
+    background: var(--background-tinted);
+}
+
+.section h2 {
+    margin: 0;
+    font-size: clamp(28px, 3.4vw, 38px);
+    font-weight: 700;
+    line-height: 1.12;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+}
+
+.section-lead {
+    max-width: 34em;
+    margin: 12px 0 0;
+    color: var(--text-secondary);
+    font-size: 19px;
+    line-height: 1.45;
+    text-wrap: pretty;
+}
+
+.section code {
+    padding: 0.1em 0.36em;
+    border-radius: 5px;
+    background: var(--fill);
+    font-size: 0.88em;
+    white-space: nowrap;
+}
+
+.features {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 44px;
+}
+
+.feature {
+    display: block;
+    padding: 22px 22px 24px;
+    border-radius: 18px;
+    background: var(--background-tinted);
+    color: inherit;
+    transition:
+        background-color 0.2s,
+        transform 0.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.feature:hover {
+    background: var(--fill-strong);
+    text-decoration: none;
+    transform: translateY(-2px);
+}
+
+.feature h3 {
+    margin: 16px 0 0;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.feature p {
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1.45;
+}
+
+/* A tile like the ones of System Settings: a rounded square in one colour, its symbol in white. */
+.feature-tile {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 9.5px;
+    color: #fff;
+    box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
+}
+
+.feature-tile svg {
+    width: 24px;
+    height: 24px;
+}
+
+.feature-tile.tile-blue svg {
+    width: 34px;
+    height: 34px;
+}
+
+.tile-blue { background: linear-gradient(180deg, #5cadff, #2f86f6); }
+.tile-orange { background: linear-gradient(180deg, #ffb144, #f98f0b); }
+.tile-green { background: linear-gradient(180deg, #57d977, #27b24c); }
+.tile-indigo { background: linear-gradient(180deg, #8583f5, #5a57e0); }
+.tile-graphite { background: linear-gradient(180deg, #9a9aa2, #6c6c74); }
+.tile-teal { background: linear-gradient(180deg, #4fd0c6, #1ea69c); }
+.tile-cyan { background: linear-gradient(180deg, #57c1f5, #1f98dc); }
+.tile-red { background: linear-gradient(180deg, #ff7a70, #f0443a); }
+.tile-black { background: linear-gradient(180deg, #4b4b52, #1f1f23); }
+
+.split {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    align-items: center;
+    gap: 56px;
+}
+
+.more {
+    font-size: 17px;
+    font-weight: 500;
+}
+
+.more::after {
+    content: " ›";
+}
+
+/* A Terminal window. It is dark in both appearances, as most people keep theirs. */
+.terminal {
+    overflow: hidden;
+    border-radius: 12px;
+    background: #17181c;
+    box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.25),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+        0 30px 60px -20px rgba(0, 10, 30, 0.35);
+    color: #e6e6ea;
+}
+
+.terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 13px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.terminal-bar i {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ff5f57;
+}
+
+.terminal-bar i:nth-child(2) {
+    background: #febc2e;
+}
+
+.terminal-bar i:nth-child(3) {
+    background: #28c840;
+}
+
+.terminal-bar span {
+    flex: 1;
+    /* Centred in the window, not in what the three buttons leave. */
+    margin-right: 60px;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+}
+
+.terminal pre {
+    margin: 0;
+    padding: 16px 18px 22px;
+    overflow-x: auto;
+    font-size: 13.5px;
+    line-height: 1.75;
+}
+
+.terminal code {
+    padding: 0;
+    background: none;
+    font-size: inherit;
+}
+
+.terminal .prompt {
+    color: #6f7078;
+}
+
+.terminal .string {
+    color: #9fd08a;
+}
+
+.terminal .caret {
+    display: inline-block;
+    width: 0.6em;
+    height: 1.15em;
+    margin-left: 0.5em;
+    background: #c8c8cf;
+    vertical-align: text-bottom;
+    animation: blink 1.1s steps(1) infinite;
+}
+
+.principles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 40px;
+    margin-top: 36px;
+}
+
+.principle {
+    padding-top: 20px;
+    border-top: 1px solid var(--separator);
+}
+
+.principle h3 {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+}
+
+.principle p {
+    margin: 8px 0 0;
+    color: var(--text-secondary);
+}
+
+.install {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+
+.install img {
+    margin-bottom: 22px;
+    filter: drop-shadow(0 10px 18px rgba(20, 80, 200, 0.28));
+}
+
+.install .command {
+    width: fit-content;
+    margin-top: 28px;
+    text-align: left;
+}
+
+.install-or {
+    margin: 18px 0 0;
+    color: var(--text-secondary);
+    font-size: 15px;
+}
+
+.install .hero-actions {
+    justify-content: center;
+    margin-top: 16px;
+}
+
+/* MARK: Sizes */
+
+/* With room to spare, the desktop is drawn larger than life. */
+@media (min-width: 1160px) {
+    .hero {
+        --scale: 1.2;
+    }
+
+    .hero-inner {
+        min-height: 680px;
+    }
+}
+
+/* Too narrow for the text next to the panel: the panel hangs from the menu bar and the text follows. */
+@media (max-width: 859px) {
+    .hero-inner {
+        min-height: 0;
+    }
+
+    .panel-slot {
+        position: static;
+        width: min(var(--panel-width), 100%);
+        /* What the panel's two machines need, so that the text under it stays where it is. */
+        min-height: 250px;
+        /* Up into the header, to two points under the menu bar's items. */
+        margin: -9px 0 0 auto;
+    }
+
+    .hero-copy {
+        width: auto;
+        max-width: none;
+        margin-block: 0;
+        padding-block: 44px 64px;
+    }
+
+    .cloud-far {
+        display: none;
+    }
+
+    .section {
+        padding-block: 64px;
+    }
+
+    .features,
+    .principles {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .principles {
+        gap: 28px;
+    }
+
+    .split {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 32px;
+    }
+}
+
+/* Too narrow for the whole menu bar: what a Mac would hide first goes first. */
+@media (max-width: 719px) {
+    .menubar-extras {
+        gap: 2px;
+        width: auto;
+    }
+
+    .menubar-optional,
+    .menubar-clock {
+        display: none;
+    }
+}
+
+@media (max-width: 560px) {
+    .features,
+    .principles {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .hero-actions .button {
+        flex: 1;
+    }
+
+    .command-glass,
+    .install .command {
+        width: 100%;
+    }
+}
+
+/* On a phone, only what does something stays in the menu bar. */
+@media (max-width: 520px) {
+    .menubar-extra:not(.menubar-swiftvm, .menubar-appearance),
+    .menubar .site-nav a[href="#features"] {
+        display: none;
+    }
+}
+
+@media (max-width: 359px) {
+    .menubar .site-nav a[href^="http"] {
+        display: none;
+    }
+}
+
+/* MARK: Motion */
+
+@keyframes pulse {
+    to {
+        opacity: 0.45;
+    }
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(1turn);
+    }
+}
+
+@keyframes blink {
+    50% {
+        opacity: 0;
+    }
+}
+
+@keyframes beckon {
+    to {
+        box-shadow: 0 0 0 9px transparent;
+    }
+}
+
+@keyframes float {
+    to {
+        translate: 36px 0;
+    }
+}
+
+@keyframes menu-in {
+    from {
+        opacity: 0;
+        transform: scale(0.96);
+    }
+}
+
+@keyframes twinkle {
+    from {
+        opacity: 0.45;
+    }
+}
+
+@keyframes drop {
+    from {
+        opacity: 0;
+        transform: translateY(-10px) scale(0.94);
+    }
+}
+
+@keyframes light {
+    from {
+        background-color: transparent;
+    }
+}
+
+@keyframes rise {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .stars-far {
+        animation: twinkle 5.5s ease-in-out infinite alternate;
+    }
+
+    .stars-mid {
+        animation: twinkle 7s ease-in-out -3s infinite alternate;
+    }
+
+    .stars-near {
+        animation: twinkle 4s ease-in-out -1.5s infinite alternate;
+    }
+
+    .cloud-near {
+        animation: float 38s ease-in-out infinite alternate;
+    }
+
+    .cloud-mid {
+        animation: float 52s ease-in-out -20s infinite alternate-reverse;
+    }
+
+    .cloud-far {
+        animation: float 70s ease-in-out -35s infinite alternate;
+    }
+
+    /* Only the sky that shows moves. */
+    .stars {
+        animation-play-state: var(--by-night);
+    }
+
+    .cloud {
+        animation-play-state: var(--by-day);
+    }
+
+    /* When the page opens, SwiftVM's item is clicked and the panel drops from it. */
+    .panel {
+        animation: drop 0.42s cubic-bezier(0.2, 0.9, 0.3, 1.15) 0.5s backwards;
+    }
+
+    .menubar-swiftvm {
+        animation: light 0.2s ease-out 0.45s backwards;
+    }
+
+    .hero-copy > * {
+        animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+    }
+
+    .hero-copy > :nth-child(2) { animation-delay: 0.07s; }
+    .hero-copy > :nth-child(3) { animation-delay: 0.14s; }
+    .hero-copy > :nth-child(4) { animation-delay: 0.21s; }
+    .hero-copy > :nth-child(5) { animation-delay: 0.28s; }
+}
