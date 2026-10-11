@@ -6,6 +6,12 @@
 
 <p align="center">Native macOS app for running macOS and Linux virtual machines, built with Swift and Apple's Virtualization framework.</p>
 
+## Supported guests
+
+- Mac
+- Linux
+- Windows (Coming soon)
+
 ## Top level features
 
 - macOS guests that install and set themselves up
