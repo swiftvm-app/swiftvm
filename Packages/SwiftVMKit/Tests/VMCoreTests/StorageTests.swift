@@ -491,6 +491,30 @@ private struct Scratch {
         #expect(now.reverted(to: warm).removableImages.map(\.path) == ["/tmp/then.iso"])
     }
 
+    @Test func whetherTheClipboardIsSharedIsNotTheSnapshotsToSay() throws {
+        // Sharing was on when the snapshots were taken, as it is by default, and was turned off since.
+        func configurations(_ family: GuestFamily) -> (then: VMConfiguration, now: VMConfiguration) {
+            let then = VMConfiguration(name: "Box", os: GuestOS(family: family), cpuCount: 2, memorySize: 4 << 30, disks: [])
+            var now = then
+            now.clipboard.isShared = false
+            return (then, now)
+        }
+        // A Mac shares its clipboard through its agent, which is simply no longer told. Going back to
+        // a snapshot, with its memory or without, doesn't turn sharing on again behind the user's back.
+        let mac = configurations(.macOS)
+        #expect(!mac.now.reverted(to: VMSnapshot(name: "Cold", includesMemory: false, configuration: mac.then)).clipboard.isShared)
+        #expect(!mac.now.reverted(to: VMSnapshot(name: "Warm", includesMemory: true, configuration: mac.then)).clipboard.isShared)
+        // A Linux guest shares it through a device. One that boots takes the machine as it is now; one
+        // that comes back with its memory has to find the device it was saved with.
+        let linux = configurations(.linux)
+        #expect(!linux.now.reverted(to: VMSnapshot(name: "Cold", includesMemory: false, configuration: linux.then)).clipboard.isShared)
+        #expect(linux.now.reverted(to: VMSnapshot(name: "Warm", includesMemory: true, configuration: linux.then)).clipboard.isShared)
+        // What the guest was told about the time zone goes back with its disk.
+        var told = mac.then
+        told.installation.hasHostTimeZone = true
+        #expect(!told.reverted(to: VMSnapshot(name: "Before", includesMemory: false, configuration: mac.then)).installation.hasHostTimeZone)
+    }
+
     @Test func deletesSnapshotsAndNamesTheNextOne() async throws {
         defer { scratch.cleanUp() }
         let machine = try scratch.makeMachine()

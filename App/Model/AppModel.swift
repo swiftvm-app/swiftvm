@@ -18,6 +18,8 @@ final class AppModel {
     let keyManager = SSHKeyManager()
     /// Relays the ports that machines forward from this Mac.
     let portForwarder = PortForwarder()
+    /// Passes copied text between this Mac and the guests that share their clipboard.
+    let clipboardSharing = ClipboardSharing()
 
     /// `nil` if the virtual network couldn't be set up; machines then can't start.
     private(set) var networkManager: NetworkManager?
@@ -50,6 +52,9 @@ final class AppModel {
     /// to do with machines. See ``quitUnattended()``.
     @ObservationIgnored private(set) var isQuittingUnattended = false
     @ObservationIgnored private var unattendedQuitTimer: Timer?
+    /// Set once the user has said how to quit with machines running, and those are being suspended or
+    /// shut down. See ``closeDown()``.
+    @ObservationIgnored private(set) var isClosingDown = false
 
     private init() {
         library = VMLibrary()
@@ -73,7 +78,12 @@ final class AppModel {
         library.onChange = { [weak self] in
             self?.syncSSHConfiguration()
             self?.syncPortForwards()
+            // Clipboard sharing may have been turned on or off for one of them.
+            self?.syncClipboardSharing()
         }
+        library.onGuestAgentChange = { [weak self] machine in self?.clipboardSharing.update(machine) }
+        library.onGuestClipboard = { [weak self] machine, text in self?.clipboardSharing.guest(machine, didCopy: text) }
+        library.onGuestClipboardRequest = { [weak self] machine in self?.clipboardSharing.guestWantsClipboard(machine) }
         library.onMachineResume = { [weak self] machine in self?.correctClock(of: machine) }
         // A guest that says where it is doesn't have to wait for the next round to be believed.
         library.onGuestAddressesChange = { [weak self] _ in self?.refreshAddressesSoon() }
@@ -169,6 +179,12 @@ final class AppModel {
             }
         }
         portForwarder.apply(routes)
+    }
+
+    private func syncClipboardSharing() {
+        for machine in library.machines {
+            clipboardSharing.update(machine)
+        }
     }
 
     /// Moves every machine's reserved address along when the default network changes subnet.
@@ -446,16 +462,54 @@ final class AppModel {
 
     /// Asks the guest to shut down, or to restart once it has.
     ///
-    /// macOS answers with a dialog on its own screen, so the machine's window is brought up for someone to
-    /// see it. Without an answer the machine simply stays running.
-    func shutDown(_ machine: VirtualMachine, thenRestart: Bool = false) async {
-        if machine.configuration.asksBeforeShuttingDown {
+    /// A guest with the guest tools just does it. macOS without them answers with a dialog on its own
+    /// screen, so the machine's window is brought up for someone to see it. Without an answer the machine
+    /// simply stays running.
+    ///
+    /// - Parameter activatingApp: Also bring the app forward for that dialog, for a request that was
+    ///   made from outside the app's windows.
+    @discardableResult
+    func shutDown(_ machine: VirtualMachine, thenRestart: Bool = false, activatingApp: Bool = false) async -> ShutdownRequest? {
+        let request = thenRestart ? await machine.restart() : await machine.shutDown()
+        if request == .powerButton, machine.configuration.asksBeforeShuttingDown {
+            if activatingApp {
+                NSApp.activate()
+            }
             showMachineWindow?(machine.id)
         }
-        if thenRestart {
-            await machine.restart()
-        } else {
+        return request
+    }
+
+    /// The user has said how to quit with machines running. From here until the app is gone nothing
+    /// starts and the command-line tool is turned down: a machine that came up now, or a snapshot that
+    /// began, would be cut off by the quit.
+    func closeDown() {
+        isClosingDown = true
+        library.allowsStarting = false
+    }
+
+    /// Shuts down the machines that are up because the app is about to quit, and returns when none is
+    /// left running. Call ``closeDown()`` first.
+    ///
+    /// Running guests with the guest tools are asked through them and shut down properly; they get a
+    /// moment for it, and so do guests that were already on their way down. Everything else is stopped
+    /// outright: there is no telling how long another guest would take, or whether it would put up a
+    /// question that nobody is going to answer.
+    func shutDownForQuit(_ machines: [VirtualMachine], patience: Duration = .seconds(45)) async {
+        for machine in machines where machine.state == .running && machine.agent.isConnected {
             await machine.shutDown()
+        }
+        // A macOS guest that was asked with the power button is waiting for an answer on its screen,
+        // not shutting down. Its agent, had it one, would have been asked instead.
+        func isOnItsWayDown(_ machine: VirtualMachine) -> Bool {
+            machine.state == .stopping && (machine.agent.isConnected || !machine.configuration.asksBeforeShuttingDown)
+        }
+        let deadline = ContinuousClock.now + patience
+        while machines.contains(where: isOnItsWayDown), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        for machine in machines where machine.state.isActive {
+            await machine.forceStop()
         }
     }
 
@@ -514,6 +568,7 @@ final class AppModel {
     /// Goes back to normal after a quit for the command-line tool was called off.
     func cancelUnattendedQuit() {
         isQuittingUnattended = false
+        isClosingDown = false
         library.allowsStarting = true
         unattendedQuitTimer?.invalidate()
         unattendedQuitTimer = nil

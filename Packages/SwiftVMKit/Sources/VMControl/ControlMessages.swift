@@ -54,6 +54,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Install the guest tools in a running guest: over SSH, or with ``ControlRequest/usesDisc`` by
         /// plugging in the guest tools disc for someone to install from inside the guest.
         case installTools = "install-tools"
+        /// Turn sharing the clipboard with the machine on or off, as ``ControlRequest/isOn`` says.
+        case shareClipboard = "share-clipboard"
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -146,11 +148,17 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var port: UInt32?
     /// For `install-tools`: plug in the guest tools disc instead of installing over SSH.
     public var usesDisc: Bool?
+    /// For `install-tools` over SSH: the guest account's password, which macOS wants before it lets
+    /// anything be installed.
+    public var password: String?
+    /// For `share-clipboard`: whether the clipboard is to be shared.
+    public var isOn: Bool?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
-        forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil
+        forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
+        password: String? = nil, isOn: Bool? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -164,6 +172,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.cancelsCreations = cancelsCreations
         self.port = port
         self.usesDisc = usesDisc
+        self.password = password
+        self.isOn = isOn
     }
 }
 
@@ -257,6 +267,8 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     public var snapshotCount: Int
     /// What is known of the guest tools, for guests that can have them.
     public var guestTools: GuestTools?
+    /// Whether the clipboard is shared with the machine. `nil` from an app that doesn't say.
+    public var sharesClipboard: Bool?
 
     public struct GuestTools: Codable, Sendable, Equatable {
         /// The version of the agent that is connected. `nil` while none is.
@@ -272,7 +284,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
 
     public init(
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
-        snapshotCount: Int, guestTools: GuestTools? = nil
+        snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -281,6 +293,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.forwards = forwards
         self.snapshotCount = snapshotCount
         self.guestTools = guestTools
+        self.sharesClipboard = sharesClipboard
     }
 }
 

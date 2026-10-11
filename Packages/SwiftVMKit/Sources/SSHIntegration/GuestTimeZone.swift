@@ -20,6 +20,9 @@ public enum GuestTimeZone {
             "-F", configURL.path,
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
+            // Without these `ssh` waits for good for a guest that has gone.
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=2",
             alias,
             // systemsetup grumbles on standard error even when it succeeds.
             "sudo -S -p '' /usr/sbin/systemsetup -settimezone '\(identifier)' >/dev/null 2>&1",

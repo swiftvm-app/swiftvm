@@ -1,5 +1,3 @@
-import CryptoKit
-import DiskTools
 import Foundation
 import VMCore
 
@@ -88,33 +86,7 @@ public enum LinuxGuestAgent {
     /// cleared away when nothing can be using them: pass the images that are attached to machines in
     /// `inUse`.
     public static func toolsImage(in directory: URL, inUse: Set<String> = []) throws -> URL {
-        let files = try toolsFiles()
-        var hash = SHA256()
-        for name in files.keys.sorted() {
-            hash.update(data: Data(name.utf8))
-            hash.update(data: files[name]!)
-        }
-        let digest = hash.finalize().prefix(6).map { String(format: "%02x", $0) }.joined()
-        let url = directory.appending(path: "\(toolsImagePrefix)\(digest).iso")
-
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        for other in (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
-            let isOlderDisc = other.lastPathComponent.hasPrefix(toolsImagePrefix) && other.lastPathComponent != url.lastPathComponent
-            if isOlderDisc, !inUse.contains(other.standardizedFileURL.path) {
-                try? fileManager.removeItem(at: other)
-            }
-        }
-        if !fileManager.fileExists(atPath: url.path) {
-            // Built under another name and moved into place, so that a disc is either whole or not there.
-            let unfinished = directory.appending(path: ".\(UUID().uuidString).iso")
-            defer { try? fileManager.removeItem(at: unfinished) }
-            try ISOImageBuilder.makeISO(volumeName: toolsVolumeName, files: files, at: unfinished)
-            if !fileManager.fileExists(atPath: url.path) {
-                try fileManager.moveItem(at: unfinished, to: url)
-            }
-        }
-        return url
+        try GuestToolsDisc.image(prefix: toolsImagePrefix, volumeName: toolsVolumeName, files: toolsFiles(), in: directory, inUse: inUse)
     }
 
     static let toolsImagePrefix = "SwiftVM Guest Tools "

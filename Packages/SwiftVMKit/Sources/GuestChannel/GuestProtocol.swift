@@ -15,6 +15,9 @@ public enum GuestProtocol {
     public static let agentPort: UInt32 = 717
     /// No message is longer than this, its line break included.
     public static let maximumLineLength = 256 * 1024
+    /// The version of the agent for macOS guests that is built from these sources, as it reports it
+    /// when it connects. The agent for Linux keeps its own, in its script.
+    public static let macAgentVersion = "1.0"
 
     /// The time on this Mac, in nanoseconds since 1970, as the agent takes it for setting the guest's clock.
     public static func currentTimeInNanoseconds() -> Int64 {
@@ -22,6 +25,17 @@ public enum GuestProtocol {
         clock_gettime(CLOCK_REALTIME, &time)
         return Int64(time.tv_sec) * 1_000_000_000 + Int64(time.tv_nsec)
     }
+}
+
+/// What an agent can do beyond what every agent does (set the clock, mount shared folders, shut down).
+/// An agent names the ones it offers in its `hello`, and the app asks for nothing else.
+public enum GuestFeature {
+    /// Shares the clipboard: both sides send ``HostMessage/clipboard(text:)`` and
+    /// ``AgentMessage/clipboard(text:)`` when text is copied, and the agent sends
+    /// ``AgentMessage/clipboardRequest`` when it has a clipboard to fill.
+    public static let clipboard = "clipboard"
+    /// Answers ``HostMessage/setTimeZone(id:identifier:)``.
+    public static let timeZone = "time-zone"
 }
 
 /// What an agent says about itself and its system when a connection opens.
@@ -32,12 +46,22 @@ public struct AgentHello: Codable, Sendable, Hashable {
     public var agent: String
     public var system: GuestSystem
     public var hostName: String?
+    /// The ``GuestFeature``s the agent offers. Names this build doesn't know are kept and ignored.
+    public var features: [String]
 
-    public init(protocol: Int = GuestProtocol.version, agent: String, system: GuestSystem = GuestSystem(), hostName: String? = nil) {
+    public init(
+        protocol: Int = GuestProtocol.version, agent: String, system: GuestSystem = GuestSystem(), hostName: String? = nil,
+        features: [String] = []
+    ) {
         self.protocol = `protocol`
         self.agent = agent
         self.system = system
         self.hostName = hostName
+        self.features = features
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case `protocol`, agent, system, hostName, features
     }
 
     public init(from decoder: any Decoder) throws {
@@ -46,29 +70,49 @@ public struct AgentHello: Codable, Sendable, Hashable {
         agent = try container.decode(String.self, forKey: .agent)
         system = try container.decodeIfPresent(GuestSystem.self, forKey: .system) ?? GuestSystem()
         hostName = try container.decodeIfPresent(String.self, forKey: .hostName)
+        features = try container.decodeIfPresent([String].self, forKey: .features) ?? []
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(`protocol`, forKey: .protocol)
+        try container.encode(agent, forKey: .agent)
+        try container.encode(system, forKey: .system)
+        try container.encodeIfPresent(hostName, forKey: .hostName)
+        // An agent without any says nothing about them, as the agents did before there were features.
+        if !features.isEmpty {
+            try container.encode(features, forKey: .features)
+        }
+    }
+
+    public func offers(_ feature: String) -> Bool {
+        features.contains(feature)
     }
 }
 
 /// The operating system in a guest, in its own words.
 public struct GuestSystem: Codable, Sendable, Hashable {
-    /// The distribution's identifier, such as `ubuntu` (`ID` in a Linux system's os-release).
+    /// The distribution's identifier, such as `ubuntu` (`ID` in a Linux system's os-release), or `macos`.
     public var id: String?
     /// The system's name without a version, such as `Ubuntu`.
     public var name: String?
     public var version: String?
     /// Name and version the way the system shows them, such as `Ubuntu 26.04.1 LTS`.
     public var prettyName: String?
+    /// The system's build, where it has one apart from its version, such as `26A434` for macOS.
+    public var build: String?
     public var kernel: String?
     public var architecture: String?
 
     public init(
-        id: String? = nil, name: String? = nil, version: String? = nil, prettyName: String? = nil,
+        id: String? = nil, name: String? = nil, version: String? = nil, prettyName: String? = nil, build: String? = nil,
         kernel: String? = nil, architecture: String? = nil
     ) {
         self.id = id
         self.name = name
         self.version = version
         self.prettyName = prettyName
+        self.build = build
         self.kernel = kernel
         self.architecture = architecture
     }
@@ -120,6 +164,12 @@ public enum AgentMessage: Sendable, Hashable {
     /// The interfaces that hold addresses: once after `hello`, and again whenever they change.
     case addresses([GuestInterface])
     case result(GuestRequestResult)
+    /// Text was copied in the guest. Only from an agent that offers ``GuestFeature/clipboard``.
+    case clipboard(text: String)
+    /// Someone has logged in at the guest's screen and has nothing from the Mac on their clipboard yet:
+    /// the agent asks for what is on the Mac's. Nothing is kept in the guest for them in the meantime,
+    /// so that what they get is what is on the Mac now, or nothing if it isn't shared any more.
+    case clipboardRequest
     /// A kind of message this build doesn't know. It is ignored.
     case unknown(type: String)
 }
@@ -135,6 +185,11 @@ public enum HostMessage: Sendable, Hashable {
     case mountSharedFolders(id: Int, tag: String, mountPoint: String)
     /// Shut the system down.
     case shutDown(id: Int)
+    /// Give the system this time zone, named as in the time zone database (`Europe/Berlin`). Only to
+    /// an agent that offers ``GuestFeature/timeZone``.
+    case setTimeZone(id: Int, identifier: String)
+    /// Text was copied on the Mac. Only to an agent that offers ``GuestFeature/clipboard``.
+    case clipboard(text: String)
     /// A kind of message this build doesn't know.
     case unknown(type: String)
 }
@@ -142,7 +197,7 @@ public enum HostMessage: Sendable, Hashable {
 // MARK: - Coding
 
 private enum MessageKey: String, CodingKey {
-    case type, id, `protocol`, interfaces, nanoseconds, tag, mountPoint
+    case type, id, `protocol`, interfaces, nanoseconds, tag, mountPoint, identifier, text
 }
 
 extension AgentMessage: Codable {
@@ -156,6 +211,10 @@ extension AgentMessage: Codable {
             self = .addresses(try container.decode([GuestInterface].self, forKey: .interfaces))
         case "result":
             self = .result(try GuestRequestResult(from: decoder))
+        case "clipboard":
+            self = .clipboard(text: try container.decode(String.self, forKey: .text))
+        case "clipboard-request":
+            self = .clipboardRequest
         default:
             self = .unknown(type: type)
         }
@@ -173,6 +232,11 @@ extension AgentMessage: Codable {
         case .result(let result):
             try container.encode("result", forKey: .type)
             try result.encode(to: encoder)
+        case .clipboard(let text):
+            try container.encode("clipboard", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .clipboardRequest:
+            try container.encode("clipboard-request", forKey: .type)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }
@@ -199,6 +263,13 @@ extension HostMessage: Codable {
             )
         case "shut-down":
             self = .shutDown(id: try container.decode(Int.self, forKey: .id))
+        case "set-time-zone":
+            self = .setTimeZone(
+                id: try container.decode(Int.self, forKey: .id),
+                identifier: try container.decode(String.self, forKey: .identifier)
+            )
+        case "clipboard":
+            self = .clipboard(text: try container.decode(String.self, forKey: .text))
         default:
             self = .unknown(type: type)
         }
@@ -222,8 +293,25 @@ extension HostMessage: Codable {
         case .shutDown(let id):
             try container.encode("shut-down", forKey: .type)
             try container.encode(id, forKey: .id)
+        case .setTimeZone(let id, let identifier):
+            try container.encode("set-time-zone", forKey: .type)
+            try container.encode(id, forKey: .id)
+            try container.encode(identifier, forKey: .identifier)
+        case .clipboard(let text):
+            try container.encode("clipboard", forKey: .type)
+            try container.encode(text, forKey: .text)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
+        }
+    }
+}
+
+extension HostMessage {
+    /// The `id` an answer to this message has to carry, if it is a request.
+    public var requestID: Int? {
+        switch self {
+        case .setClock(let id, _), .mountSharedFolders(let id, _, _), .shutDown(let id), .setTimeZone(let id, _): id
+        case .hello, .clipboard, .unknown: nil
         }
     }
 }
@@ -245,6 +333,15 @@ public enum GuestMessageCoding {
     /// The message on `line`, or `nil` if the line isn't one this side can read.
     public static func message<Message: Decodable>(_ type: Message.Type = Message.self, from line: Data) -> Message? {
         try? JSONDecoder().decode(type, from: line)
+    }
+
+    /// The line that carries copied text, made by `message`, or `nil` when the text is too long for
+    /// one. Such text simply isn't shared.
+    public static func clipboardLine<Message: Encodable>(_ text: String, as message: (String) -> Message) -> Data? {
+        // Written down, text only gets longer: what is too long as it is needs no writing down to tell.
+        guard text.utf8.count < GuestProtocol.maximumLineLength else { return nil }
+        let line = line(for: message(text))
+        return line.count < GuestProtocol.maximumLineLength ? line : nil
     }
 }
 

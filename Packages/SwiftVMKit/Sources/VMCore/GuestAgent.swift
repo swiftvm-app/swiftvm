@@ -20,6 +20,10 @@ public final class GuestAgent {
     public var version: String? { hello?.agent }
     /// The guest's kernel, as the connected agent reports it.
     public var kernel: String? { hello?.system.kernel }
+    /// Whether the connected agent passes copied text on in both directions.
+    public var sharesClipboard: Bool { hello?.offers(GuestFeature.clipboard) == true }
+    /// Whether the connected agent can give its system a time zone.
+    public var setsTimeZone: Bool { hello?.offers(GuestFeature.timeZone) == true }
 
     /// Called when an agent has connected and said who it is.
     @ObservationIgnored public var onConnect: (@MainActor (AgentHello) -> Void)?
@@ -28,6 +32,10 @@ public final class GuestAgent {
     /// Called when an agent that was connected no longer is: the guest stopped, restarted by itself, or
     /// its agent went away.
     @ObservationIgnored public var onDisconnect: (@MainActor () -> Void)?
+    /// Called with text that was copied in the guest, by an agent that shares the clipboard.
+    @ObservationIgnored public var onClipboard: (@MainActor (String) -> Void)?
+    /// Called when such an agent asks for what is on this Mac's clipboard: someone has logged in there.
+    @ObservationIgnored public var onClipboardRequest: (@MainActor () -> Void)?
     /// How long to wait before trying again after the agent couldn't be reached, or went away.
     @ObservationIgnored public var retryInterval: Duration = .seconds(1)
     /// The same once ``eagerAttempts`` have come to nothing. A guest that is starting up answers within
@@ -38,6 +46,8 @@ public final class GuestAgent {
     @ObservationIgnored public var helloTimeout: Duration = .seconds(5)
     /// How long the agent gets to answer a request.
     @ObservationIgnored public var requestTimeout: Duration = .seconds(5)
+    /// How long it gets to change the time zone, which takes a guest that is busy starting up its time.
+    @ObservationIgnored public var timeZoneTimeout: Duration = .seconds(30)
 
     @ObservationIgnored private var link: Task<Void, Never>?
     @ObservationIgnored private var connection: GuestAgentConnection?
@@ -109,6 +119,22 @@ public final class GuestAgent {
         await request { .shutDown(id: $0) }
     }
 
+    /// Gives the guest a time zone, named as in the time zone database (`Europe/Berlin`).
+    public func setTimeZone(_ identifier: String) async -> Bool {
+        guard setsTimeZone, let connection else { return false }
+        return await connection.request(timeout: timeZoneTimeout) { .setTimeZone(id: $0, identifier: identifier) }?.ok == true
+    }
+
+    /// Tells the guest that `text` was copied on this Mac. Returns `false` when there is no agent that
+    /// shares the clipboard, or the text is longer than a message may be.
+    @discardableResult
+    public func sendClipboard(_ text: String) -> Bool {
+        guard sharesClipboard, let connection,
+              let line = GuestMessageCoding.clipboardLine(text, as: HostMessage.clipboard(text:))
+        else { return false }
+        return connection.send(line: line)
+    }
+
     /// Whether the agent did what `message` asks. `false` also when there is no agent, or no answer.
     private func request(_ message: @Sendable (Int) -> HostMessage) async -> Bool {
         guard isConnected, let connection else { return false }
@@ -170,6 +196,14 @@ public final class GuestAgent {
                 if hasSaidHello, interfaces != self.interfaces {
                     self.interfaces = interfaces
                     onAddressesChange?()
+                }
+            case .clipboard(let text):
+                if hasSaidHello, sharesClipboard {
+                    onClipboard?(text)
+                }
+            case .clipboardRequest:
+                if hasSaidHello, sharesClipboard {
+                    onClipboardRequest?()
                 }
             case .result, .unknown:
                 break

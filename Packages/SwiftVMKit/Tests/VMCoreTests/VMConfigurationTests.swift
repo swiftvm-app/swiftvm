@@ -42,6 +42,31 @@ import Testing
         #expect(configuration.disks.isEmpty)
         #expect(configuration.audio.outputEnabled)
         #expect(!configuration.boot.secureBoot)
+        // What came later has its defaults in bundles that were written before it.
+        #expect(configuration.clipboard.isShared)
+        #expect(!configuration.installation.hasHostTimeZone)
+    }
+
+    @Test func knowsWhichGuestsCanHaveAnAgent() {
+        var configuration = sample()
+        #expect(configuration.canHaveGuestAgent)
+        configuration.os = GuestOS(family: .macOS)
+        #expect(configuration.canHaveGuestAgent)
+        configuration.os = GuestOS(family: .windows)
+        #expect(!configuration.canHaveGuestAgent)
+    }
+
+    @Test func remembersWhatWasDecidedAboutTheClipboardAndTheTimeZone() throws {
+        var configuration = sample()
+        configuration.clipboard.isShared = false
+        configuration.installation.hasHostTimeZone = true
+        let decoded = try JSONDecoder().decode(VMConfiguration.self, from: JSONEncoder().encode(configuration))
+        #expect(!decoded.clipboard.isShared)
+        #expect(decoded.installation.hasHostTimeZone)
+        // A copy of a machine is in the same place as the original, and shares what it shared.
+        let copy = configuration.duplicated(name: "Copy", sshAlias: "copy")
+        #expect(copy.installation.hasHostTimeZone)
+        #expect(!copy.clipboard.isShared)
     }
 
     @Test func rejectsNewerSchema() {

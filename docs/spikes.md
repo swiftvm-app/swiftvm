@@ -100,6 +100,8 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
 - **Fix:** After installing the key the app runs `sudo -S systemsetup -settimezone <host zone>` over SSH,
   with the password on standard input. `systemsetup` prints an `Error:-99` line and still succeeds; the
   symlink changes a moment later. A guest created after the fix came up on `Europe/Berlin`.
+- **Since the guest agent for macOS** the agent sets it, once per machine, and the SSH way is only what
+  is left when the agent couldn't be installed. See "The macOS guest agent across a machine's life".
 
 ## macOS guests ask before they shut down
 
@@ -112,6 +114,8 @@ Findings from the de-risking experiments in the plan. Each entry says what was t
   explains what happened. Shutting down without anyone at the screen needs root in the guest
   (`shutdown -h now`), so it is a job for the guest agent or a `sudoers` rule installed during setup.
 - **Note:** A guest that shuts itself down is noticed right away (`guestDidStop`).
+- **Since the guest agent for macOS** a guest that has it is shut down through it, without the question.
+  Everything above still holds for a guest without it.
 
 ## Cancelling a macOS installation
 
@@ -555,8 +559,11 @@ All through `swiftvm`, on Ubuntu 26.04, Ubuntu 24.04 and Debian 13 unless it say
 - **Checked with:** `sudo apt install linux-image-arm64`, removing the cloud kernel and restarting. The
   display device then has its driver, the guest suspends and resumes (0.47 s), the agent is back and the
   clock right, and a plugged-in disc is there as `sda`.
-- **Not done:** changing the catalog to Debian's `generic` image, which has the standard kernel. It is
-  the fix, and a decision for the user: the download is larger, and existing machines stay as they are.
+- **Done since:** the catalog names Debian's `generic` image (430 MB instead of 338 MB), which the user
+  agreed to. A machine made from it was ready 22 s after `swiftvm create debian-13` began, download
+  included, and its agent connected 6 s later. It runs `6.12.111+deb13-arm64`, the display device has
+  `virtio_gpu`, and the guest tools disc shows up as `sda` with the label `SWIFTVM`. Machines made
+  before stay as they are; the cure above is theirs.
 
 ## A resumed guest with its cable out reports a lost network
 
@@ -579,3 +586,133 @@ All through `swiftvm`, on Ubuntu 26.04, Ubuntu 24.04 and Debian 13 unless it say
   the machine to be seen stopped, looking five times a second, and a guest that shuts down through the
   agent and starts again can do both between two looks.
 - **Fix:** the machine counts its starts, and a restart waits for the next one.
+
+## A macOS guest can listen on the socket device — works
+
+- **Tried:** a small Swift program in a macOS 27.0.1 guest that binds `AF_VSOCK` (`sockaddr_vm`, any
+  CID), listens and accepts; `swiftvm vsock <machine> <port>` from the Mac to reach it.
+- **Outcome:**
+  - As an ordinary user it listens on port 7170, and the Mac's connection arrives with peer CID 2
+    (`VMADDR_CID_HOST`). Ports below 1024 are root's here as in Linux: `bind` to 717 or 1023 fails with
+    "Permission denied" for a user and works for root. So the rule the Linux agent goes by, that whoever
+    answers below 1024 is root's, holds for macOS guests too.
+  - A LaunchDaemon (root) listening on 718 and a LaunchAgent with `LimitLoadToSessionType` `Aqua`
+    listening on 7171 both came up with `launchctl bootstrap` and both were reached from the Mac.
+  - The LaunchAgent reads and sets the clipboard (`NSPasteboard.general`); the daemon, being root and
+    outside any session, has none to read. `pbcopy` and `pbpaste` over SSH work on the same clipboard as
+    the session of the user at the screen, which is what makes clipboard sharing checkable without
+    anyone at the guest's screen.
+  - A connect to a port nobody listens on is refused at once ("Connection reset by peer"), as with Linux.
+- **Also learned:**
+  - macOS registers both jobs as background items and tells the user so ("legacy daemon" and "legacy
+    agent" in `sfltool dumpbtm`, disposition `enabled, allowed, notified`, developer unknown for a
+    program that is signed to run locally). They run without anyone allowing anything.
+  - Root can set the clock with `clock_settime(CLOCK_REALTIME)`; a user can't. A clock set back by 30 s
+    was still 30 s behind 12 s later: macOS doesn't put that right by itself the way it does after a
+    resume.
+  - `systemsetup -settimezone` as root exits with 0 for a time zone it knows and 1 for one it doesn't,
+    and says its `Error:-99` either way.
+  - A disc image plugged in as a USB drive is mounted by macOS within seconds at `/Volumes/<label>`,
+    for whoever is logged in. Files on it can be run with `sh` from there.
+  - `NSPasteboard.general.accessBehavior` is `alwaysAllow` (2) for a program on macOS 27.0 and 27.0.1,
+    and reading the clipboard takes a few milliseconds: nobody is asked whether SwiftVM or its agent
+    may read what was copied. The header says the system *may* ask (`ask` is described as the default
+    for the general clipboard); if a later macOS does, the answer is in System Settings.
+
+## The macOS guest agent is one program in two halves
+
+- **Why two:** shutting down, setting the clock and the time zone take root. The clipboard belongs to the
+  session of whoever is logged in, where root has no business. So `swiftvm-agent daemon` runs as a
+  LaunchDaemon and `swiftvm-agent session` as a LaunchAgent in every session at the screen.
+- **One line to the Mac all the same.** Only the daemon listens on the socket device, on port 717 like
+  the Linux agent, and only for the Mac (peer CID 2). The session half connects to the daemon over a Unix
+  socket (`/var/run/swiftvm-agent.sock`) and the daemon passes copied text on, in both directions. It
+  takes that connection from the user who owns `/dev/console` and nobody else, so another account in the
+  guest can't read what was copied on the Mac, and the newest session takes the place of the one before.
+- **Nothing that was copied is kept in the guest's daemon.** A first version kept the last text from the
+  Mac for a session that begins later. The review found what that does: someone logs in again and gets
+  text that the guest itself has since replaced, or that was copied before sharing was turned off. Now a
+  session that begins has the daemon ask the app (`clipboard-request`), which knows what is on the Mac's
+  clipboard at that moment and whether it is still shared. And when a guest comes back from being
+  suspended, the app only sends what the guest hasn't had from it: the guest may have copied something
+  since, a picture say, that the same old text would wipe out.
+- **The alternative, tried in the spike and not built:** let the session half listen on a port of its
+  own. It works, but that port is above 1024, where any program in the guest could sit and be handed the
+  Mac's clipboard.
+- **What it costs in the guest:** 9.1 to 9.5 MB of memory for the daemon and 6.9 to 7.9 MB for the
+  session half (`ps -o rss`), with AppKit linked into both because it is one program. Nothing in macOS
+  says when something is copied, so the session half looks at the clipboard's counter twice a second
+  and reads the clipboard only when the counter has moved. The app does the same on the Mac, and only
+  while a guest shares its clipboard.
+- **What travels:** text only, as one message. The longest message is 256 kB as it is written down, so
+  text beyond roughly 250 kB (fewer characters where they take more than one byte) stays where it was
+  copied. Both sides remember the state of the clipboard they have dealt with, so that what one puts
+  there isn't sent back by the other.
+- **Protocol:** no new version. The agent names what it can do beyond the basics in its `hello`
+  (`"features":["clipboard","time-zone"]`), and the app asks for nothing an agent didn't name. The Linux
+  agent names nothing and is asked for nothing new.
+- **Delivery:** one shell script, as for Linux, with the program inside in Base64 (935 kB for a debug
+  build). Over SSH, `sudo -S` reads the password from standard input and root's `sh` reads the script
+  from the same input, straight into a folder of root's own. Between the two comes a line with a marker
+  that is made up for the occasion, and root's shell skips everything up to it: a `sudo` that doesn't ask
+  for the password after all would otherwise leave it as the script's first line, to be run. A first
+  version put the script in a folder of the account's own and had root run it from there in a second
+  step; the review pointed out that any program of that account could swap it in between.
+- **The time zone is changed off the daemon's queue.** `systemsetup` took four seconds in a guest that
+  was still busy with its first start. Done on the queue, a request to shut down in that time would have
+  waited, timed out in the app after five seconds, and ended in the power button and macOS's question.
+- **Needs macOS 27 in the guest**, because the program is built with the rest of the package, whose
+  minimum that is. A package has one minimum for all its targets; an agent for older guests would have to
+  live in a package of its own.
+
+## The macOS guest agent across a machine's life
+
+All through `swiftvm`, on macOS 27.0.1 guests (4 CPUs, 8 GB), with nobody at their screens.
+
+- **A new machine** (`swiftvm create macos`, password `se cret"$1`): created after 163 s, agent connected
+  198 s after the command began, 35 s after the first start. Four seconds later the agent had put the
+  guest on `Europe/Berlin` (it starts out on `US/Pacific`) and the machine's configuration said so.
+- **An existing machine:** `swiftvm install-tools <mac>` without a password is refused with sudo's own
+  words ("a password is required"), with a wrong one too ("1 incorrect password attempt"); with the
+  right one the agent was connected 7.2 s later. Most of that is the app's wait between two attempts to
+  reach an agent in a guest that has been up for a while (5 s).
+- **From the disc:** `swiftvm install-tools <mac> --disc` plugs in a 989 kB disc that the guest mounts at
+  `/Volumes/SWIFTVM`. Run there as the user, the installer says it has to be root and does nothing; with
+  `sudo` it installs and the agent connects. `sudo sh /usr/local/lib/swiftvm/install.sh --remove` takes
+  everything out again, and the app notices at once.
+- **Shutdown:** `swiftvm stop` on a guest with the agent took 0.85 s, 0.99 s and 6.1 s from the command
+  to stopped. The second of those had macOS's own shutdown question on its screen, left there by a
+  `swiftvm stop` before the agent was installed, which had given up after 60 s with the explanation it
+  always gave.
+- **Restart:** `swiftvm restart` took 5.7 s; the agent was connected 11 s after a start.
+- **Pause:** paused for 20 s, the guest's clock was within 0.07 s of the Mac's at the first reading.
+- **Suspend and resume:** suspended for 30 s, the guest was back 2.7 s after `swiftvm start`. The
+  daemon's listening socket outlives the save and restore, as the Linux agent's does: in seven of eight
+  resumes the agent was connected 0.02 to 0.11 s after the resume had returned, after 8 s and after 30 s
+  of suspension alike. In the first of the eight, the first resume after a cold start, it took between
+  1.4 and 1.9 s, and a clock read over SSH in that gap was 34.6 s behind; the next reading, with the
+  agent connected, was within 0.07 s. What made that one slower wasn't found. The app tries again every
+  second, so one failed attempt costs that.
+- **A snapshot of the running guest:** 5.0 s, which is a suspend, a copy and a resume. The agent was
+  connected afterwards and the clock within 0.03 s.
+- **Back to that snapshot:** a file written before the snapshot and overwritten after it held the old
+  text again. The start took 3.8 s, the agent was connected 0.1 s later, the clock was within 0.04 s 20 s
+  after the snapshot, and both halves of the agent were the processes they had been.
+- **Debian 13 from the `generic` image:** suspended for 30 s and resumed in 0.44 s, with the agent
+  connected at the first look and the clock right. The `genericcloud` image couldn't be resumed at all.
+- **Clipboard:** text set on the Mac came out of `pbpaste` in the guest in the first reading, 1.2 s
+  later, and text piped into `pbcopy` in the guest was on the Mac's clipboard as quickly: quotes, an
+  em dash, umlauts, Japanese, an emoji, a tab and a line break arrived unchanged. 200,000 characters
+  arrived; 300,000 didn't and the 200,000 stayed. A picture on the Mac's clipboard changes nothing in
+  the guest. A guest that starts while a picture is on the Mac's clipboard starts with its own empty.
+- **Traps on the way:**
+  - The account's shell is zsh, where `status` is read-only: `status=$?` in a command sent over SSH
+    failed *after* the installer had run, so the install was reported as failed and had worked. What
+    the app sends now is handed to `/bin/sh`.
+  - `pbcopy` over SSH reads its input in the C locale, as MacRoman: `“` arrives on the clipboard as
+    `‚Äú`. That is the test's doing, not the agent's: with `LC_ALL=en_US.UTF-8` in front it is right.
+  - A resource file named `install-macos.sh` is, to a bundle on a Mac, the Mac's own version of
+    `install.sh`, and is handed out to whoever asks for `install.sh`. The Linux installer got the macOS
+    one that way until the file was renamed. The unit test that reads the Linux installer caught it.
+- **Not checked on a guest:** two users logged in at once in the guest, the clipboard between two
+  running guests, and a guest older than macOS 27.

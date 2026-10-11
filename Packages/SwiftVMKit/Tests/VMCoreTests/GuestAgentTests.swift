@@ -56,11 +56,7 @@ private final class FakeAgent: @unchecked Sendable {
             for line in (try? framer.receive(Data(buffer[0..<count]))) ?? [] {
                 guard let message = GuestMessageCoding.message(HostMessage.self, from: line) else { continue }
                 lock.withLock { messages.append(message) }
-                let id: Int? = switch message {
-                case .setClock(let id, _), .mountSharedFolders(let id, _, _), .shutDown(let id): id
-                case .hello, .unknown: nil
-                }
-                if let id, let isOK = answer(message) {
+                if let id = message.requestID, let isOK = answer(message) {
                     send(.result(GuestRequestResult(id: id, ok: isOK, error: isOK ? nil : "no")))
                 }
             }
@@ -175,6 +171,17 @@ private final class AgentProvider: VMBackendProvider {
     private func clockRequests(of agent: FakeAgent) -> [Int64] {
         agent.received.compactMap { if case .setClock(_, let nanoseconds) = $0 { nanoseconds } else { nil } }
     }
+
+    private func timeZoneRequests(of agent: FakeAgent) -> [String] {
+        agent.received.compactMap { if case .setTimeZone(_, let identifier) = $0 { identifier } else { nil } }
+    }
+
+    /// What the agent in a macOS guest says about itself.
+    private static let macHello = AgentHello(
+        agent: "1.0",
+        system: GuestSystem(id: "macos", name: "macOS", version: "27.1", prettyName: "macOS 27.1", build: "26B100", kernel: "27.1.0"),
+        features: [GuestFeature.clipboard, GuestFeature.timeZone]
+    )
 
     @Test func holdsOnToAnAgentThatAnswers() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -301,12 +308,103 @@ private final class AgentProvider: VMBackendProvider {
 
     @Test func aGuestThatCannotHaveAnAgentIsNotAsked() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let machine = try makeMachine(family: .macOS)
+        let machine = try makeMachine(family: .windows)
         await machine.start()
         try await Task.sleep(for: .milliseconds(100))
         #expect(backend.attempts.isEmpty)
         #expect(await machine.agent.waitUntilConnected(timeout: .seconds(30)) == false)
         await machine.forceStop()
+    }
+
+    @Test func aMacSaysWhichMacOSItRuns() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine(family: .macOS)
+        try machine.updateConfiguration { $0.os = GuestOS(family: .macOS, productName: "macOS 27.0.1", build: "26A434") }
+        backend.hello = Self.macHello
+        await machine.start()
+        #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+        // The guest was updated since it was installed, and says so.
+        #expect(machine.configuration.os.summary == "macOS 27.1 (26B100)")
+        // It is no Linux distribution, whatever it calls itself.
+        #expect(machine.configuration.os.distribution == nil)
+        #expect(machine.agent.sharesClipboard)
+        #expect(machine.agent.setsTimeZone)
+        await machine.forceStop()
+        #expect(!machine.agent.sharesClipboard)
+    }
+
+    @Test func givesAGuestThisMacsTimeZoneOnce() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine(family: .macOS)
+        machine.hostTimeZone = { "Europe/Berlin" }
+        backend.hello = Self.macHello
+        #expect(!machine.configuration.installation.hasHostTimeZone)
+
+        await machine.start()
+        #expect(await eventually { machine.configuration.installation.hasHostTimeZone })
+        #expect(timeZoneRequests(of: backend.agents[0]) == ["Europe/Berlin"])
+        #expect(try machine.bundle.loadConfiguration().installation.hasHostTimeZone)
+
+        // Once in its life. Whoever picks another time zone in the guest afterwards keeps it, also
+        // when its agent comes back, the Mac travels, or the machine starts again.
+        machine.hostTimeZone = { "Asia/Tokyo" }
+        backend.agents[0].hangUp()
+        #expect(await eventually { backend.agents.count == 2 && machine.agent.isConnected })
+        await machine.forceStop()
+        await machine.start()
+        #expect(await eventually { backend.agents.count == 3 && machine.agent.isConnected })
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(timeZoneRequests(of: backend.agents[1]).isEmpty)
+        #expect(timeZoneRequests(of: backend.agents[2]).isEmpty)
+        await machine.forceStop()
+    }
+
+    @Test func asksForTheTimeZoneAgainUntilItWorked() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine(family: .macOS)
+        machine.hostTimeZone = { "Europe/Berlin" }
+        backend.hello = Self.macHello
+        backend.answer = { message in
+            if case .setTimeZone = message { false } else { true }
+        }
+        await machine.start()
+        #expect(await eventually { backend.agents.count == 1 && timeZoneRequests(of: backend.agents[0]) == ["Europe/Berlin"] })
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!machine.configuration.installation.hasHostTimeZone)
+
+        // The next time its agent turns up, it is asked again.
+        backend.answer = { _ in true }
+        backend.agents[0].hangUp()
+        #expect(await eventually { machine.configuration.installation.hasHostTimeZone })
+        #expect(timeZoneRequests(of: backend.agents[1]) == ["Europe/Berlin"])
+        await machine.forceStop()
+    }
+
+    @Test func anAgentThatCannotSetTheTimeZoneIsNotAsked() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // The agent for Linux doesn't offer it, and a Linux guest was asked where it is when it was set up.
+        let machine = try makeMachine()
+        await machine.start()
+        #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+        #expect(!machine.agent.setsTimeZone)
+        #expect(await machine.agent.setTimeZone("Europe/Berlin") == false)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(backend.agents[0].received == [.hello(protocol: GuestProtocol.version)])
+        #expect(!machine.configuration.installation.hasHostTimeZone)
+        await machine.forceStop()
+    }
+
+    @Test func saysWhenAnAgentComesAndGoes() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        var changes: [Bool] = []
+        machine.onGuestAgentChange = { changes.append($0.agent.isConnected) }
+        await machine.start()
+        #expect(await eventually { changes == [true] })
+        backend.agents[0].hangUp()
+        #expect(await eventually { changes == [true, false, true] })
+        await machine.forceStop()
+        #expect(changes == [true, false, true, false])
     }
 
     @Test func setsTheClockOfAGuestThatWasSuspended() async throws {
@@ -462,7 +560,7 @@ private final class AgentProvider: VMBackendProvider {
         await machine.start()
         #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
 
-        await machine.shutDown()
+        #expect(await machine.shutDown() == .agent)
         #expect(machine.state == .stopping)
         #expect(backend.agents[0].received.last == .shutDown(id: 1))
         // The agent has said yes; the power button isn't needed.
@@ -481,11 +579,14 @@ private final class AgentProvider: VMBackendProvider {
         await machine.start()
         #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
 
-        await machine.shutDown()
+        #expect(await machine.shutDown() == .powerButton)
         #expect(machine.state == .stopping)
         #expect(backend.agents[0].received.last == .shutDown(id: 1))
         #expect(backend.stopRequests == 1)
         await machine.forceStop()
+        // Nothing is asked of a machine that isn't running.
+        #expect(await machine.shutDown() == nil)
+        #expect(await machine.restart() == nil)
     }
 
     @Test func pressesThePowerButtonWhenTheAgentSaysNo() async throws {
@@ -582,6 +683,252 @@ private final class AgentProvider: VMBackendProvider {
         #expect(backend.attempts == [GuestProtocol.agentPort, 22])
         await machine.pause()
         await #expect(throws: VMError.self) { try await machine.connectToGuest(port: 22) }
+        await machine.forceStop()
+    }
+}
+
+/// The Mac's clipboard, played by the test.
+@MainActor
+private final class PretendClipboard: Clipboard {
+    private(set) var changeCount = 0
+    private var contents: String?
+    /// How often the clipboard's contents were read, which is what a system could ask the user about.
+    private(set) var reads = 0
+
+    var text: String? {
+        reads += 1
+        return contents
+    }
+
+    /// What is on the clipboard, without that counting as a read.
+    var current: String? { contents }
+
+    func setText(_ text: String) {
+        copy(text)
+    }
+
+    /// Someone copies something on the Mac. `nil` is something that isn't text, such as a picture.
+    func copy(_ text: String?) {
+        contents = text
+        changeCount += 1
+    }
+}
+
+@MainActor
+@Suite struct ClipboardSharingTests {
+    private let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
+    private let clipboard = PretendClipboard()
+    private let sharing: ClipboardSharing
+
+    init() {
+        sharing = ClipboardSharing(clipboard: clipboard, lookInterval: .milliseconds(10))
+    }
+
+    private static let sharingHello = AgentHello(
+        agent: "1.0", system: GuestSystem(id: "macos", prettyName: "macOS 27.0.1"), features: [GuestFeature.clipboard, GuestFeature.timeZone]
+    )
+
+    /// A machine with a guest of its own, wired to the sharing the way the app wires its machines.
+    private func makeMachine(hello: AgentHello = ClipboardSharingTests.sharingHello) throws -> (machine: VirtualMachine, provider: AgentProvider) {
+        var configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
+        configuration.installation.hasHostTimeZone = true
+        let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        let machine = try VirtualMachine(bundle: bundle)
+        let provider = AgentProvider()
+        provider.backend.hello = hello
+        machine.backendProvider = provider
+        machine.isHostLocked = { false }
+        machine.agent.retryInterval = .milliseconds(10)
+        machine.onGuestAgentChange = { [sharing] in sharing.update($0) }
+        machine.onGuestClipboard = { [sharing] in sharing.guest($0, didCopy: $1) }
+        machine.onGuestClipboardRequest = { [sharing] in sharing.guestWantsClipboard($0) }
+        machine.onConfigurationChange = { [sharing] in sharing.update($0) }
+        return (machine, provider)
+    }
+
+    private func eventually(within timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return true
+    }
+
+    /// The texts a guest was told were copied on the Mac, in order.
+    private func copies(toldTo provider: AgentProvider, line: Int = 0) -> [String] {
+        guard provider.backend.agents.indices.contains(line) else { return [] }
+        return provider.backend.agents[line].received.compactMap { if case .clipboard(let text) = $0 { text } else { nil } }
+    }
+
+    @Test func whatIsCopiedOnTheMacReachesTheGuest() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        clipboard.copy("copied before the guest was up")
+        let (machine, provider) = try makeMachine()
+        #expect(!sharing.isWatching)
+
+        // A guest that joins finds on its clipboard what is on the Mac's.
+        await machine.start()
+        #expect(await eventually { copies(toldTo: provider) == ["copied before the guest was up"] })
+        #expect(sharing.isWatching)
+
+        clipboard.copy("copied while it runs")
+        #expect(await eventually { copies(toldTo: provider).last == "copied while it runs" })
+        // While nothing is copied the clipboard isn't read: looking at its counter is all it takes.
+        let reads = clipboard.reads
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(clipboard.reads == reads)
+
+        // A picture isn't text, and nothing is said about it.
+        clipboard.copy(nil)
+        clipboard.copy("")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider).count == 2)
+
+        // Nobody watches the clipboard for a guest that is gone.
+        await machine.forceStop()
+        #expect(!sharing.isWatching)
+        let before = clipboard.reads
+        clipboard.copy("copied after it stopped")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(clipboard.reads == before)
+    }
+
+    @Test func whatIsCopiedInAGuestReachesTheMacAndTheOtherGuests() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (first, firstProvider) = try makeMachine()
+        let (second, secondProvider) = try makeMachine()
+        await first.start()
+        await second.start()
+        #expect(await eventually { first.agent.sharesClipboard && second.agent.sharesClipboard })
+
+        firstProvider.backend.agents[0].send(.clipboard(text: "copied in the first guest"))
+        #expect(await eventually { clipboard.current == "copied in the first guest" })
+        #expect(await eventually { copies(toldTo: secondProvider) == ["copied in the first guest"] })
+        // The guest it came from isn't told what it already has, now or when the Mac's clipboard is
+        // next looked at.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: firstProvider).isEmpty)
+        #expect(copies(toldTo: secondProvider).count == 1)
+
+        // The same text again doesn't touch the Mac's clipboard.
+        let count = clipboard.changeCount
+        secondProvider.backend.agents[0].send(.clipboard(text: "copied in the first guest"))
+        secondProvider.backend.agents[0].send(.clipboard(text: ""))
+        #expect(await eventually { copies(toldTo: firstProvider) == ["copied in the first guest"] })
+        #expect(clipboard.changeCount == count)
+
+        // And what is copied on the Mac goes to both.
+        clipboard.copy("copied on the Mac")
+        #expect(await eventually { copies(toldTo: firstProvider).last == "copied on the Mac" && copies(toldTo: secondProvider).last == "copied on the Mac" })
+        await first.forceStop()
+        #expect(sharing.isWatching)
+        await second.forceStop()
+        #expect(!sharing.isWatching)
+    }
+
+    @Test func aGuestThatDoesNotShareIsLeftOut() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        clipboard.copy("on the Mac")
+        // Its agent doesn't offer to.
+        let (plain, plainProvider) = try makeMachine(hello: AgentHello(agent: "1.0", system: GuestSystem(id: "ubuntu")))
+        await plain.start()
+        #expect(await plain.agent.waitUntilConnected(timeout: .seconds(5)))
+        plainProvider.backend.agents[0].send(.clipboard(text: "from a guest that doesn't share"))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: plainProvider).isEmpty)
+        #expect(clipboard.current == "on the Mac")
+        #expect(!sharing.isWatching)
+
+        // Or sharing is turned off for the machine.
+        let (machine, provider) = try makeMachine()
+        try machine.updateConfiguration { $0.clipboard.isShared = false }
+        await machine.start()
+        #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+        provider.backend.agents[0].send(.clipboard(text: "from a guest that is kept apart"))
+        clipboard.copy("more on the Mac")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider).isEmpty)
+        #expect(clipboard.current == "more on the Mac")
+        #expect(clipboard.reads == 0)
+
+        // Turned on while the guest runs, it joins at once, and leaves when it is turned off again.
+        try machine.updateConfiguration { $0.clipboard.isShared = true }
+        #expect(await eventually { copies(toldTo: provider) == ["more on the Mac"] })
+        #expect(sharing.isWatching)
+        // A change that has nothing to do with the clipboard doesn't send it all again.
+        try machine.updateConfiguration { $0.name = "Renamed" }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(copies(toldTo: provider).count == 1)
+        try machine.updateConfiguration { $0.clipboard.isShared = false }
+        #expect(!sharing.isWatching)
+        clipboard.copy("not for the guest")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider).count == 1)
+        await machine.forceStop()
+        await plain.forceStop()
+    }
+
+    @Test func aGuestThatComesBackKeepsWhatItCopiedSince() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (machine, provider) = try makeMachine()
+        clipboard.copy("first")
+        await machine.start()
+        #expect(await eventually { copies(toldTo: provider) == ["first"] })
+
+        // Suspended and resumed with nothing new on the Mac. The guest has that text already, and may
+        // have copied a picture since, which sending it again would wipe out.
+        await machine.suspend()
+        await machine.start()
+        #expect(await eventually { provider.backend.agents.count == 2 && machine.agent.sharesClipboard })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider, line: 1).isEmpty)
+
+        // Someone logs in afresh in the guest, with a clipboard that has nothing from the Mac on it.
+        // The guest asks, and is told, the same text or not.
+        provider.backend.agents[1].send(.clipboardRequest)
+        #expect(await eventually { copies(toldTo: provider, line: 1) == ["first"] })
+
+        // What came from the guest isn't sent back to it when it comes back either.
+        provider.backend.agents[1].send(.clipboard(text: "copied in the guest"))
+        #expect(await eventually { clipboard.current == "copied in the guest" })
+        await machine.suspend()
+        await machine.start()
+        #expect(await eventually { provider.backend.agents.count == 3 && machine.agent.sharesClipboard })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider, line: 2).isEmpty)
+
+        // A guest that isn't shared with is told nothing, however it asks.
+        try machine.updateConfiguration { $0.clipboard.isShared = false }
+        provider.backend.agents[2].send(.clipboardRequest)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider, line: 2).isEmpty)
+        // And with a picture on the Mac's clipboard there is nothing to tell.
+        try machine.updateConfiguration { $0.clipboard.isShared = true }
+        clipboard.copy(nil)
+        provider.backend.agents[2].send(.clipboardRequest)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(copies(toldTo: provider, line: 2).isEmpty)
+        await machine.forceStop()
+    }
+
+    @Test func aGuestThatComesBackIsToldAgain() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (machine, provider) = try makeMachine()
+        clipboard.copy("first")
+        await machine.start()
+        #expect(await eventually { copies(toldTo: provider) == ["first"] })
+        await machine.suspend()
+        #expect(!sharing.isWatching)
+        // Copied while the guest was suspended: it finds it when it is back.
+        clipboard.copy("second")
+        await machine.start()
+        #expect(await eventually { copies(toldTo: provider, line: 1) == ["second"] })
+        // Text that is too long for a message isn't shared, and breaks nothing.
+        clipboard.copy(String(repeating: "x", count: GuestProtocol.maximumLineLength))
+        clipboard.copy("third")
+        #expect(await eventually { copies(toldTo: provider, line: 1).last == "third" })
+        #expect(copies(toldTo: provider, line: 1).count == 2)
         await machine.forceStop()
     }
 }

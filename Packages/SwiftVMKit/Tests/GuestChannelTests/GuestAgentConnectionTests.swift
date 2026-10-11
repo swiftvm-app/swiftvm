@@ -74,6 +74,8 @@ struct AgentEnd: @unchecked Sendable {
         agent.send(hello)
         // Something that isn't a message is skipped; what follows it still counts.
         agent.send("not json\n")
+        agent.send(#"{"type":"screen"}"# + "\n")
+        // A message that lacks what makes it one is skipped as well.
         agent.send(#"{"type":"clipboard"}"# + "\n")
         agent.send(addresses)
 
@@ -82,7 +84,7 @@ struct AgentEnd: @unchecked Sendable {
             received.append(message)
             if received.count == 3 { break }
         }
-        #expect(received == [hello, .unknown(type: "clipboard"), addresses])
+        #expect(received == [hello, .unknown(type: "screen"), addresses])
     }
 
     @Test func aRequestGetsItsOwnAnswer() async {
@@ -200,6 +202,28 @@ struct AgentEnd: @unchecked Sendable {
         #expect(names.count == GuestAgentConnection.backlogLimit)
         #expect(names.last == "eth\(count)")
         #expect(names.first == "eth\(count - GuestAgentConnection.backlogLimit + 1)")
+    }
+
+    @Test func aMessageThatDoesNotFitAtOnceArrivesWhole() async throws {
+        let (handle, agent) = AgentEnd.makeLine()
+        defer { agent.hangUp() }
+        let connection = GuestAgentConnection(handle: handle)
+        // Far more than the line holds at a time, with something short behind it. Nobody waits for it
+        // to be taken in: sending returns at once.
+        let text = String(repeating: "copied text ", count: 20_000)
+        let line = try #require(GuestMessageCoding.clipboardLine(text, as: HostMessage.clipboard(text:)))
+        let started = ContinuousClock.now
+        #expect(connection.send(line: line))
+        #expect(connection.send(.shutDown(id: 7)))
+        #expect(ContinuousClock.now - started < .seconds(1))
+
+        // The agent reads it at its own pace, and gets all of it, in order.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await agent.receive() == .clipboard(text: text))
+        #expect(await agent.receive() == .shutDown(id: 7))
+        // The line is as good as new afterwards.
+        #expect(connection.send(.hello(protocol: 1)))
+        #expect(await agent.receive() == .hello(protocol: 1))
     }
 
     @Test func anAgentThatStopsListeningIsGivenUpOn() async {

@@ -41,6 +41,16 @@ public enum VMBackendEvent: Sendable {
     case networkDisconnected(String)
 }
 
+/// How a guest was asked to shut down.
+public enum ShutdownRequest: Sendable, Hashable {
+    /// Through its agent, which shuts it down whatever is on its screen.
+    case agent
+    /// With the power button. Some guests answer that with a question on their screen.
+    case powerButton
+    /// It couldn't be asked, and was stopped outright.
+    case forced
+}
+
 /// How a machine should start.
 public struct VMStartOptions: Sendable, Hashable {
     /// Restore the guest from this saved state instead of booting it.

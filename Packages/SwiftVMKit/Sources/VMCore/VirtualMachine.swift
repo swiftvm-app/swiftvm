@@ -32,6 +32,12 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public private(set) var startCount = 0
     /// Called when the guest's agent reports addresses, or is gone and reports none any more.
     @ObservationIgnored public var onGuestAddressesChange: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when the guest's agent has connected, and when one that was connected is gone.
+    @ObservationIgnored public var onGuestAgentChange: (@MainActor (VirtualMachine) -> Void)?
+    /// Called with text that was copied in the guest, where its agent shares the clipboard.
+    @ObservationIgnored public var onGuestClipboard: (@MainActor (VirtualMachine, String) -> Void)?
+    /// Called when the guest asks for what is on this Mac's clipboard.
+    @ObservationIgnored public var onGuestClipboardRequest: (@MainActor (VirtualMachine) -> Void)?
 
     /// The account to set up on the first boot after installation. Kept in memory only: if the app quits
     /// before that boot, the guest shows its own setup assistant instead.
@@ -53,6 +59,8 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public var isHostLocked: @MainActor () -> Bool = { HostSession.isScreenLocked }
     /// Asked before every start. While it says no, starting does nothing and the machine stays as it is.
     @ObservationIgnored public var isStartAllowed: @MainActor () -> Bool = { true }
+    /// The time zone this Mac is in, by its name in the time zone database.
+    @ObservationIgnored public var hostTimeZone: @MainActor () -> String = { TimeZone.current.identifier }
 
     @ObservationIgnored private var backend: (any VMBackend)?
     @ObservationIgnored private var restartsAfterStop = false
@@ -83,8 +91,20 @@ public final class VirtualMachine: Identifiable {
             guard let self else { return }
             onGuestAddressesChange?(self)
         }
-        // A guest that restarts by itself keeps its machine running, and comes back with nothing mounted.
-        agent.onDisconnect = { [weak self] in self?.hasAgentMountedSharedFolders = false }
+        agent.onDisconnect = { [weak self] in
+            guard let self else { return }
+            // A guest that restarts by itself keeps its machine running, and comes back with nothing mounted.
+            hasAgentMountedSharedFolders = false
+            onGuestAgentChange?(self)
+        }
+        agent.onClipboard = { [weak self] text in
+            guard let self else { return }
+            onGuestClipboard?(self, text)
+        }
+        agent.onClipboardRequest = { [weak self] in
+            guard let self else { return }
+            onGuestClipboardRequest?(self)
+        }
     }
 
     public convenience init(bundle: VMBundle) throws {
@@ -200,17 +220,23 @@ public final class VirtualMachine: Identifiable {
         // The guest knows best what it is. One that was upgraded says so here, and one that was installed
         // from a disc says it for the first time.
         if let name = hello.system.displayName {
-            let distribution = hello.system.id.flatMap { $0.isEmpty ? nil : $0 } ?? configuration.os.distribution
             try? updateConfiguration { configuration in
                 configuration.os.productName = name
-                configuration.os.distribution = distribution
+                if configuration.os.family == .linux, let distribution = hello.system.id, !distribution.isEmpty {
+                    configuration.os.distribution = distribution
+                }
+                if let build = hello.system.build, !build.isEmpty {
+                    configuration.os.build = build
+                }
             }
         }
+        onGuestAgentChange?(self)
         Task { await lookAfterGuest() }
     }
 
-    /// Does through the agent what the guest needs from the host right now: a clock that is right, and its
-    /// shared folders mounted. Called when the agent connects and whenever one of the two may be due.
+    /// Does through the agent what the guest needs from the host right now: a clock that is right, its
+    /// shared folders mounted, and once in its life this Mac's time zone. Called when the agent connects
+    /// and whenever one of them may be due.
     private func lookAfterGuest() async {
         // One round at a time. Whoever comes while one is under way has it run once more instead, so
         // that nothing is asked of the agent twice.
@@ -234,6 +260,12 @@ public final class VirtualMachine: Identifiable {
                // The answer may come after the guest has stopped, or stopped and started again.
                run == startCount, agent.isConnected {
                 hasAgentMountedSharedFolders = true
+            }
+            // A guest that set itself up was never asked where it is. One that can be told is told once;
+            // whoever picks another time zone in the guest afterwards keeps it.
+            if agent.setsTimeZone, !configuration.installation.hasHostTimeZone,
+               await agent.setTimeZone(hostTimeZone()), run == startCount {
+                try? updateConfiguration { $0.installation.hasHostTimeZone = true }
             }
         } while shouldLookAfterGuestAgain
     }
@@ -335,27 +367,31 @@ public final class VirtualMachine: Identifiable {
     }
 
     /// Asks the guest to shut down. Falls back to a forced stop when the guest can't be asked.
-    public func shutDown() async {
-        guard activity == nil, state == .running, let backend else { return }
+    ///
+    /// - Returns: How the guest was asked, or `nil` if it wasn't: it isn't running, or stopped meanwhile.
+    @discardableResult
+    public func shutDown() async -> ShutdownRequest? {
+        guard activity == nil, state == .running, let backend else { return nil }
         if agent.isConnected {
             // Asked through its agent, a guest shuts down wherever it is in its startup and whatever is
             // on its screen. The power button below is for an agent that doesn't answer.
             state = .stopping
             expireShutdownRequest(after: shutdownRequestTimeout)
-            if await agent.shutDown() { return }
-            guard isCurrent(backend), state == .stopping else { return }
+            if await agent.shutDown() { return .agent }
+            guard isCurrent(backend), state == .stopping else { return nil }
         }
         if backend.canRequestStop {
             do {
                 try backend.requestStop()
                 state = .stopping
                 expireShutdownRequest(after: shutdownRequestTimeout)
-                return
+                return .powerButton
             } catch {
                 // Fall through to a forced stop.
             }
         }
         await forceStop()
+        return .forced
     }
 
     private func expireShutdownRequest(after timeout: Duration) {
@@ -470,10 +506,12 @@ public final class VirtualMachine: Identifiable {
         }
     }
 
-    public func restart() async {
-        guard activity == nil, state == .running else { return }
+    /// Shuts the guest down and starts it again once it has. Returns as ``shutDown()`` does.
+    @discardableResult
+    public func restart() async -> ShutdownRequest? {
+        guard activity == nil, state == .running else { return nil }
         restartsAfterStop = true
-        await shutDown()
+        return await shutDown()
     }
 
     /// Throws away the suspended state so the next start is a cold boot.

@@ -18,10 +18,13 @@ Early development. Working today:
   *Add machines to ~/.ssh/config* in Settings, plain `ssh <alias>`
 - **SSH without a network**: `swiftvm ssh <machine> --vsock` reaches a Linux guest over the machine's own
   socket device, so it still works when the guest's network is down or its cable is pulled
-- **Guest tools for Linux guests**: a small agent in the guest tells the app which system it runs and
-  which addresses it holds, sets its clock the moment it is resumed, mounts the shared folders and shuts
-  it down without delay. Quick Create machines come with it; any other Linux guest gets it with
-  *Install Guest Tools…* or `swiftvm install-tools`
+- **Guest tools**: a small agent in the guest tells the app which system it runs and which addresses it
+  holds, sets its clock the moment it is resumed and shuts it down without delay. In Linux guests it
+  also mounts the shared folders; in macOS guests it shares the clipboard and shuts the Mac down without
+  the question macOS otherwise puts on its screen. Machines that SwiftVM sets up come with it; any other
+  guest gets it with *Install Guest Tools…* or `swiftvm install-tools`
+- **Shared clipboard**: text copied on your Mac can be pasted in a macOS guest with the guest tools and
+  the other way round, and in Linux guests that run `spice-vdagent`. It can be turned off per machine
 - **Port forwarding**: reach a port in a guest as `localhost:<port>` on the Mac, and optionally from other
   devices on the network. Forwards can be added and removed while the guest runs
 - **Shared folders** that can be added and removed while the guest runs
@@ -36,24 +39,42 @@ Early development. Working today:
   started up is in the machine's `logs/console.log`
 - **`swiftvm`** command-line tool that drives the running app
 
-Planned: Windows guests (QEMU engine), USB passthrough, guest tools for macOS guests.
+Planned: Windows guests (QEMU engine), USB passthrough.
 
 Good to know:
 
-- macOS guests ask on their own screen before they shut down, so *Shut Down* and `swiftvm stop` need someone
-  to confirm in the machine's window. Suspend needs no confirmation.
-- The guest tools are one Python script and its systemd units, so they need a guest with systemd and
-  Python 3. Ubuntu and Debian bring both along; other distributions haven't been tried. They are
-  installed over SSH where the Mac can sign in and use `sudo` without a password, as in Quick Create
+- A macOS guest without the guest tools asks on its own screen before it shuts down, so *Shut Down* and
+  `swiftvm stop` need someone to confirm in the machine's window. With the guest tools it shuts down at
+  once, the way `sudo shutdown -h now` does: the apps in it aren't asked about documents that haven't
+  been saved. So does every running machine that has them when you choose *Shut Down and Quit*; the
+  others are stopped outright there. Suspend never needs a confirmation.
+- The guest tools for Linux are one Python script and its systemd units, so they need a guest with
+  systemd and Python 3. Ubuntu and Debian bring both along; other distributions haven't been tried. They
+  are installed over SSH where the Mac can sign in and use `sudo` without a password, as in Quick Create
   machines. For other guests *Install Guest Tools…* plugs in a disc and shows the one command to run in
   the guest. In the guest, `sudo sh /usr/local/lib/swiftvm/install.sh --remove` takes them out again.
   Machines created before the guest tools existed don't have them until you install them.
+- The guest tools for macOS are one program, `swiftvm-agent`, built from this project, and two launchd
+  jobs: one runs it as root, to answer the app over the machine's socket device, and one runs it in the
+  session of whoever is logged in, for the clipboard. A Mac that SwiftVM sets up with your SSH key gets
+  them at the end of its first start. Installing takes the account's password, so for any other Mac
+  it is `swiftvm install-tools <machine> --password <password>`, or *Install Guest Tools…*, which plugs
+  in a disc for you to run `sudo sh /Volumes/SWIFTVM/install.sh` from in the guest's Terminal. macOS
+  then says that a background item was added: that is the agent. Removing them is the same command as
+  in Linux guests. They need macOS 27 or later in the guest.
+- The clipboard is shared as text, up to about 250 kB of it; pictures and files stay where they were
+  copied. In a macOS guest it follows whoever is logged in at its screen, and whoever logs in there
+  finds what is on your Mac's clipboard at that moment. *Share Clipboard* in a machine's settings, or
+  `swiftvm share-clipboard <machine> off`, turns it off, for a guest that shouldn't see what you copy on
+  your Mac. A macOS guest that is given the guest tools is put on your Mac's time zone, once: if you
+  pick another one in the guest afterwards, it stays.
 - SSH over the socket device needs an SSH server that listens there. systemd arranges that by itself from
   version 256 on (Ubuntu 26.04, Debian 13); for older systems such as Ubuntu 24.04 the guest tools add it.
-- A Debian 13 machine from Quick Create can't be resumed once it has been suspended, and doesn't see
-  drives that are plugged in: Debian's cloud image has a kernel without the drivers for the display and
-  for USB storage. Until SwiftVM uses another image, installing Debian's standard kernel in the guest
-  (`sudo apt install linux-image-arm64`, then remove `linux-image-cloud-arm64` and restart) cures both.
+- A Debian 13 machine that an earlier version of SwiftVM made with Quick Create can't be resumed once it
+  has been suspended, and doesn't see drives that are plugged in: it came from Debian's `genericcloud`
+  image, whose kernel has no drivers for the display and for USB storage. Installing Debian's standard
+  kernel in the guest (`sudo apt install linux-image-arm64`, then remove `linux-image-cloud-arm64` and
+  restart) cures both. New machines come from the `generic` image, which has that kernel.
 - Snapshots and duplicates are instant because APFS shares the unchanged parts of the disk. On a volume
   with another file system they are full copies.
 - A snapshot covers the machine's own disks. While a disk image that the guest can write to is attached,
@@ -99,6 +120,7 @@ swiftvm info web-server
 swiftvm ssh web-server
 swiftvm ssh web-server --vsock              # the same without the guest's network
 swiftvm install-tools web-server            # guest tools, over SSH; --disc plugs in a disc instead
+swiftvm install-tools build-mac --password 'the account password'   # macOS asks for it before installing
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80          # http://localhost:8080 is the guest's port 80
 swiftvm attach web-server ~/Downloads/data.img
@@ -146,6 +168,8 @@ swiftvm quit
 | `App/` | The SwiftUI app, and its icon (`AppIcon.icon`, an Icon Composer document) |
 | `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, `GuestChannel` (the protocol between the app and the agent in a guest), and the `swiftvm` tool |
 | `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgent/` | The guest agent for Linux, its systemd units and its installer |
+| `Packages/SwiftVMKit/Sources/GuestAgentMac/`, `Sources/swiftvm-agent/` | The guest agent for macOS. It is built with the app, travels inside it at `Contents/Helpers/swiftvm-agent`, and only ever runs in a guest |
+| `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgentMac/` | Its installer, which carries the program and its launchd jobs into a guest |
 | `Config/` | Build settings, entitlements, Info.plist |
 | `docs/` | Notes |
 

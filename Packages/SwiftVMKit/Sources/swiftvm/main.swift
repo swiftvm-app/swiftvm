@@ -37,8 +37,12 @@ Usage: swiftvm <command> [arguments]
   delete-snapshot <machine> <snapshot>
   rename-snapshot <machine> <snapshot> <new name>
   plug <machine> | unplug <machine> Plug the machine's network cable in, or pull it
-  install-tools <machine> [--disc]  Install the guest tools in a running Linux machine over SSH. With
-                                    --disc, plug in the guest tools disc instead, to install from inside
+  install-tools <machine> [--disc] [--password <password>]
+                                    Install the guest tools in a running machine over SSH. macOS wants
+                                    the account's password for that. With --disc, plug in the guest
+                                    tools disc instead, to install from inside the machine
+  share-clipboard <machine> on|off  Share what is copied on this Mac with the machine and the other way
+                                    round, or stop. macOS guests need the guest tools for it
   ip <machine>                      Print the machine's IP address
   ssh <machine> [--vsock] [ssh arguments]
                                     Open a shell (or run a command) in the machine. With --vsock the
@@ -147,6 +151,9 @@ func printDetails(of machine: MachineSummary) {
             if let kernel = tools.kernel {
                 lines.append(("Kernel", kernel))
             }
+        }
+        if let sharesClipboard = details.sharesClipboard {
+            lines.append(("Clipboard", sharesClipboard ? "shared" : "not shared"))
         }
         lines.append(("Snapshots", String(details.snapshotCount)))
         lines.append(("Location", details.location))
@@ -263,14 +270,33 @@ case "forward", "unforward":
 
 case "install-tools":
     let machine = requireMachine()
-    rejectUnknownOptions(arguments.dropFirst(), allowed: ["--disc"])
-    let request = ControlRequest(command: .installTools, machine: machine, usesDisc: arguments.contains("--disc") ? true : nil)
+    var options = Array(arguments.dropFirst())
+    var password: String?
+    if let index = options.firstIndex(of: "--password") {
+        guard index + 1 < options.count else { fail("--password needs a value.") }
+        password = options[index + 1]
+        options.removeSubrange(index...(index + 1))
+    }
+    rejectUnknownOptions(options, allowed: ["--disc"])
+    guard password == nil || !options.contains("--disc") else { fail("--password is for installing over SSH, not from the disc.") }
+    let request = ControlRequest(
+        command: .installTools, machine: machine, usesDisc: options.contains("--disc") ? true : nil, password: password
+    )
     let response = send(request)
     if let machine = response.machines.first {
         printDetails(of: machine)
     }
     if let note = response.note {
         print("\n" + note)
+    }
+
+case "share-clipboard":
+    let machine = requireMachine()
+    guard arguments.count == 2, ["on", "off"].contains(arguments[1]) else {
+        fail("Usage: swiftvm share-clipboard <machine> on|off")
+    }
+    if let machine = send(ControlRequest(command: .shareClipboard, machine: machine, isOn: arguments[1] == "on")).machines.first {
+        printDetails(of: machine)
     }
 
 case "resize":

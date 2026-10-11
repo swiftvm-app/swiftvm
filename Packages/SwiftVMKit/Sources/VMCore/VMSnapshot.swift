@@ -49,6 +49,11 @@ extension VMConfiguration {
         result.ssh = ssh
         result.keyboard = keyboard
         result.display.automaticallyResizes = display.automaticallyResizes
+        // Whether the clipboard is shared is the host's to say as well. Only a Linux guest that comes
+        // back with its memory has to find the device it was saved with, shared or not.
+        if os.family == .macOS || !snapshot.includesMemory {
+            result.clipboard = clipboard
+        }
         // The guest only knows an interface by its MAC address. Addresses and forwarded ports are the host's.
         result.networkInterfaces = snapshot.configuration.networkInterfaces.map { old in
             guard var current = networkInterfaces.first(where: { $0.id == old.id }) else { return old }

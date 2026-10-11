@@ -7,7 +7,7 @@ import VZEngine
 /// Handles requests from the `swiftvm` command-line tool.
 extension AppModel {
     func handle(_ request: ControlRequest) async -> ControlResponse {
-        guard !isQuittingUnattended else { return .failure("SwiftVM is quitting.") }
+        guard !isQuittingUnattended, !isClosingDown else { return .failure("SwiftVM is quitting.") }
         switch request.command {
         case .list:
             if let identifier = request.machine {
@@ -49,12 +49,12 @@ extension AppModel {
         case .start:
             await machine.start()
         case .stop:
-            await shutDown(machine)
+            let request = await shutDown(machine)
             // The machine goes back to running when the guest doesn't act on the request.
             _ = await waitForState(of: machine, timeout: .seconds(90), where: { $0 != .stopping })
             guard machine.state == .stopped else {
-                if machine.configuration.asksBeforeShuttingDown {
-                    return .failure("“\(machine.name)” asks for confirmation on its screen before it shuts down, and nobody answered. Answer it in the machine's window, or use force-stop to stop it immediately.")
+                if request == .powerButton, machine.configuration.asksBeforeShuttingDown {
+                    return .failure("“\(machine.name)” asks for confirmation on its screen before it shuts down, and nobody answered. Answer it in the machine's window, or use force-stop to stop it immediately.\(guestToolsHint(for: machine))")
                 }
                 return .failure("“\(machine.name)” didn't shut down in time. Use force-stop to stop it immediately.")
             }
@@ -69,15 +69,15 @@ extension AppModel {
         case .restart:
             guard machine.state == .running else { return .failure("“\(machine.name)” isn't running.") }
             let runs = machine.startCount
-            await shutDown(machine, thenRestart: true)
+            let request = await shutDown(machine, thenRestart: true)
             // Wait for the guest to go down and come back up. Its state alone doesn't say: a guest that
             // shuts down at once is running again between two looks.
             let deadline = ContinuousClock.now + .seconds(150)
             while machine.startCount == runs || machine.state != .running {
                 if machine.startCount == runs, machine.state == .running {
                     // Still the same run: the guest was asked and has let the request pass.
-                    if machine.configuration.asksBeforeShuttingDown {
-                        return .failure("“\(machine.name)” asks for confirmation on its screen before it restarts, and nobody answered. Answer it in the machine's window.")
+                    if request == .powerButton, machine.configuration.asksBeforeShuttingDown {
+                        return .failure("“\(machine.name)” asks for confirmation on its screen before it restarts, and nobody answered. Answer it in the machine's window.\(guestToolsHint(for: machine))")
                     }
                     return .failure("“\(machine.name)” didn't shut down in time, so it wasn't restarted.")
                 }
@@ -204,25 +204,46 @@ extension AppModel {
                     response.note = """
                         The guest tools disc is plugged into “\(machine.name)”. To install from it, run this in the guest:
 
-                            \(LinuxGuestAgent.toolsInstallCommand)
+                            \(guestToolsInstallCommand(for: machine))
 
                         Afterwards, eject the disc: swiftvm eject \(alias.isEmpty ? machine.id.uuidString : alias) "\(disc.name)"
                         """
                     return response
                 }
-                try await installGuestTools(on: machine)
+                try await installGuestTools(on: machine, password: request.password)
             } catch let error as ProcessRunner.Failure {
                 if let complaint = LinuxGuestAgent.installerComplaint(in: error) {
                     // The installer ran and gave up; from the disc it would give up the same way.
                     return .failure("The guest tools couldn't be installed in “\(machine.name)”: \(complaint).")
                 }
-                let reason = error.output.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                // What went wrong is in the last thing that was said: ssh and sudo lead up to it.
+                let reason = error.output.standardError.split(whereSeparator: \.isNewline).last
+                    .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
                 let detail = reason.isEmpty ? "" : " (\(reason))"
+                if machine.configuration.os.family == .macOS {
+                    let advice = request.password == nil
+                        ? "Give the password with --password <password>, or install from inside the guest with `swiftvm install-tools <machine> --disc`."
+                        : "To install from inside the guest instead, use `swiftvm install-tools <machine> --disc`."
+                    return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and the account's password\(detail). \(advice)")
+                }
                 return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and sudo without a password\(detail). To install from inside the guest instead, use `swiftvm install-tools <machine> --disc`.")
             } catch {
                 return .failure(error.localizedDescription)
             }
             return details(machine)
+        case .shareClipboard:
+            guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            // A Linux guest shares the clipboard through a device, which like all hardware is there
+            // from the start or not at all. A macOS guest's agent is simply told, or no longer told.
+            guard machine.configuration.os.family == .macOS || machine.state == .stopped
+                || machine.configuration.clipboard.isShared == isOn
+            else {
+                return .failure("Shut down “\(machine.name)” first: this guest shares the clipboard through a device, which can't be added or taken away while it is up or suspended.")
+            }
+            changeConfiguration(of: machine) { $0.clipboard.isShared = isOn }
+            if machine.lastError == nil {
+                return details(machine)
+            }
         case .discardState:
             guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
             machine.discardSavedState()
@@ -297,7 +318,7 @@ extension AppModel {
     /// Answers a request that turns its connection into a byte stream. With a yes comes what serves the
     /// stream once the answer has gone out.
     func openStream(_ request: ControlRequest) async -> (response: ControlResponse, stream: ControlServer.Stream?) {
-        guard !isQuittingUnattended else { return (.failure("SwiftVM is quitting."), nil) }
+        guard !isQuittingUnattended, !isClosingDown else { return (.failure("SwiftVM is quitting."), nil) }
         guard let identifier = request.machine else { return (.failure("Missing machine name."), nil) }
         guard let machine = findMachine(identifier) else { return (notFound(identifier), nil) }
         switch request.command {
@@ -478,6 +499,12 @@ extension AppModel {
 
     // MARK: Helpers
 
+    /// What to add to the news that a guest asked on its screen instead of shutting down: with the
+    /// guest tools it wouldn't have. Nothing for a guest that has them and whose agent didn't answer.
+    private func guestToolsHint(for machine: VirtualMachine) -> String {
+        machine.agent.isConnected ? "" : " With the guest tools it does so without asking: swiftvm install-tools."
+    }
+
     /// Finds a machine by UUID, name or SSH alias (case-insensitive).
     func findMachine(_ identifier: String) -> VirtualMachine? {
         if let id = UUID(uuidString: identifier), let machine = library.machine(id: id) {
@@ -535,7 +562,8 @@ extension AppModel {
             },
             snapshotCount: machine.snapshots.count,
             guestTools: configuration.canHaveGuestAgent
-                ? MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel) : nil
+                ? MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel) : nil,
+            sharesClipboard: configuration.clipboard.isShared
         )
         return ControlResponse(ok: true, machines: [summary])
     }

@@ -13,10 +13,15 @@ let package = Package(
         .library(name: "Installers", targets: ["Installers"]),
         .library(name: "VMControl", targets: ["VMControl"]),
         .library(name: "GuestChannel", targets: ["GuestChannel"]),
+        .library(name: "GuestAgentMac", targets: ["GuestAgentMac"]),
         .executable(name: "swiftvm", targets: ["swiftvm"]),
+        .executable(name: "swiftvm-agent", targets: ["swiftvm-agent"]),
     ],
     targets: [
         .target(name: "GuestChannel"),
+        // The guest agent for macOS guests. It runs inside a virtual machine, not on the host.
+        .target(name: "GuestAgentMac", dependencies: ["GuestChannel"]),
+        .executableTarget(name: "swiftvm-agent", dependencies: ["GuestAgentMac"]),
         .target(name: "VMCore", dependencies: ["GuestChannel"]),
         .target(name: "DiskTools", dependencies: ["VMCore"]),
         .target(name: "VMNetworking", dependencies: ["VMCore"]),
@@ -30,6 +35,7 @@ let package = Package(
         .target(name: "VMControl"),
         .executableTarget(name: "swiftvm", dependencies: ["VMControl"]),
         .testTarget(name: "GuestChannelTests", dependencies: ["GuestChannel"]),
+        .testTarget(name: "GuestAgentMacTests", dependencies: ["GuestAgentMac", "GuestChannel"]),
         .testTarget(name: "VMCoreTests", dependencies: ["VMCore", "GuestChannel"]),
         .testTarget(name: "DiskToolsTests", dependencies: ["DiskTools"]),
         .testTarget(name: "SSHIntegrationTests", dependencies: ["SSHIntegration"]),

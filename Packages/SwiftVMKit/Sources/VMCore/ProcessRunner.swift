@@ -23,7 +23,8 @@ public enum ProcessRunner {
     ///
     /// - Parameters:
     ///   - environment: Variables added to (or replacing those of) this process's environment.
-    ///   - input: Bytes fed to the tool's standard input. Keep it small; it is written in one go.
+    ///   - input: Bytes fed to the tool's standard input. They are written in one go, before anything the
+    ///     tool prints is read: for a tool that takes in its input before it has much to say, as `ssh` does.
     @discardableResult
     public static func run(
         _ executable: String,

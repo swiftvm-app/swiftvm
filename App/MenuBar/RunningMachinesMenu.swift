@@ -19,11 +19,8 @@ struct RunningMachinesMenu: View {
                 case .running:
                     Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
                     Button("Shut Down", systemImage: "power") {
-                        if machine.configuration.asksBeforeShuttingDown {
-                            // The guest asks for confirmation on its screen.
-                            NSApp.activate()
-                        }
-                        Task { await model.shutDown(machine) }
+                        // A guest that asks for confirmation on its screen has the app brought forward.
+                        Task { await model.shutDown(machine, activatingApp: true) }
                     }
                 case .paused:
                     Button("Resume", systemImage: "play") { Task { await machine.resume() } }

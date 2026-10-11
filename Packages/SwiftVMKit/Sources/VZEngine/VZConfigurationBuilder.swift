@@ -76,7 +76,8 @@ public struct VZConfigurationBuilder {
         vz.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         vz.socketDevices = [VZVirtioSocketDeviceConfiguration()]
         vz.serialPorts = try makeSerialPorts()
-        if configuration.os.family == .linux {
+        // macOS guests share the clipboard through their agent instead.
+        if configuration.os.family == .linux, configuration.clipboard.isShared {
             vz.consoleDevices = [Self.makeClipboardConsole()]
         }
 

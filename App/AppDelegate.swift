@@ -63,13 +63,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = active.count == 1
             ? "“\(active[0].name)” is still running."
             : "\(active.count) virtual machines are still running."
-        alert.informativeText = "Suspend saves their state so they pick up where they left off. Shut Down turns them off without saving state."
+        alert.informativeText = "Suspend saves their state so they pick up where they left off. Shut Down turns them off without saving state; a virtual machine without the guest tools is stopped at once."
         alert.addButton(withTitle: "Suspend and Quit")
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Shut Down and Quit")
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:
+            model.closeDown()
             Task {
                 // Something may have begun while the question was on the screen.
                 await model.waitForWorkOnMachineFiles()
@@ -84,11 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return .terminateLater
         case .alertThirdButtonReturn:
+            model.closeDown()
             Task {
                 await model.waitForWorkOnMachineFiles()
-                for machine in active {
-                    await machine.forceStop()
-                }
+                await model.shutDownForQuit(active)
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater

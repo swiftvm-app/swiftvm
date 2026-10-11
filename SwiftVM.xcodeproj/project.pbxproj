@@ -15,7 +15,9 @@
 		5F000000000000000000004B /* Installers in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000037 /* Installers */; };
 		5F000000000000000000004C /* VMControl in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000038 /* VMControl */; };
 		5F0000000000000000000055 /* VMControl in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000056 /* VMControl */; };
-		5F000000000000000000005D /* swiftvm in Embed Command Line Tool */ = {isa = PBXBuildFile; fileRef = 5F0000000000000000000051 /* swiftvm */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		5F000000000000000000005D /* swiftvm in Embed Helpers */ = {isa = PBXBuildFile; fileRef = 5F0000000000000000000051 /* swiftvm */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		5F0000000000000000000065 /* GuestAgentMac in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000066 /* GuestAgentMac */; };
+		5F000000000000000000006C /* swiftvm-agent in Embed Helpers */ = {isa = PBXBuildFile; fileRef = 5F0000000000000000000061 /* swiftvm-agent */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -26,18 +28,26 @@
 			remoteGlobalIDString = 5F0000000000000000000052;
 			remoteInfo = CommandLineTool;
 		};
+		5F000000000000000000006A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5F0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5F0000000000000000000062;
+			remoteInfo = GuestAgentTool;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		5F000000000000000000005C /* Embed Command Line Tool */ = {
+		5F000000000000000000005C /* Embed Helpers */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = Contents/Helpers;
 			dstSubfolderSpec = 1;
 			files = (
-				5F000000000000000000005D /* swiftvm in Embed Command Line Tool */,
+				5F000000000000000000005D /* swiftvm in Embed Helpers */,
+				5F000000000000000000006C /* swiftvm-agent in Embed Helpers */,
 			);
-			name = "Embed Command Line Tool";
+			name = "Embed Helpers";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -49,6 +59,8 @@
 		5F000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		5F0000000000000000000051 /* swiftvm */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = swiftvm; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F000000000000000000005E /* CommandLineTool.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = CommandLineTool.xcconfig; sourceTree = "<group>"; };
+		5F0000000000000000000061 /* swiftvm-agent */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "swiftvm-agent"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F000000000000000000006D /* GuestAgentTool.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = GuestAgentTool.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -61,6 +73,12 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			name = CommandLineTool;
 			path = Packages/SwiftVMKit/Sources/swiftvm;
+			sourceTree = "<group>";
+		};
+		5F0000000000000000000060 /* GuestAgentTool */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = GuestAgentTool;
+			path = "Packages/SwiftVMKit/Sources/swiftvm-agent";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -88,6 +106,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5F0000000000000000000064 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5F0000000000000000000065 /* GuestAgentMac in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -96,6 +122,7 @@
 			children = (
 				5F0000000000000000000005 /* App */,
 				5F0000000000000000000050 /* CommandLineTool */,
+				5F0000000000000000000060 /* GuestAgentTool */,
 				5F0000000000000000000004 /* Config */,
 				5F0000000000000000000003 /* Products */,
 			);
@@ -106,6 +133,7 @@
 			children = (
 				5F000000000000000000000A /* SwiftVM.app */,
 				5F0000000000000000000051 /* swiftvm */,
+				5F0000000000000000000061 /* swiftvm-agent */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -115,6 +143,7 @@
 			children = (
 				5F000000000000000000000B /* Base.xcconfig */,
 				5F000000000000000000005E /* CommandLineTool.xcconfig */,
+				5F000000000000000000006D /* GuestAgentTool.xcconfig */,
 				5F000000000000000000000D /* Info.plist */,
 				5F000000000000000000000C /* SwiftVM.entitlements */,
 			);
@@ -131,12 +160,13 @@
 				5F0000000000000000000015 /* Sources */,
 				5F0000000000000000000016 /* Frameworks */,
 				5F0000000000000000000017 /* Resources */,
-				5F000000000000000000005C /* Embed Command Line Tool */,
+				5F000000000000000000005C /* Embed Helpers */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				5F000000000000000000005B /* PBXTargetDependency */,
+				5F000000000000000000006B /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				5F0000000000000000000005 /* App */,
@@ -177,6 +207,28 @@
 			productReference = 5F0000000000000000000051 /* swiftvm */;
 			productType = "com.apple.product-type.tool";
 		};
+		5F0000000000000000000062 /* GuestAgentTool */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5F0000000000000000000067 /* Build configuration list for PBXNativeTarget "GuestAgentTool" */;
+			buildPhases = (
+				5F0000000000000000000063 /* Sources */,
+				5F0000000000000000000064 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5F0000000000000000000060 /* GuestAgentTool */,
+			);
+			name = GuestAgentTool;
+			packageProductDependencies = (
+				5F0000000000000000000066 /* GuestAgentMac */,
+			);
+			productName = "swiftvm-agent";
+			productReference = 5F0000000000000000000061 /* swiftvm-agent */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -191,6 +243,9 @@
 						CreatedOnToolsVersion = 27.0;
 					};
 					5F0000000000000000000052 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					5F0000000000000000000062 = {
 						CreatedOnToolsVersion = 27.0;
 					};
 				};
@@ -214,6 +269,7 @@
 			targets = (
 				5F0000000000000000000014 /* SwiftVM */,
 				5F0000000000000000000052 /* CommandLineTool */,
+				5F0000000000000000000062 /* GuestAgentTool */,
 			);
 		};
 /* End PBXProject section */
@@ -243,6 +299,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5F0000000000000000000063 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -250,6 +313,11 @@
 			isa = PBXTargetDependency;
 			target = 5F0000000000000000000052 /* CommandLineTool */;
 			targetProxy = 5F000000000000000000005A /* PBXContainerItemProxy */;
+		};
+		5F000000000000000000006B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5F0000000000000000000062 /* GuestAgentTool */;
+			targetProxy = 5F000000000000000000006A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -317,6 +385,20 @@
 			};
 			name = Release;
 		};
+		5F0000000000000000000068 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5F000000000000000000006D /* GuestAgentTool.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		5F0000000000000000000069 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5F000000000000000000006D /* GuestAgentTool.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -343,6 +425,15 @@
 			buildConfigurations = (
 				5F0000000000000000000058 /* Debug */,
 				5F0000000000000000000059 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5F0000000000000000000067 /* Build configuration list for PBXNativeTarget "GuestAgentTool" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F0000000000000000000068 /* Debug */,
+				5F0000000000000000000069 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -388,6 +479,10 @@
 		5F0000000000000000000056 /* VMControl */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = VMControl;
+		};
+		5F0000000000000000000066 /* GuestAgentMac */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuestAgentMac;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

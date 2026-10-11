@@ -111,6 +111,25 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self).contains("\"install-tools\""))
         #expect(try JSONDecoder().decode(ControlRequest.self, from: data) == request)
         #expect(try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"command":"install-tools","machine":"web"}"#.utf8)).usesDisc == nil)
+
+        // macOS guests want the account's password before anything is installed in them.
+        let withPassword = ControlRequest(command: .installTools, machine: "mac", password: "se cret\"$1")
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(withPassword)) == withPassword)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: data).password == nil)
+    }
+
+    @Test func theClipboardIsTurnedOnAndOffByName() throws {
+        let request = ControlRequest(command: .shareClipboard, machine: "mac", isOn: false)
+        let data = try JSONEncoder().encode(request)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"share-clipboard\""))
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: data) == request)
+        #expect(!ControlRequest.Command.shareClipboard.opensStream)
+
+        // An app says whether it shares; one from before there was a choice says nothing.
+        var details = MachineDetails(location: "/x", macAddress: nil, drives: [], sharedFolders: [], snapshotCount: 0, sharesClipboard: false)
+        #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)).sharesClipboard == false)
+        details.sharesClipboard = nil
+        #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)).sharesClipboard == nil)
     }
 
     @Test func aSocketRequestNamesItsPort() throws {

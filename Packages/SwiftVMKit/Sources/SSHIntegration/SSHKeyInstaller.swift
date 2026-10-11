@@ -24,6 +24,10 @@ public enum SSHKeyInstaller {
             "-o", "PreferredAuthentications=keyboard-interactive,password",
             "-o", "NumberOfPasswordPrompts=1",
             "-o", "ConnectTimeout=10",
+            // A guest that is stopped in the middle of this says nothing more. Without these, `ssh`
+            // would wait for it for good.
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=2",
             alias,
             remoteCommand,
         ]

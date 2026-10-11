@@ -22,6 +22,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     public var keyboard: KeyboardConfiguration
     public var networkInterfaces: [NetworkInterfaceConfiguration]
     public var sharedFolders: [SharedFolder]
+    public var clipboard: ClipboardConfiguration
     public var audio: AudioConfiguration
     public var boot: BootConfiguration
     public var usb: USBConfiguration
@@ -42,6 +43,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         keyboard: KeyboardConfiguration = .init(),
         networkInterfaces: [NetworkInterfaceConfiguration] = [],
         sharedFolders: [SharedFolder] = [],
+        clipboard: ClipboardConfiguration = .init(),
         audio: AudioConfiguration = .init(),
         boot: BootConfiguration = .init(),
         usb: USBConfiguration = .init(),
@@ -62,6 +64,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         self.keyboard = keyboard
         self.networkInterfaces = networkInterfaces
         self.sharedFolders = sharedFolders
+        self.clipboard = clipboard
         self.audio = audio
         self.boot = boot
         self.usb = usb
@@ -87,6 +90,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         keyboard = try c.decode(.keyboard, default: .init())
         networkInterfaces = try c.decode(.networkInterfaces, default: [])
         sharedFolders = try c.decode(.sharedFolders, default: [])
+        clipboard = try c.decode(.clipboard, default: .init())
         audio = try c.decode(.audio, default: .init())
         boot = try c.decode(.boot, default: .init())
         usb = try c.decode(.usb, default: .init())
@@ -121,8 +125,9 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         }
     }
 
-    /// Whether the guest answers a shutdown request by asking the person at its screen. macOS puts up its
-    /// "Are you sure you want to shut down?" dialog; other guests just shut down.
+    /// Whether the guest answers the power button by asking the person at its screen. macOS puts up its
+    /// "Are you sure you want to shut down?" dialog; other guests just shut down. A guest that is asked
+    /// through its agent shuts down without a question either way.
     public var asksBeforeShuttingDown: Bool {
         os.family == .macOS
     }
@@ -135,7 +140,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
 
     /// Whether there is an agent for this kind of guest that the app can talk to.
     public var canHaveGuestAgent: Bool {
-        os.family == .linux
+        os.family == .linux || os.family == .macOS
     }
 
     /// The disk the guest boots from.
@@ -368,6 +373,16 @@ public struct SharedFolder: Codable, Sendable, Hashable, Identifiable {
     public var url: URL { URL(fileURLWithPath: path, isDirectory: true) }
 }
 
+/// What is copied on the Mac can be pasted in the guest and the other way round: through the guest's
+/// agent in macOS guests, through `spice-vdagent` in Linux guests.
+public struct ClipboardConfiguration: Codable, Sendable, Hashable {
+    public var isShared: Bool
+
+    public init(isShared: Bool = true) {
+        self.isShared = isShared
+    }
+}
+
 // MARK: - Devices
 
 public struct AudioConfiguration: Codable, Sendable, Hashable {
@@ -436,16 +451,21 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
     public var attachesSeedImage: Bool
     /// The guest finished its first-boot setup.
     public var isProvisioned: Bool
+    /// The guest has been given this Mac's time zone. That happens once: whoever sets another one in
+    /// the guest afterwards keeps it.
+    public var hasHostTimeZone: Bool
 
-    public init(attachesSeedImage: Bool = false, isProvisioned: Bool = false) {
+    public init(attachesSeedImage: Bool = false, isProvisioned: Bool = false, hasHostTimeZone: Bool = false) {
         self.attachesSeedImage = attachesSeedImage
         self.isProvisioned = isProvisioned
+        self.hasHostTimeZone = hasHostTimeZone
     }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         attachesSeedImage = try c.decode(.attachesSeedImage, default: false)
         isProvisioned = try c.decode(.isProvisioned, default: false)
+        hasHostTimeZone = try c.decode(.hasHostTimeZone, default: false)
     }
 }
 

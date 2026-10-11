@@ -21,6 +21,12 @@ public final class VMLibrary {
     @ObservationIgnored public var onMachineResume: (@MainActor (VirtualMachine) -> Void)?
     /// Called when the agent in a machine's guest reports other addresses than before.
     @ObservationIgnored public var onGuestAddressesChange: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when the agent in a machine's guest has connected, and when it is gone again.
+    @ObservationIgnored public var onGuestAgentChange: (@MainActor (VirtualMachine) -> Void)?
+    /// Called with text that was copied in a machine's guest.
+    @ObservationIgnored public var onGuestClipboard: (@MainActor (VirtualMachine, String) -> Void)?
+    /// Called when a machine's guest asks for what is on this Mac's clipboard.
+    @ObservationIgnored public var onGuestClipboardRequest: (@MainActor (VirtualMachine) -> Void)?
     /// Whether machines may start. The app turns this off once it has agreed to quit: a machine that
     /// came up after that would lose its power with the app, and nobody would have been asked.
     @ObservationIgnored public var allowsStarting = true
@@ -182,6 +188,9 @@ public final class VMLibrary {
         machine.onConfigurationChange = { [weak self] _ in self?.onChange?() }
         machine.onResume = { [weak self] machine in self?.onMachineResume?(machine) }
         machine.onGuestAddressesChange = { [weak self] machine in self?.onGuestAddressesChange?(machine) }
+        machine.onGuestAgentChange = { [weak self] machine in self?.onGuestAgentChange?(machine) }
+        machine.onGuestClipboard = { [weak self] machine, text in self?.onGuestClipboard?(machine, text) }
+        machine.onGuestClipboardRequest = { [weak self] machine in self?.onGuestClipboardRequest?(machine) }
         machine.isStartAllowed = { [weak self] in self?.allowsStarting ?? true }
     }
 

@@ -1,0 +1,22 @@
+// Build settings of the guest agent for macOS guests. It is embedded in the app at Contents/Helpers and
+// installed from there into virtual machines; it never runs on the Mac that runs SwiftVM.
+//
+// The target is called GuestAgentTool for the reason CommandLineTool has its name: build folders are named
+// after targets and modules, and on a case-insensitive disk nothing may be called like the app.
+
+PRODUCT_NAME = swiftvm-agent
+PRODUCT_MODULE_NAME = GuestAgentTool
+PRODUCT_BUNDLE_IDENTIFIER = dev.swiftvm.SwiftVM.swiftvm-agent
+
+MACOSX_DEPLOYMENT_TARGET = 27.0
+SDKROOT = macosx
+ARCHS = arm64
+SWIFT_VERSION = 6.0
+
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+ENABLE_HARDENED_RUNTIME = YES
+SKIP_INSTALL = YES
+
+#include? "Signing.local.xcconfig"

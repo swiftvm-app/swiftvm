@@ -9,18 +9,40 @@ extension AppModel {
         library.rootDirectory.appending(path: "Guest Tools", directoryHint: .isDirectory)
     }
 
+    /// The guest agent for macOS guests that ships inside the app, if this build has one.
+    var macGuestAgentURL: URL? {
+        let url = Bundle.main.bundleURL.appending(path: "Contents/Helpers/swiftvm-agent")
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
+    /// The version of the guest tools this copy of the app brings for `machine`'s kind of guest, as
+    /// their agent reports it once it runs. `nil` if it brings none.
+    func guestToolsVersion(for machine: VirtualMachine) -> String? {
+        switch machine.configuration.os.family {
+        case .linux: LinuxGuestAgent.version
+        case .macOS: macGuestAgentURL == nil ? nil : MacGuestAgent.version
+        case .windows: nil
+        }
+    }
+
+    /// What a person runs in `machine`'s guest to install from the guest tools disc.
+    func guestToolsInstallCommand(for machine: VirtualMachine) -> String {
+        machine.configuration.os.family == .macOS ? MacGuestAgent.toolsInstallCommand : LinuxGuestAgent.toolsInstallCommand
+    }
+
     /// Whether there is something to install in `machine`: a running guest that can have the guest tools
     /// and has none, or not the ones this version of the app brings.
     func offersGuestTools(for machine: VirtualMachine) -> Bool {
-        machine.configuration.canHaveGuestAgent && machine.state == .running
-            && machine.agent.version != LinuxGuestAgent.version
+        guard machine.state == .running, let version = guestToolsVersion(for: machine) else { return false }
+        return machine.agent.version != version
     }
 
     /// Installs the guest tools in a running guest over SSH, and returns once its agent has connected.
     ///
-    /// That takes key sign-in and `sudo` without a password, which guests set up by SwiftVM have. For the
-    /// others there is the disc: ``attachGuestToolsDisc(to:)``.
-    func installGuestTools(on machine: VirtualMachine) async throws {
+    /// That takes key sign-in, and root in the guest: `sudo` without a password in Linux guests, as those
+    /// set up by SwiftVM have it, and the account's `password` in macOS guests. For guests where that
+    /// isn't to be had there is the disc: ``attachGuestToolsDisc(to:)``.
+    func installGuestTools(on machine: VirtualMachine, password: String? = nil) async throws {
         try requireRunningGuest(machine)
         guard canSignIn(to: machine) else {
             throw VMError.invalidConfiguration(
@@ -29,16 +51,25 @@ extension AppModel {
         }
         let alias = machine.configuration.ssh.alias
         let configURL = sshWriter.generatedConfigURL
+        let isMac = machine.configuration.os.family == .macOS
+        let program = macGuestAgentURL
         try await Task.detached(priority: .userInitiated) {
-            try LinuxGuestAgent.install(on: alias, configURL: configURL)
+            if isMac {
+                guard let program else { throw MacGuestAgent.AgentError.missingProgram }
+                try MacGuestAgent.install(on: alias, configURL: configURL, password: password, program: program)
+            } else {
+                try LinuxGuestAgent.install(on: alias, configURL: configURL)
+            }
         }.value
 
         // The installer has started the agent; the app finds it at its next attempt, a second away at most.
+        let version = guestToolsVersion(for: machine)
         let deadline = ContinuousClock.now + .seconds(15)
-        while machine.agent.version != LinuxGuestAgent.version {
+        while machine.agent.version != version {
             guard machine.state == .running, ContinuousClock.now < deadline else {
+                let whereToLook = isMac ? "`sudo launchctl print system/com.swiftvm.agent`" : "`systemctl status swiftvm-agent`"
                 throw VMError.invalidConfiguration(
-                    "The guest tools were installed in “\(machine.name)”, but the agent hasn't connected. In the guest, `systemctl status swiftvm-agent` says why."
+                    "The guest tools were installed in “\(machine.name)”, but the agent hasn't connected. In the guest, \(whereToLook) says why."
                 )
             }
             try? await Task.sleep(for: .milliseconds(100))
@@ -46,7 +77,7 @@ extension AppModel {
     }
 
     /// Plugs the guest tools disc into a running guest, for someone to install from inside it with
-    /// ``LinuxGuestAgent/toolsInstallCommand``. Returns the disc, which may have been plugged in already.
+    /// ``guestToolsInstallCommand(for:)``. Returns the disc, which may have been plugged in already.
     @discardableResult
     func attachGuestToolsDisc(to machine: VirtualMachine) async throws -> RemovableImage {
         try requireRunningGuest(machine)
@@ -56,9 +87,22 @@ extension AppModel {
         let attached = Set(library.machines.flatMap { machine in
             ([machine.configuration] + machine.snapshots.map(\.configuration)).flatMap { $0.removableImages.map(\.path) }
         })
+        let isMac = machine.configuration.os.family == .macOS
+        let program = macGuestAgentURL
         let disc = try await Task.detached(priority: .userInitiated) {
-            try LinuxGuestAgent.toolsImage(in: directory, inUse: attached)
+            if isMac {
+                guard let program else { throw MacGuestAgent.AgentError.missingProgram }
+                return try MacGuestAgent.toolsImage(in: directory, inUse: attached, program: program)
+            }
+            return try LinuxGuestAgent.toolsImage(in: directory, inUse: attached)
         }.value
+        // An older disc that is still plugged in has the same label. The guest would find that one
+        // under the name the command uses, and install what is on it.
+        for image in machine.configuration.removableImages where image.path != disc.path {
+            if LinuxGuestAgent.isToolsImage(image.path) || MacGuestAgent.isToolsImage(image.path) {
+                try await machine.ejectImage(image.id)
+            }
+        }
         if let image = machine.configuration.removableImages.first(where: { $0.path == disc.path }) {
             return image
         }
@@ -73,9 +117,9 @@ extension AppModel {
     }
 
     private func requireRunningGuest(_ machine: VirtualMachine) throws {
-        guard machine.configuration.canHaveGuestAgent else {
+        guard guestToolsVersion(for: machine) != nil else {
             throw VMError.invalidConfiguration(
-                "There are no guest tools for \(machine.configuration.os.family.displayName) guests yet. “\(machine.name)” goes without."
+                "This copy of SwiftVM has no guest tools for \(machine.configuration.os.family.displayName) guests. “\(machine.name)” goes without."
             )
         }
         guard machine.state == .running else { throw VMError.notRunning(name: machine.name) }
@@ -87,13 +131,16 @@ extension AppModel {
     func installGuestToolsReportingResult(on machine: VirtualMachine) {
         Task {
             let failureTitle = "Couldn't install the guest tools in “\(machine.name)”"
+            let isMac = machine.configuration.os.family == .macOS
             do {
                 if canSignIn(to: machine) {
                     do {
                         try await installGuestTools(on: machine)
                         machine.notice = VMErrorInfo(
                             title: "The guest tools are installed in “\(machine.name)”",
-                            message: "SwiftVM now sees the system's version and addresses, keeps its clock right after a suspend, and can sign in over SSH without a network."
+                            message: isMac
+                                ? "SwiftVM now shares the clipboard with it, sees its version and addresses, and shuts it down without a question on its screen."
+                                : "SwiftVM now sees the system's version and addresses, keeps its clock right after a suspend, and can sign in over SSH without a network."
                         )
                         return
                     } catch let failure as ProcessRunner.Failure {
@@ -102,14 +149,17 @@ extension AppModel {
                             machine.lastError = VMErrorInfo(title: failureTitle, message: Self.sentence(complaint))
                             return
                         }
-                        // No way in over SSH. Whoever is at the guest's screen can install from the disc.
+                        // No way in over SSH, or none to become root there. Whoever is at the guest's
+                        // screen can install from the disc.
                     }
                 }
                 try await attachGuestToolsDisc(to: machine)
+                let command = guestToolsInstallCommand(for: machine)
+                let terminal = isMac ? "in Terminal in the virtual machine" : "in a terminal in the virtual machine"
                 machine.notice = VMErrorInfo(
                     title: "Install the guest tools in “\(machine.name)”",
-                    message: "The guest tools disc is now plugged in. To install from it, run this in a terminal in the virtual machine, and eject the disc afterwards:\n\n\(LinuxGuestAgent.toolsInstallCommand)",
-                    copyableText: LinuxGuestAgent.toolsInstallCommand
+                    message: "The guest tools disc is now plugged in. To install from it, run this \(terminal), and eject the disc afterwards:\n\n\(command)",
+                    copyableText: command
                 )
             } catch {
                 machine.lastError = VMErrorInfo(title: failureTitle, message: error.localizedDescription)
