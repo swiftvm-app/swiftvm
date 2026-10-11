@@ -1,0 +1,110 @@
+# Building
+
+Building the app, running a development copy, and signing.
+
+## Requirements
+
+- macOS 27 or newer, on Apple silicon
+- Xcode 27 or newer
+
+No Apple Developer account is needed to build and run virtual machines.
+
+## Build
+
+```bash
+git clone https://github.com/swiftvm-app/swiftvm.git
+cd swiftvm
+scripts/build.sh          # the app, optimized, at build/SwiftVM.app
+open build/SwiftVM.app
+```
+
+There is no Xcode project. The app is a Swift package: `swift build` compiles
+it, and `scripts/bundle-app.sh` makes an app of the result and signs it. Xcode
+opens `Package.swift`.
+
+| Command | What it does |
+| --- | --- |
+| `scripts/build.sh` | Builds the app at `build/SwiftVM.app`, with `swiftvm` and the macOS guest agent inside |
+| `scripts/build.sh debug` | The same, not optimized |
+| `scripts/build.sh --output <app>` | Builds somewhere else, for example while SwiftVM is running from `build/` |
+| `scripts/test.sh` | Runs the unit tests of both packages |
+
+The scripts never replace an app that is running.
+
+## The development copy
+
+```bash
+swift run SwiftVM
+```
+
+This builds and opens **SwiftVM Dev**, an app of its own to macOS. It keeps its
+machines in `~/Library/Application Support/SwiftVM-Dev`, so it runs next to the
+SwiftVM you use and never sees that app's machines.
+
+- The copy is at `.build/SwiftVM Dev.app`, and its tool talks to that copy:
+  `".build/SwiftVM Dev.app/Contents/Helpers/swiftvm" list`.
+- The command stays in the terminal and shows what the copy prints. `Ctrl+C`
+  asks the copy to quit, which it refuses while a machine is running. A second
+  `Ctrl+C` leaves it running.
+- `swift run SwiftVM --background` opens the copy behind your other windows
+  and returns.
+- Running the command again replaces a copy that is still open, unless it has
+  a machine running.
+- The two apps share the downloaded images, the SSH key SwiftVM makes, and the
+  `swiftvm` link in `/usr/local/bin`.
+- The development copy doesn't update itself.
+
+Set `SWIFTVM_HOME` to give a copy another data folder, for a second set of
+machines. The path must be short, about 90 characters at most, and `swiftvm`
+needs the same setting to find that copy.
+
+## Signing
+
+With a signing certificate in your keychain, the app is signed with it:
+Developer ID Application before Apple Development, and the other way round for
+the development copy. Without one, the app is signed to run on your Mac, which
+is enough to run virtual machines.
+
+| Variable | What it does |
+| --- | --- |
+| `SWIFTVM_SIGN_IDENTITY` | Picks a certificate by name or SHA-1. `-` signs to run on your Mac |
+| `SWIFTVM_PROVISIONING_PROFILE` | Names a provisioning profile to use. `-` builds without one |
+| `SWIFTVM_HOME` | Another data folder for the app and for `swiftvm` |
+
+## USB devices
+
+Handing [USB devices](../features/usb-devices.md) to guests is the one thing
+that takes more than a certificate. macOS only allows it in an app that carries
+a provisioning profile:
+
+- Made in a paid Apple Developer account, for the app's identifier, with the
+  **Claim USB Accessory** capability.
+- For the certificate the app is signed with: a Developer ID profile for
+  `com.swiftvm.app`, or a development profile that lists your Mac for
+  `com.swiftvm.app.dev`.
+
+The build looks for such a profile where Xcode keeps profiles and puts it into
+the app. When there is none, it says so and builds without: everything works
+but USB devices, and the USB button isn't shown.
+
+## Building only the tool
+
+```bash
+swift build --package-path Packages/SwiftVMKit --product swiftvm
+```
+
+Never build `swiftvm` at the repository's root. The file system takes `swiftvm`
+and `SwiftVM` for one name, and the tool would replace the app's program.
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `Package.swift`, `App/` | The SwiftUI app |
+| `Tests/SwiftVMTests/` | The app's unit tests |
+| `Packages/SwiftVMKit/` | The engine, the `swiftvm` tool, and the guest agents, with their tests. See [Architecture](./architecture.md#modules) |
+| `Config/` | The app's `Info.plist` and entitlements |
+| `scripts/` | Build, test, and release scripts |
+| `.github/workflows/` | Checks and [releases](./releasing.md) |
+| `assets/` | The logo |
+| `docs/` | These docs |

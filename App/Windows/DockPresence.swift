@@ -81,7 +81,7 @@ final class DockPresence: NSObject {
     /// A window is about to open. The app goes into the Dock first, so that it is an app with menus by
     /// the time it is brought forward: that is when macOS hands the menu bar over. An app that enters
     /// the Dock while it is already in front is known to be left without its menus until it is brought
-    /// forward again; whether that can still happen here hasn't been seen (docs/spikes.md).
+    /// forward again; whether that can still happen here hasn't been seen.
     func windowWillOpen() {
         if NSApp.activationPolicy() != .regular {
             NSApp.setActivationPolicy(.regular)

@@ -27,6 +27,12 @@ struct MenuBarPanel: View {
             if let message = PendingMessage.next(in: model) {
                 PanelMessageCard(message: message)
             }
+            if let version = UpdateService.shared.waitingVersion {
+                PanelUpdateCard(version: version) {
+                    UpdateService.shared.checkForUpdates()
+                    dismiss()
+                }
+            }
             if model.library.machines.isEmpty, model.creations.isEmpty {
                 emptyState
             } else {
@@ -93,6 +99,13 @@ struct MenuBarPanel: View {
                 .pickerStyle(.inline)
 
                 Divider()
+                if UpdateService.shared.isAvailable {
+                    Button("Check for Updates…") {
+                        UpdateService.shared.checkForUpdates()
+                        dismiss()
+                    }
+                    .disabled(!UpdateService.shared.canCheckForUpdates)
+                }
                 Button("About \(AppIdentity.current.name)") {
                     model.windows.bringAppForward()
                     NSApp.orderFrontStandardAboutPanel(nil)
@@ -284,6 +297,33 @@ struct PanelMessageCard: View {
                 Button("OK") { message.dismiss(in: model) }
             }
             .controlSize(.small)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.primary.opacity(0.06), in: PanelMetrics.rowShape)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// An update of the app that was found while nobody was looking, at the top of the panel: see
+/// ``UpdateService/waitingVersion``.
+struct PanelUpdateCard: View {
+    let version: String
+    let show: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+                .foregroundStyle(.tint)
+                .accessibilityHidden(true)
+            Text("\(AppIdentity.current.name) \(version) is available.")
+                .fontWeight(.medium)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Update…", action: show)
+                .controlSize(.small)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)

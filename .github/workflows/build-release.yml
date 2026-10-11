@@ -1,0 +1,152 @@
+name: Build Release
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit or tag to build"
+        required: true
+        type: string
+      version:
+        description: "Version of the app (X.Y.Z or X.Y.Z-beta.N)"
+        required: true
+        type: string
+      build_number:
+        description: "Build number, which tells a newer build from an older one"
+        required: true
+        type: string
+      feed_url:
+        description: "Where the app looks for updates"
+        required: true
+        type: string
+
+jobs:
+  build:
+    # The app needs the macOS 27 SDK, which this image has.
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-release-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            spm-release-${{ runner.os }}-
+
+      - name: Resolve Sparkle dependency
+        run: swift package resolve
+
+      - name: Install create-dmg
+        run: npm install --global create-dmg
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [[ -z "$CERTIFICATE_P12" || -z "$KEYCHAIN_PASSWORD" ]]; then
+            echo "Error: the DEVELOPER_ID_APPLICATION_CERTIFICATE and KEYCHAIN_PASSWORD secrets are not set"
+            exit 1
+          fi
+          echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security default-keychain -s build.keychain
+          security list-keychains -d user -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
+      - name: Resolve signing identity
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain | awk '/Developer ID Application/ { print $2; exit }')
+          if [[ -z "$IDENTITY" ]]; then
+            echo "Error: No Developer ID Application certificate found"
+            exit 1
+          fi
+          echo "SWIFTVM_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Import provisioning profile
+        env:
+          PROVISIONING_PROFILE: ${{ secrets.DEVELOPER_ID_PROVISIONING_PROFILE }}
+        run: |
+          if [[ -z "$PROVISIONING_PROFILE" ]]; then
+            echo "Error: the DEVELOPER_ID_PROVISIONING_PROFILE secret is not set. Without the profile the app can't hand USB devices to guests."
+            exit 1
+          fi
+          echo "$PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/SwiftVM.provisionprofile"
+          echo "SWIFTVM_PROVISIONING_PROFILE=$RUNNER_TEMP/SwiftVM.provisionprofile" >> "$GITHUB_ENV"
+
+      - name: Derive Sparkle public key
+        id: sparkle
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "Error: the SPARKLE_PRIVATE_KEY secret is not set"
+            exit 1
+          fi
+          SPARKLE_PUBLIC_KEY=$(swift scripts/derive-sparkle-public-key.swift "$SPARKLE_PRIVATE_KEY")
+          echo "public_key=$SPARKLE_PUBLIC_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package
+        env:
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          FEED_URL: ${{ inputs.feed_url }}
+          SPARKLE_PUBLIC_KEY: ${{ steps.sparkle.outputs.public_key }}
+        run: |
+          scripts/build-release.sh \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --sparkle-public-key "$SPARKLE_PUBLIC_KEY" \
+            --sparkle-feed-url "$FEED_URL"
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DMG: build/release/SwiftVM-${{ inputs.version }}.dmg
+        run: |
+          xcrun notarytool store-credentials "notary-profile" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+          set +e
+          submit_output=$(xcrun notarytool submit "$DMG" \
+            --keychain-profile "notary-profile" \
+            --wait \
+            --output-format json)
+          submit_status=$?
+          echo "$submit_output"
+          submission_id=$(echo "$submit_output" | python3 -c 'import sys, json; print(json.load(sys.stdin)["id"])')
+          submission_status=$(echo "$submit_output" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])')
+          xcrun notarytool log "$submission_id" --keychain-profile "notary-profile" || true
+          set -e
+          if [ "$submit_status" -ne 0 ]; then exit "$submit_status"; fi
+          if [ "$submission_status" != "Accepted" ]; then
+            echo "Error: notarization ended with status $submission_status"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: build/release/SwiftVM-${{ inputs.version }}.dmg
+          if-no-files-found: error

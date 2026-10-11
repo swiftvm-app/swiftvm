@@ -1,0 +1,147 @@
+name: Release (Beta)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-beta
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Skip on bot bump commits
+        id: check
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          if [[ "$MSG" == "Bump BETA_VERSION to "* ]]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    needs: guard
+    if: needs.guard.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.validate.outputs.tag }}
+      build_number: ${{ steps.validate.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute beta version
+        id: validate
+        run: |
+          BETA_BASE=$(cat BETA_VERSION | tr -d '[:space:]')
+          if ! [[ "$BETA_BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: BETA_VERSION must be X.Y.Z, got '$BETA_BASE'"
+            exit 1
+          fi
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+          VERSION="${BETA_BASE}-beta.${BUILD_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/build-release.yml
+    with:
+      ref: ${{ github.sha }}
+      version: ${{ needs.validate.outputs.version }}
+      build_number: ${{ needs.validate.outputs.build_number }}
+      feed_url: https://github.com/swiftvm-app/swiftvm/releases/download/beta-channel/appcast-beta.xml
+    secrets: inherit
+
+  release:
+    needs: [validate, build]
+    runs-on: xcode-27
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ needs.validate.outputs.tag }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      BUILD_NUMBER: ${{ needs.validate.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Sparkle dependency
+        run: swift package resolve
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dmg
+          path: artifacts
+
+      - name: Fetch previous beta appcast
+        run: |
+          mkdir -p prev
+          if gh release download beta-channel --repo "$REPO" --pattern appcast-beta.xml --dir prev; then
+            echo "Fetched previous beta appcast"
+          else
+            echo "No previous beta appcast (first beta)"
+            rm -f prev/appcast-beta.xml
+          fi
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          CHANNEL: beta
+        run: |
+          EXISTING=""
+          if [[ -f prev/appcast-beta.xml ]]; then
+            EXISTING=prev/appcast-beta.xml
+          fi
+          EXISTING_APPCAST="$EXISTING" scripts/generate-appcast.sh \
+            "artifacts/SwiftVM-${VERSION}.dmg" "$TAG" "$BUILD_NUMBER" appcast-beta.xml
+
+      - name: Create per-build prerelease (DMG)
+        run: |
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$REPO" --clobber artifacts/*.dmg
+          else
+            PREVIOUS_BETA=$(gh release list --repo "$REPO" --limit 100 \
+              --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease and (.tagName | contains("-beta.")))][0].tagName // ""' || echo "")
+            NOTES_API_ARGS=(--method POST "/repos/$REPO/releases/generate-notes"
+              -f "tag_name=$TAG" -f "target_commitish=$GITHUB_SHA")
+            if [[ -n "$PREVIOUS_BETA" && "$PREVIOUS_BETA" != "$TAG" ]]; then
+              NOTES_API_ARGS+=(-f "previous_tag_name=$PREVIOUS_BETA")
+            fi
+            NOTES=$(gh api "${NOTES_API_ARGS[@]}" --jq .body | scripts/clean-changelog.sh)
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --target "$GITHUB_SHA" \
+              --title "SwiftVM $VERSION" \
+              --prerelease \
+              --notes "$NOTES" \
+              artifacts/*.dmg
+          fi
+
+      - name: Publish rolling beta-channel appcast release
+        run: |
+          if gh release view beta-channel --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload beta-channel --repo "$REPO" --clobber appcast-beta.xml
+          else
+            gh release create beta-channel \
+              --repo "$REPO" \
+              --title "Beta Channel Appcast" \
+              --notes "Rolling Sparkle appcast for the beta channel. Do not delete." \
+              --prerelease \
+              appcast-beta.xml
+          fi

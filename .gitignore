@@ -5,3 +5,4 @@ build/
 Spikes/**/build/
 *.swiftvm/
 .plans/
+.env

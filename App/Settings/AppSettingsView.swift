@@ -32,6 +32,10 @@ struct AppSettingsView: View {
                 commandLineSection(link)
             }
 
+            if UpdateService.shared.isAvailable {
+                updatesSection
+            }
+
             Section("Storage") {
                 LabeledContent("Virtual Machines") {
                     Button((model.library.machinesDirectory.path as NSString).abbreviatingWithTildeInPath) {
@@ -57,6 +61,28 @@ struct AppSettingsView: View {
         // The link may have been changed from Terminal in the meantime.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             toolStatus = model.commandLineToolLink?.status ?? .notInstalled
+        }
+    }
+
+    // MARK: Updates
+
+    private var updatesSection: some View {
+        Section {
+            LabeledContent {
+                Button("Check for Updates…") { UpdateService.shared.checkForUpdates() }
+                    .disabled(!UpdateService.shared.canCheckForUpdates)
+            } label: {
+                Text(AppIdentity.current.name)
+                Text("Version \(UpdateService.shared.version)")
+            }
+            Toggle("Automatically download and install updates", isOn: Binding(
+                get: { UpdateService.shared.automaticallyDownloadsUpdates },
+                set: { UpdateService.shared.setAutomaticallyDownloadsUpdates($0) }
+            ))
+        } header: {
+            Text("Updates")
+        } footer: {
+            Text("An update is installed when \(AppIdentity.current.name) quits. If virtual machines are running then, you are asked what to do with them first, as you are whenever you quit.")
         }
     }
 

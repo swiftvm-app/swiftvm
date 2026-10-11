@@ -1,0 +1,44 @@
+name: Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    # The app needs the macOS 27 SDK, which this image has.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore SPM cache
+        id: spm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build
+        env:
+          SWIFTVM_SIGN_IDENTITY: "-"
+          SWIFTVM_PROVISIONING_PROFILE: "-"
+        run: scripts/build.sh --output "$RUNNER_TEMP/SwiftVM.app"
+
+      - name: Test
+        run: scripts/test.sh
+
+      - name: Save SPM cache
+        if: always() && steps.spm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}

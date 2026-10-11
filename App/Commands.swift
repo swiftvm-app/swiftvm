@@ -13,6 +13,13 @@ struct MachineCommands: Commands {
     }
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            if UpdateService.shared.isAvailable {
+                Button("Check for Updates…") { UpdateService.shared.checkForUpdates() }
+                    .disabled(!UpdateService.shared.canCheckForUpdates)
+            }
+        }
+
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") { AppModel.shared.windows.showAppSettings() }
                 .keyboardShortcut(",")

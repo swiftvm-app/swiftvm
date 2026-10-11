@@ -1,0 +1,114 @@
+name: Update Homebrew Tap
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Stable release tag to publish to the tap (e.g. v1.0.0)"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to publish to the tap (e.g. v1.0.0)"
+        required: true
+        type: string
+
+jobs:
+  update-homebrew-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag $TAG is not a stable vX.Y.Z release, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Error: release $TAG not found"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download DMG from release
+        if: ${{ steps.resolve.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          mkdir -p artifacts
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "SwiftVM-${VERSION}.dmg" \
+            --dir artifacts
+
+      - name: Compute SHA256 checksum
+        if: ${{ steps.resolve.outputs.skip != 'true' }}
+        id: sha256
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          SHA=$(sha256sum "artifacts/SwiftVM-${VERSION}.dmg" | awk '{print $1}')
+          echo "dmg=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        if: ${{ steps.resolve.outputs.skip != 'true' }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          SHA256: ${{ steps.sha256.outputs.dmg }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "Error: the HOMEBREW_TAP_TOKEN secret is not set"
+            exit 1
+          fi
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/swiftvm-app/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cat > tap/Casks/swiftvm.rb <<EOF
+          cask "swiftvm" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/swiftvm-app/swiftvm/releases/download/v#{version}/SwiftVM-#{version}.dmg"
+            name "SwiftVM"
+            desc "Run macOS and Linux virtual machines"
+            homepage "https://github.com/swiftvm-app/swiftvm"
+
+            livecheck do
+              url :url
+              strategy :github_latest
+            end
+
+            auto_updates true
+            depends_on arch: :arm64
+
+            app "SwiftVM.app"
+            binary "#{appdir}/SwiftVM.app/Contents/Helpers/swiftvm"
+
+            # The virtual machines, in ~/Library/Application Support/SwiftVM, are left alone on purpose.
+            zap trash: [
+              "~/Library/Caches/SwiftVM",
+              "~/Library/Caches/com.swiftvm.app",
+              "~/Library/HTTPStorages/com.swiftvm.app",
+              "~/Library/Preferences/com.swiftvm.app.plist",
+              "~/Library/Saved Application State/com.swiftvm.app.savedState",
+            ]
+          end
+          EOF
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/swiftvm.rb
+          if git diff --cached --quiet; then
+            echo "Tap already at v${VERSION}, nothing to commit"
+            exit 0
+          fi
+          git commit -m "Update SwiftVM to v${VERSION}"
+          git push

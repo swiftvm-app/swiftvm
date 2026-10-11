@@ -15,6 +15,8 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "Packages/SwiftVMKit"),
+        // Updates of the app. `scripts/bundle-app.sh` puts the framework into the app.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
     targets: [
         .executableTarget(
@@ -27,6 +29,7 @@ let package = Package(
                 .product(name: "DiskTools", package: "SwiftVMKit"),
                 .product(name: "Installers", package: "SwiftVMKit"),
                 .product(name: "VMControl", package: "SwiftVMKit"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "App",
             // Compiled by `scripts/bundle-app.sh`: the app's icon has to be in the app itself, not in

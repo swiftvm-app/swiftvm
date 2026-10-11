@@ -1,0 +1,113 @@
+# Command Line
+
+`swiftvm` does from a terminal what the app does from the menu bar. It drives
+the running app, so SwiftVM must be open.
+
+## Install
+
+Homebrew puts `swiftvm` on your `PATH`. Otherwise choose **Settings… → Command
+Line → Install Command Line Tool…**, which links `/usr/local/bin/swiftvm`. The
+tool itself is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`.
+
+## Basics
+
+```bash
+swiftvm help                 # every command
+swiftvm list                 # your machines
+swiftvm info web-server      # one machine in detail
+```
+
+`<machine>` is a machine's name, its [SSH name](ssh.md), or its UUID.
+
+## Machines
+
+| Command | What it does |
+| --- | --- |
+| `list` | List virtual machines |
+| `info <machine>` | Show one machine in detail |
+| `create <system> [options]` | Create a machine and wait until it is ready |
+| `clone <machine> [name]` | Copy a machine that is shut down |
+| `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
+| `open <machine>` | Show the machine's window |
+| `delete <machine>` | Move a stopped machine to the Trash |
+
+`<system>` is `macos`, or a Linux image: `ubuntu-26.04`, `ubuntu-24.04`, or
+`debian-13`.
+
+| `create` option | What it sets |
+| --- | --- |
+| `--name <name>` | The machine's name |
+| `--cpus <n>` | Processors |
+| `--memory <GB>` | Memory |
+| `--disk <GB>` | Disk size |
+| `--user <name>` | The account's name |
+| `--password <password>` | The account's password. Required for macOS |
+| `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |
+| `--no-start` | Don't start the machine when it is ready |
+
+## Power
+
+| Command | What it does |
+| --- | --- |
+| `start <machine>` | Start, or resume a suspended machine |
+| `stop <machine>` | Shut down and wait |
+| `restart <machine>` | Shut down and start again |
+| `suspend <machine>` | Save the machine's state to disk |
+| `pause <machine>`, `resume <machine>` | Freeze the machine in memory, and continue |
+| `force-stop <machine>` | Stop immediately |
+| `discard-state <machine>` | Throw away a suspended machine's saved state |
+
+## Connecting
+
+| Command | What it does |
+| --- | --- |
+| `ssh <machine> [--vsock] [ssh arguments]` | Open a shell or run a command in the guest. See [SSH](ssh.md) |
+| `ip <machine>` | Print the machine's IP address |
+| `console <machine>` | Connect to a Linux guest's [serial console](linux-guests.md#serial-console). `Ctrl+]` leaves |
+| `vsock <machine> <port>` | Connect input and output to a port in the guest over its socket device |
+| `plug <machine>`, `unplug <machine>` | Plug in the network cable, or pull it |
+| `forward <machine> <port>[:<guest port>]` | [Forward a port](networking.md#port-forwarding). `--udp`, `--allow-others` |
+| `unforward <machine> <port>` | Stop forwarding it. `--udp` |
+
+## Sharing and devices
+
+| Command | What it does |
+| --- | --- |
+| `share <machine> <folder>` | [Share a folder](sharing.md). `--read-only` |
+| `unshare <machine> <folder>` | Stop sharing it |
+| `share-clipboard <machine> on\|off` | Share the clipboard, or stop |
+| `attach <machine> <image>` | Plug in a [disc or disk image](disks.md#disc-and-disk-images). `--read-only` |
+| `eject <machine> <image>` | Unplug it |
+| `usb` | List the [USB devices](usb-devices.md) SwiftVM has |
+| `usb attach <machine> <device>` | Hand a USB device to a running machine |
+| `usb detach <machine> <device>` | Give it back to your Mac |
+| `usb auto <machine> <device> on\|off` | Attach it whenever it is plugged in, or stop |
+| `install-tools <machine>` | Install the [guest tools](guest-tools.md). `--disc`, `--password <password>` |
+
+## Snapshots
+
+| Command | What it does |
+| --- | --- |
+| `snapshot <machine> [name]` | Take a [snapshot](snapshots.md) |
+| `snapshots <machine>` | List snapshots |
+| `revert <machine> <snapshot>` | Go back to a snapshot |
+| `rename-snapshot <machine> <snapshot> <new name>` | Rename one |
+| `delete-snapshot <machine> <snapshot>` | Delete one |
+
+## Quitting
+
+`swiftvm quit` quits the app. It never asks anything, so it refuses while a
+machine is running. While one is being created it refuses too, unless you add
+`--cancel-creations`.
+
+## Example
+
+```bash
+swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
+swiftvm share web-server ~/Projects
+swiftvm forward web-server 8080:80
+swiftvm snapshot web-server "Before upgrade"
+swiftvm ssh web-server
+swiftvm suspend web-server
+swiftvm start web-server
+```

@@ -1,0 +1,87 @@
+name: Republish Beta Appcast
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Beta tag to (re)publish into the appcast (e.g. v0.2.0-beta.42)"
+        required: true
+        type: string
+
+jobs:
+  republish:
+    runs-on: xcode-27
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate input
+        id: validate
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            echo "Error: tag must look like vX.Y.Z-beta.N"
+            exit 1
+          fi
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Error: release $TAG not found"
+            exit 1
+          fi
+          echo "build_number=${TAG##*-beta.}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Sparkle dependency
+        run: swift package resolve
+
+      - name: Download DMG from release
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          mkdir -p artifacts
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern "SwiftVM-${VERSION}.dmg" \
+            --dir artifacts
+
+      - name: Fetch existing beta appcast
+        run: |
+          mkdir -p prev
+          if gh release download beta-channel --repo "$REPO" --pattern appcast-beta.xml --dir prev; then
+            echo "Fetched previous beta appcast"
+          else
+            echo "No previous beta appcast"
+            rm -f prev/appcast-beta.xml
+          fi
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          CHANNEL: beta
+          VERSION: ${{ steps.validate.outputs.version }}
+          BUILD_NUMBER: ${{ steps.validate.outputs.build_number }}
+        run: |
+          EXISTING=""
+          if [[ -f prev/appcast-beta.xml ]]; then
+            EXISTING=prev/appcast-beta.xml
+          fi
+          EXISTING_APPCAST="$EXISTING" scripts/generate-appcast.sh \
+            "artifacts/SwiftVM-${VERSION}.dmg" "$TAG" "$BUILD_NUMBER" appcast-beta.xml
+
+      - name: Upload appcast to beta-channel release
+        run: |
+          if gh release view beta-channel --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload beta-channel --repo "$REPO" --clobber appcast-beta.xml
+          else
+            gh release create beta-channel \
+              --repo "$REPO" \
+              --title "Beta Channel Appcast" \
+              --notes "Rolling Sparkle appcast for the beta channel. Do not delete." \
+              --prerelease \
+              appcast-beta.xml
+          fi

@@ -34,6 +34,10 @@
 	<string>public.app-category.developer-tools</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 SwiftVM contributors. Licensed under Apache-2.0.</string>
 	<key>NSMicrophoneUsageDescription</key>

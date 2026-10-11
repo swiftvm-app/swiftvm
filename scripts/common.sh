@@ -178,3 +178,8 @@ find_usb_profile() {
     fi
     return 0
 }
+
+# Whether $1 is a version a release can have: 1.2.3, or 1.2.3-beta.45 for a beta.
+is_release_version() {
+    [[ $1 =~ '^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' ]]
+}

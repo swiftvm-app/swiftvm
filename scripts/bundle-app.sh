@@ -3,11 +3,19 @@
 # scripts/run-dev.sh call this; there is rarely a reason to run it by hand.
 #   scripts/bundle-app.sh --products <folder> --helpers <folder> --output <app> [--development]
 #
-#   --products      where the build put the app's program, SwiftVM, and SwiftVMKit_Installers.bundle
+#   --products      where the build put the app's program, SwiftVM, with SwiftVMKit_Installers.bundle
+#                   and Sparkle.framework
 #   --helpers       where the build of Packages/SwiftVMKit put swiftvm and swiftvm-agent
 #   --output        the app to make. A copy of SwiftVM that is there is replaced, unless it is running
 #   --development   make the development copy, "SwiftVM Dev": an app of its own to macOS, which keeps
 #                   its machines apart from the app's (AppIdentity in Packages/SwiftVMKit)
+#
+# For a release, which scripts/build-release.sh makes:
+#   --version             what the app calls its version, in place of the one in Config/Info.plist
+#   --build-number        what tells a newer build from an older one
+#   --sparkle-feed-url    where the app looks for updates of itself. Without it and the key, as in
+#   --sparkle-public-key  every other build, the app doesn't update
+#   --timestamp           sign with a timestamp from Apple, which notarization asks for
 #
 # The app is signed with a certificate from the keychain if there is one: Developer ID Application
 # before Apple Development, and the other way round for the development copy, which also keeps to the
@@ -27,18 +35,26 @@ root=${0:A:h:h}
 source "$root/scripts/common.sh"
 
 products="" helpers="" output="" development=false
+version="" build_number="" sparkle_feed_url="" sparkle_public_key="" timestamp=--timestamp=none
 while (( $# )); do
     case $1 in
         --products) products=${2:?}; shift 2 ;;
         --helpers) helpers=${2:?}; shift 2 ;;
         --output) output=${2:?}; shift 2 ;;
         --development) development=true; shift ;;
+        --version) version=${2:?}; shift 2 ;;
+        --build-number) build_number=${2:?}; shift 2 ;;
+        --sparkle-feed-url) sparkle_feed_url=${2:?}; shift 2 ;;
+        --sparkle-public-key) sparkle_public_key=${2:?}; shift 2 ;;
+        --timestamp) timestamp=--timestamp; shift ;;
         *) fail "Usage: scripts/bundle-app.sh --products <folder> --helpers <folder> --output <app> [--development]" ;;
     esac
 done
+[[ -z $sparkle_feed_url$sparkle_public_key || ( -n $sparkle_feed_url && -n $sparkle_public_key ) ]] \
+    || fail "--sparkle-feed-url and --sparkle-public-key go together: an app that knows where its updates are has to be able to check them."
 [[ -n $products && -n $helpers && $output == *.app ]] \
     || fail "Usage: scripts/bundle-app.sh --products <folder> --helpers <folder> --output <app> [--development]"
-for built in "$products/SwiftVM" "$products/SwiftVMKit_Installers.bundle" "$helpers/swiftvm" "$helpers/swiftvm-agent"; do
+for built in "$products/SwiftVM" "$products/SwiftVMKit_Installers.bundle" "$products/Sparkle.framework" "$helpers/swiftvm" "$helpers/swiftvm-agent"; do
     [[ -e $built ]] || fail "$built isn't there. Build first: scripts/build.sh, or swift run SwiftVM."
 done
 # The disk takes swiftvm and SwiftVM for one name. The swiftvm tool, built at the repository's root, lands
@@ -66,7 +82,7 @@ trap 'rm -rf "$stage"' EXIT
 trap 'exit 130' INT TERM HUP
 app=$stage/${output:t}
 contents=$app/Contents
-mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
+mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources" "$contents/Frameworks"
 
 cp "$products/SwiftVM" "$contents/MacOS/SwiftVM"
 cp "$helpers/swiftvm" "$helpers/swiftvm-agent" "$contents/Helpers/"
@@ -74,6 +90,12 @@ cp "$helpers/swiftvm" "$helpers/swiftvm-agent" "$contents/Helpers/"
 cp -R "$products/SwiftVMKit_Installers.bundle" "$contents/Resources/"
 # The build signed that bundle to run locally. Inside the app it is covered by the app's signature.
 rm -rf "$contents/Resources/SwiftVMKit_Installers.bundle/Contents/_CodeSignature"
+
+# Sparkle, which updates the app. The build left it next to the program; in an app its place is
+# Contents/Frameworks, and the program has to be told to look there.
+cp -R "$products/Sparkle.framework" "$contents/Frameworks/"
+report=$(install_name_tool -add_rpath @executable_path/../Frameworks "$contents/MacOS/SwiftVM" 2>&1) \
+    || fail "The app's program couldn't be told where Sparkle is:"$'\n'"$report"
 
 # The icon and the asset catalog, compiled the way Xcode would. That takes a second or two, so the
 # result is kept until one of them changes, or this script does.
@@ -104,6 +126,16 @@ if $development; then
     # Lets a debugger attach, which the hardened runtime otherwise forbids.
     /usr/libexec/PlistBuddy -c "Add :com.apple.security.get-task-allow bool true" "$stage/entitlements.plist"
 fi
+if [[ -n $version ]]; then
+    plutil -replace CFBundleShortVersionString -string "$version" "$contents/Info.plist"
+fi
+if [[ -n $build_number ]]; then
+    plutil -replace CFBundleVersion -string "$build_number" "$contents/Info.plist"
+fi
+if [[ -n $sparkle_feed_url ]]; then
+    plutil -replace SUFeedURL -string "$sparkle_feed_url" "$contents/Info.plist"
+    plutil -replace SUPublicEDKey -string "$sparkle_public_key" "$contents/Info.plist"
+fi
 print -n 'APPL????' > "$contents/PkgInfo"
 
 remembered=$root/.build/development-signing-identity
@@ -127,6 +159,12 @@ if [[ -z $identity ]]; then
             print -u2 "No signing certificate in the keychain: signing $name to run on this Mac."
         fi
     fi
+fi
+
+# The hardened runtime only loads libraries that are signed by the app's own team, and a signature to
+# run on this Mac names no team at all: Sparkle wouldn't load, and the app wouldn't start.
+if [[ $identity == - ]]; then
+    /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/entitlements.plist"
 fi
 
 # The certificate's SHA-1, which is how a provisioning profile names the certificates it goes with.
@@ -173,18 +211,25 @@ fi
 
 sign() {
     local report
-    report=$(codesign --force --sign "$identity" --options runtime --timestamp=none "$@" 2>&1) && return 0
+    report=$(codesign --force --sign "$identity" --options runtime $timestamp "$@" 2>&1) && return 0
     local hint=""
     if $from_memory; then
         hint=$'\n'"The certificate is the one the development copy was first signed with. If it is gone, delete $remembered to choose again."
     fi
     fail "Signing failed:"$'\n'"$report$hint"
 }
-# Inside out: what is inside the app has to be signed before the app is.
+# Inside out: what is inside the app has to be signed before the app is. Sparkle comes signed to run
+# locally, and its parts are signed over one by one, the way its own instructions have it.
+sparkle=$contents/Frameworks/Sparkle.framework/Versions/B
+sign "$sparkle/XPCServices/Installer.xpc"
+sign --preserve-metadata=entitlements "$sparkle/XPCServices/Downloader.xpc"
+sign "$sparkle/Autoupdate"
+sign "$sparkle/Updater.app"
+sign "$contents/Frameworks/Sparkle.framework"
 sign --identifier com.swiftvm.app.swiftvm "$contents/Helpers/swiftvm"
 sign --identifier com.swiftvm.app.swiftvm-agent "$contents/Helpers/swiftvm-agent"
 sign --entitlements "$stage/entitlements.plist" "$app"
-codesign --verify --strict "$app" || fail "The signature of $app doesn't hold."
+codesign --verify --deep --strict "$app" || fail "The signature of $app doesn't hold."
 if $remember; then
     print -r -- "$identity" > "$remembered"
 fi

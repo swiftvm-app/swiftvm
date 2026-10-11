@@ -171,6 +171,19 @@ import Testing
         #expect(scratch.mark(of: fresh) == "new")
     }
 
+    // MARK: Releases
+
+    /// What `scripts/build-release.sh` takes for a version ends up in the app, in the name of its disk
+    /// image and in the list of updates.
+    @Test func tellsTheVersionsAReleaseCanHave() throws {
+        for version in ["0.1.0", "12.0.3", "0.2.0-beta.57"] {
+            #expect(try run("is_release_version \"$1\"", version).status == 0, "\(version)")
+        }
+        for version in ["", "1.2", "v1.2.3", "1.2.3-beta", "1.2.3-rc.1", "1.2.3 ", "1.2.3/../x"] {
+            #expect(try run("is_release_version \"$1\"", version).status == 1, "\(version)")
+        }
+    }
+
     // MARK: Provisioning profiles
 
     /// Stand-ins for provisioning profiles: property lists in an envelope, signed with a certificate
