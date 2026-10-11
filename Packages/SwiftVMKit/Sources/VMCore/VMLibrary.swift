@@ -31,19 +31,8 @@ public final class VMLibrary {
     /// came up after that would lose its power with the app, and nobody would have been asked.
     @ObservationIgnored public var allowsStarting = true
 
-    public init(rootDirectory: URL = VMLibrary.defaultRootDirectory) {
+    public init(rootDirectory: URL) {
         self.rootDirectory = rootDirectory
-    }
-
-    /// Environment variable that points the app and the `swiftvm` tool at a different data directory, so a
-    /// development copy can run next to the installed app without sharing its machines.
-    public nonisolated static let rootDirectoryEnvironmentKey = "SWIFTVM_HOME"
-
-    public nonisolated static var defaultRootDirectory: URL {
-        if let override = ProcessInfo.processInfo.environment[rootDirectoryEnvironmentKey], !override.isEmpty {
-            return URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
-        }
-        return URL.applicationSupportDirectory.appending(path: "SwiftVM", directoryHint: .isDirectory)
     }
 
     /// Where new machines are created.

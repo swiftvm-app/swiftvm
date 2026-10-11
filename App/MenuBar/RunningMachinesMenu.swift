@@ -1,4 +1,5 @@
 import SwiftUI
+import VMControl
 import VMCore
 
 /// The menu bar item shown while machines run. They keep running when every window is closed, and this is
@@ -37,6 +38,6 @@ struct RunningMachinesMenu: View {
             NSApp.activate()
             openWindow(id: WindowID.library)
         }
-        Button("Quit SwiftVM") { NSApp.terminate(nil) }
+        Button("Quit \(AppIdentity.current.name)") { NSApp.terminate(nil) }
     }
 }

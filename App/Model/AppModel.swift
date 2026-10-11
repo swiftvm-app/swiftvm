@@ -57,7 +57,7 @@ final class AppModel {
     @ObservationIgnored private(set) var isClosingDown = false
 
     private init() {
-        library = VMLibrary()
+        library = VMLibrary(rootDirectory: ControlPaths.applicationSupport)
         sshWriter = SSHConfigWriter(generatedConfigURL: library.rootDirectory.appending(path: "ssh_config"))
         isSSHIncludeInstalled = sshWriter.isIncludeInstalled
 
@@ -101,10 +101,10 @@ final class AppModel {
         do {
             controlServer = try ControlServer(
                 handler: { [weak self] request in
-                    await self?.handle(request) ?? .failure("SwiftVM is shutting down.")
+                    await self?.handle(request) ?? .failure("\(AppIdentity.current.name) is shutting down.")
                 },
                 streamHandler: { [weak self] request in
-                    await self?.openStream(request) ?? (.failure("SwiftVM is shutting down."), nil)
+                    await self?.openStream(request) ?? (.failure("\(AppIdentity.current.name) is shutting down."), nil)
                 }
             )
         } catch {
@@ -399,9 +399,12 @@ final class AppModel {
     func openSerialConsole(for machine: VirtualMachine) {
         guard let tool = commandLineToolURL else { return }
         var lines: [String] = []
-        // A copy of the app that keeps its data elsewhere has to be told apart by the tool as well.
-        if let home = ProcessInfo.processInfo.environment[VMLibrary.rootDirectoryEnvironmentKey], !home.isEmpty {
-            lines.append("export \(VMLibrary.rootDirectoryEnvironmentKey)=\(Self.shellQuoted(home))")
+        // The tool has to look where this copy keeps its data. A copy that was told to keep it elsewhere
+        // tells the tool as well; one that wasn't makes sure the shell's own settings don't either.
+        if let home = ProcessInfo.processInfo.environment[ControlPaths.homeEnvironmentKey], !home.isEmpty {
+            lines.append("export \(ControlPaths.homeEnvironmentKey)=\(Self.shellQuoted(home))")
+        } else {
+            lines.append("unset \(ControlPaths.homeEnvironmentKey)")
         }
         lines.append("exec \(Self.shellQuoted(tool.path)) console \(machine.id.uuidString)")
         runInTerminal(lines, scriptName: "swiftvm-console-\(machine.id.uuidString.prefix(8))")

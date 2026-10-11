@@ -99,13 +99,19 @@ See `docs/spikes.md` for platform findings that shaped the design.
 ## Build
 
 ```sh
-scripts/build.sh          # app + CLI, Debug
+scripts/build.sh          # the app, optimized, at build/SwiftVM.app
 scripts/test.sh           # unit tests
-open build/Build/Products/Debug/SwiftVM.app
+open build/SwiftVM.app
 ```
 
-No Apple Developer team is needed to build and run: the app is signed to run locally. To sign with your own
-team, see the comment at the top of `Config/Base.xcconfig`.
+There is no Xcode project: the app is a Swift package, `swift build` compiles it, and `scripts/bundle-app.sh`
+makes an app of the result, with its icon, the `swiftvm` tool and the guest agent for macOS guests inside,
+and signs it. Xcode opens `Package.swift`.
+
+No Apple Developer team is needed to build and run. With a signing certificate in your keychain the app is
+signed with it, Developer ID Application before Apple Development; without one it is signed to run on your
+Mac, which is enough to run virtual machines. `SWIFTVM_SIGN_IDENTITY` picks a certificate by name or SHA-1,
+and `SWIFTVM_SIGN_IDENTITY=-` signs to run on your Mac whatever the keychain holds.
 
 ## Command line
 
@@ -137,7 +143,9 @@ swiftvm quit                                # only when nothing is running
 ```
 
 `swiftvm help` lists every command. `scripts/build.sh` also builds the tool on its own at
-`Packages/SwiftVMKit/.build/out/Products/Debug/swiftvm`.
+`Packages/SwiftVMKit/.build/out/Products/Release/swiftvm`. To build only the tool, use
+`swift build --package-path Packages/SwiftVMKit --product swiftvm`. At the repository's root the same
+product would land next to the app's program, `SwiftVM`, and a Mac's disk takes the two names for one.
 
 `swiftvm create macos` downloads the latest macOS restore image (about 25 GB) unless it is already in
 `~/Library/Caches/SwiftVM/Downloads` or you pass `--ipsw <file>`.
@@ -151,26 +159,57 @@ device. It is what `swiftvm ssh --vsock` hands to `ssh`, and it works in your ow
 
 ## Development
 
-Set `SWIFTVM_HOME` to run a second copy of the app with its own machines, network settings and control socket,
-next to the one you use. The path has to be short enough for a Unix socket (about 90 characters).
+```sh
+swift run SwiftVM         # builds a development copy of the app and opens it
+```
+
+The development copy is an app of its own to macOS: *SwiftVM Dev* (`com.swiftvm.app.dev`), at
+`.build/SwiftVM Dev.app`. It keeps its machines, its network settings and its control socket in
+`~/Library/Application Support/SwiftVM-Dev`, so it runs next to the app you use and never sees that app's
+machines. The `swiftvm` tool inside a copy talks to that copy:
 
 ```sh
-export SWIFTVM_HOME="$HOME/Library/Application Support/SwiftVM-Dev"
-open -n --env "SWIFTVM_HOME=$SWIFTVM_HOME" build/Build/Products/Debug/SwiftVM.app
-swiftvm list          # talks to that copy while SWIFTVM_HOME is set
-swiftvm quit
+".build/SwiftVM Dev.app/Contents/Helpers/swiftvm" list
+```
+
+`swift run SwiftVM` stays in the terminal until the copy quits, and shows what it prints. Control-C asks the
+copy to quit the way `swiftvm quit` does, which it refuses while a machine is running; a second Control-C
+leaves it running and gives the terminal back. Running the command again replaces a copy that is still open
+with the new build, unless that copy has a machine running. `swift run SwiftVM --background` opens the copy
+behind your other windows and returns as soon as it answers its `swiftvm` tool. `scripts/run-dev.sh` is what
+`swift run SwiftVM` hands over to, and can be run directly with the same options.
+
+What the two copies do share: the downloaded images in `~/Library/Caches/SwiftVM` (don't have both download
+the same system at the same time), the SSH key SwiftVM makes when you have none, the one place for the
+`swiftvm` link in `/usr/local/bin`, and `~/.ssh/config` if *Add machines to ~/.ssh/config* is on in both, where
+a name used for a machine in both copies leads to only one of them. Machines opened from the Finder go to
+the app; the development copy takes one that is dropped on its window.
+
+The development copy is signed with an Apple Development certificate if your keychain has one, and keeps to
+the certificate it was first signed with, so that macOS doesn't ask for the microphone again after every
+build. Without a certificate it is signed to run on your Mac.
+
+`SWIFTVM_HOME` gives the development copy another data directory, for a second set of machines. The path has
+to be short enough for a Unix socket (about 90 characters), and the `swiftvm` tool needs the same setting to
+find that copy:
+
+```sh
+export SWIFTVM_HOME="$HOME/Library/Application Support/SwiftVM-Scratch"
+swift run SwiftVM --background
+".build/SwiftVM Dev.app/Contents/Helpers/swiftvm" list
 ```
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `App/` | The SwiftUI app, and its icon (`AppIcon.icon`, an Icon Composer document) |
+| `Package.swift`, `App/` | The SwiftUI app, as the package product `SwiftVM`, and its icon (`AppIcon.icon`, an Icon Composer document) |
 | `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, `GuestChannel` (the protocol between the app and the agent in a guest), and the `swiftvm` tool |
 | `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgent/` | The guest agent for Linux, its systemd units and its installer |
 | `Packages/SwiftVMKit/Sources/GuestAgentMac/`, `Sources/swiftvm-agent/` | The guest agent for macOS. It is built with the app, travels inside it at `Contents/Helpers/swiftvm-agent`, and only ever runs in a guest |
 | `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgentMac/` | Its installer, which carries the program and its launchd jobs into a guest |
-| `Config/` | Build settings, entitlements, Info.plist |
+| `Config/` | The app's `Info.plist` and its entitlements |
+| `scripts/` | `build.sh` builds the app, `run-dev.sh` a development copy, `bundle-app.sh` puts either together and signs it, `test.sh` runs the unit tests |
 | `docs/` | Notes |
 
 ## License

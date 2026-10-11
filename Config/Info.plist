@@ -2,11 +2,45 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>SwiftVM</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.swiftvm.app</string>
+	<key>CFBundleName</key>
+	<string>SwiftVM</string>
+	<key>CFBundleDisplayName</key>
+	<string>SwiftVM</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>27.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 SwiftVM contributors. Licensed under Apache-2.0.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SwiftVM passes microphone audio to virtual machines that have the microphone turned on.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>dev.swiftvm.machine</string>
+			<string>com.swiftvm.machine</string>
 			<key>UTTypeDescription</key>
 			<string>SwiftVM Virtual Machine</string>
 			<key>UTTypeConformsTo</key>
@@ -36,7 +70,7 @@
 			<true/>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>dev.swiftvm.machine</string>
+				<string>com.swiftvm.machine</string>
 			</array>
 		</dict>
 	</array>

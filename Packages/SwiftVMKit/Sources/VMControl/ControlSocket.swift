@@ -11,7 +11,7 @@ public enum ControlSocketError: Error, LocalizedError {
         switch self {
         case .pathTooLong(let path): "The control socket path is too long: \(path)"
         case .system(let operation, let code): "\(operation) failed: \(String(cString: strerror(code)))"
-        case .appNotRunning: "SwiftVM isn't running. Open the app first."
+        case .appNotRunning: "\(AppIdentity.current.name) isn't running. Open the app first."
         case .connectionClosed: "The app closed the connection before answering."
         case .invalidMessage: "Received a message that couldn't be understood."
         }

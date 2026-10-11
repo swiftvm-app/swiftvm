@@ -28,8 +28,8 @@ extension AppModel {
         let script = CommandLineToolLink.administratorScript(
             running: installed ? link.installCommand : link.removeCommand,
             prompt: installed
-                ? "SwiftVM wants to add the swiftvm command to \(folder)."
-                : "SwiftVM wants to remove the swiftvm command from \(folder)."
+                ? "\(AppIdentity.current.name) wants to add the swiftvm command to \(folder)."
+                : "\(AppIdentity.current.name) wants to remove the swiftvm command from \(folder)."
         )
         do {
             // The dialog stays up for as long as the user takes; keep the app responsive meanwhile.

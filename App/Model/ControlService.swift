@@ -7,7 +7,7 @@ import VZEngine
 /// Handles requests from the `swiftvm` command-line tool.
 extension AppModel {
     func handle(_ request: ControlRequest) async -> ControlResponse {
-        guard !isQuittingUnattended, !isClosingDown else { return .failure("SwiftVM is quitting.") }
+        guard !isQuittingUnattended, !isClosingDown else { return .failure("\(AppIdentity.current.name) is quitting.") }
         switch request.command {
         case .list:
             if let identifier = request.machine {
@@ -318,7 +318,7 @@ extension AppModel {
     /// Answers a request that turns its connection into a byte stream. With a yes comes what serves the
     /// stream once the answer has gone out.
     func openStream(_ request: ControlRequest) async -> (response: ControlResponse, stream: ControlServer.Stream?) {
-        guard !isQuittingUnattended, !isClosingDown else { return (.failure("SwiftVM is quitting."), nil) }
+        guard !isQuittingUnattended, !isClosingDown else { return (.failure("\(AppIdentity.current.name) is quitting."), nil) }
         guard let identifier = request.machine else { return (.failure("Missing machine name."), nil) }
         guard let machine = findMachine(identifier) else { return (notFound(identifier), nil) }
         switch request.command {
@@ -472,7 +472,7 @@ extension AppModel {
         }
 
         // A quit may have been agreed to while the restore image was being read.
-        guard !isQuittingUnattended else { return .failure("SwiftVM is quitting.") }
+        guard !isQuittingUnattended else { return .failure("\(AppIdentity.current.name) is quitting.") }
         let result: Result<VirtualMachine, any Error> = await withCheckedContinuation { continuation in
             let creation = start()
             creation.onFinish = { continuation.resume(returning: $0) }
@@ -481,7 +481,7 @@ extension AppModel {
         case .success(let machine):
             if parameters.start {
                 guard !isQuittingUnattended else {
-                    return .failure("“\(machine.name)” was created but not started, because SwiftVM is quitting.")
+                    return .failure("“\(machine.name)” was created but not started, because \(AppIdentity.current.name) is quitting.")
                 }
                 await machine.start()
                 if let error = machine.lastError {

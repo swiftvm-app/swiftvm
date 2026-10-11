@@ -716,3 +716,112 @@ All through `swiftvm`, on macOS 27.0.1 guests (4 CPUs, 8 GB), with nobody at the
     one that way until the file was renamed. The unit test that reads the Linux installer caught it.
 - **Not checked on a guest:** two users logged in at once in the guest, the clipboard between two
   running guests, and a guest older than macOS 27.
+
+## The app as a Swift package, without an Xcode project — works
+
+- **Tried:** `App/` as the executable target of a package at the repository's root, built with `swift build`
+  (Swift 6.4, which builds with Xcode's build system: products land in `.build/out/Products/<Configuration>`),
+  and a script that makes an app of the program. On macOS 27.0, Xcode 27.0.
+- **Outcome:** the app's sources compiled unchanged and without a warning. What Xcode used to do, and where it
+  is now:
+  - `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` is `.defaultIsolation(MainActor.self)` in `Package.swift`.
+    `SWIFT_APPROACHABLE_CONCURRENCY`, in the Swift 6 language mode, comes down to the upcoming features
+    `NonisolatedNonsendingByDefault` and `InferIsolatedConformances`.
+  - The `Info.plist` is written out in full; Xcode had generated most of it from build settings.
+  - `xcrun actool App/Assets.xcassets App/AppIcon.icon --compile <folder> --app-icon AppIcon --accent-color
+    AccentColor --platform macosx --minimum-deployment-target 27.0 --output-partial-info-plist <file>` makes
+    the `Assets.car` and `AppIcon.icns` that Xcode made, in 1.5 s. The script keeps them until a source changes.
+  - The package's resources: the `Bundle.module` that the build generates looks in `Bundle.main.resourceURL`
+    first, so `SwiftVMKit_Installers.bundle` goes to `Contents/Resources`, where Xcode put it. There is no
+    falling back to the build folder: an app without that bundle stops with "unable to find bundle named
+    SwiftVMKit_Installers" the first time it looks for a distribution.
+  - The program records the right SDK (`vtool -show-build`: minos 27.0, sdk 27.0) without extra linker flags.
+- **`swift run` becomes the program it built** (the process keeps its ID), so the program has the terminal.
+  Started outside an app, SwiftVM's program hands over to `scripts/run-dev.sh` the same way, with `execv`.
+- **Names still matter.** The products of one build share a folder, and the disk doesn't tell `SwiftVM` from
+  `swiftvm`. The app is the only product of the package at the root; the tool and the guest agent are built
+  from `Packages/SwiftVMKit` into that package's own build folder. Tried what happens otherwise: `swift
+  build --product swiftvm` at the root is accepted (a product of a dependency), writes the 0.9 MB tool
+  over the 9.6 MB app program, and the next `swift build --product SwiftVM` reports "Build complete"
+  without linking anything, so that `swift run SwiftVM` printed the tool's usage. Deleting the file makes
+  the next build link the app again. A plain `swift build` at the root doesn't build the tool. The tool
+  now says what happened when it is started under the app's name, and `scripts/bundle-app.sh` refuses a
+  products folder whose `SwiftVM` is spelled `swiftvm`.
+- **How long:** `scripts/build.sh` took 28 s for the optimized app after the debug build existed; `swift run
+  SwiftVM --background` over an idle development copy, with nothing changed, took 4.4 s until the new copy
+  answered `swiftvm list` (build check, asking the old copy to quit, assembling, signing, opening).
+
+## What the virtualization entitlement asks of a signature
+
+Each of these started an Ubuntu guest and reached it over SSH, with `com.apple.security.virtualization`, the
+hardened runtime (`--options runtime`) and no provisioning profile:
+
+- signed to run locally (`codesign --sign -`, `flags=0x10002(adhoc,runtime)`);
+- an Apple Development certificate, with `com.apple.security.get-task-allow` added so that a debugger can attach;
+- a Developer ID Application certificate, not notarized. `spctl -a` calls that app "rejected, Unnotarized
+  Developer ID", which only counts for a copy that was downloaded: one that was built on the Mac it runs on
+  opens.
+
+The guest agent for macOS guests is signed with the app and gets the hardened runtime too. In macOS 27.0.1
+guests, an agent signed with the Apple Development certificate and one signed with Developer ID were each
+installed by the app at the end of a new Mac's setup, ran as root and in the user's session, put the guest on
+the Mac's time zone and shut it down when asked (6.1 s and 6.5 s). With the Developer ID one, text went both
+ways over the clipboard, each within a second.
+
+## Two copies of the app side by side — works
+
+- **Tried:** the app (`com.swiftvm.app`, here with a data directory of its own through `SWIFTVM_HOME`) and the
+  development copy (`com.swiftvm.app.dev`) running at once, each with an Ubuntu guest and then a macOS guest.
+- **Outcome:** two apps to macOS (`lsappinfo`, two preferences domains), two networks (`192.168.231.0/24` and
+  `192.168.232.0/24`), each guest reachable through its own copy's `swiftvm`. A third copy took the next network.
+- **The tool finds its copy by where it is.** `swiftvm` follows the link it was started through, walks up to the
+  app it is inside of and reads that app's bundle identifier; the development copy's tool looks for the
+  control socket in `SwiftVM-Dev`. `Bundle` wasn't used for reading the identifier: it remembers an
+  `Info.plist` by path. A program inside an app whose `Info.plist` can't be read stops rather than guess:
+  the guess would be the app, with the app's machines.
+- **Nothing in the app keeps two programs off one data directory.** Read in the code, not tried: a second
+  one takes the control socket over (`ControlSocket.listen` unlinks and binds), clears `Machines/.staging`
+  and writes the same `library.json`. One bundle is only ever started once by Launch Services, but an app
+  at another path is another app, also with the same bundle identifier. `scripts/run-dev.sh` doesn't open
+  a copy while something answers on the socket it would use (tried with a development copy from a second
+  folder: refused, one process); the app itself has no such check.
+- **The type of a `.swiftvm` belongs to whoever declared it first.** The exported type was renamed with the
+  app (`dev.swiftvm.machine` to `com.swiftvm.machine`). While an older build was still known to Launch
+  Services, `NSWorkspace.urlsForApplications(toOpen:)` for a machine named that build and nothing else: the
+  extension still led to the old type, which the new apps don't open. Deleting the build wasn't enough.
+  Launch Services also remembered seven builds that had been deleted long before (test copies in
+  `DerivedData` and in temporary folders), each declaring the old type, and with those on record a
+  machine was of the old type and opened with nothing. After `lsregister -u <path>` for each of them
+  (`lsregister -dump` lists what is on record) the type was `com.swiftvm.machine` and the app the one
+  opener. The development copy declares the type and offers to open nothing, so a machine opened from the
+  Finder never lands in its library.
+- **Seen once: "Failed to lock auxiliary storage."** Two Macs were being installed at the same time, one in
+  each copy, and finished within the same second. One started; the other's first start failed with
+  `Invalid virtual machine configuration. Failed to lock auxiliary storage.` Started again by hand a minute
+  later it came up, set itself up and got its guest tools. The framework holds a `flock` on `aux.img` while
+  a machine has it (a second `flock(LOCK_EX | LOCK_NB)` fails while the machine runs and succeeds at once
+  after a forced stop), so the supposition is that the installer's machine hadn't let go yet when the first
+  start came. Not reproduced, not fixed.
+
+## A script that stays with an app it opened
+
+- An app that `open` starts has neither the terminal nor the caller's environment. `open --stdout <file>
+  --stderr <file>` gives it files to print to and `--env NAME=value` passes a variable on; `--args` passes
+  arguments.
+- `open -W` waits for the app to quit and doesn't mind being told to ignore Control-C (`trap '' INT` in a
+  subshell before `exec`); the app is in a process group of its own and never sees the terminal's Control-C.
+  Passing it on as a signal would end the app with its machines running, which is how a network range gets
+  stuck (see "A process that exits with a VM attached leaves its subnet blocked"). `scripts/run-dev.sh`
+  asks through `swiftvm quit` instead, which refuses while a machine runs.
+- In zsh, a trap that fires during `wait $pid 2> /dev/null` runs with that redirection in force: what it
+  printed was gone, and so was the trace of `zsh -x`. It looked as if the trap hadn't run.
+- **Which programs run from an app.** `pgrep -f` takes a pattern, and an app's path can hold anything.
+  `ps -axww -o pid=,comm=` prints each program's path, spaces included, but the way it was started: a
+  program started as `./SwiftVM.app/Contents/MacOS/SwiftVM` is listed like that, and one started through
+  a link by the link's path. `lsof -a -p <pid> -d txt -Fn` names the file itself (0.05 s a process), which
+  is what `scripts/common.sh` compares.
+- A stand-in for the app in a test can't be a copy of a system program: a copy of `/bin/sleep` in another
+  place is ended by macOS the moment it starts (exit status 137), and the folder it was in then refuses
+  new files ("Operation not permitted"). A three-line C program compiled on the spot runs from anywhere.
+- zsh doesn't run an `EXIT` trap when a signal ends the script, unless the signal has a trap of its own
+  that exits.

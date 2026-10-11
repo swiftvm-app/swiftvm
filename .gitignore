@@ -1,11 +1,7 @@
 .DS_Store
 build/
-DerivedData/
 .build/
 .swiftpm/
-xcuserdata/
-*.xcuserstate
-Config/Signing.local.xcconfig
 Spikes/**/build/
 *.swiftvm/
 .plans/

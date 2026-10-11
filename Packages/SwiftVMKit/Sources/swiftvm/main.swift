@@ -164,6 +164,18 @@ func printDetails(of machine: MachineSummary) {
     }
 }
 
+// Built at the repository's root, this tool lands in the folder of the app's program, SwiftVM, and on a
+// disk that takes the two names for one it replaces it. `swift run SwiftVM` then starts the tool. Say
+// so, rather than answer as the tool to someone who asked for the app.
+if let program = CommandLine.arguments.first.map({ URL(fileURLWithPath: $0) }), program.lastPathComponent == "SwiftVM" {
+    fail("""
+    This is the swiftvm tool, in the place of the app's program. It was built at the repository's root, \
+    where the two share a folder and the disk takes swiftvm and SwiftVM for one name.
+    Delete \(program.path) and run the command again. The tool on its own is built with
+        swift build --package-path Packages/SwiftVMKit --product swiftvm
+    """)
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let commandName = arguments.first else {
     print(usage)

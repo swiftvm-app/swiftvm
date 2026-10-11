@@ -1,7 +1,7 @@
 import SwiftUI
+import VMControl
 import VMCore
 
-@main
 struct SwiftVMApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel.shared
@@ -12,7 +12,7 @@ struct SwiftVMApp: App {
     }
 
     var body: some Scene {
-        Window("SwiftVM", id: WindowID.library) {
+        Window(AppIdentity.current.name, id: WindowID.library) {
             LibraryView()
                 .environment(model)
         }
@@ -34,7 +34,7 @@ struct SwiftVMApp: App {
                 .environment(model)
         }
 
-        MenuBarExtra("SwiftVM", systemImage: "macwindow.on.rectangle", isInserted: hasActiveMachines) {
+        MenuBarExtra(AppIdentity.current.name, systemImage: "macwindow.on.rectangle", isInserted: hasActiveMachines) {
             RunningMachinesMenu()
                 .environment(model)
         }
