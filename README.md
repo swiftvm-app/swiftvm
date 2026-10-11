@@ -2,6 +2,12 @@
 
 A native macOS app for running virtual machines, written in Swift. Requires macOS 27 on Apple silicon.
 
+SwiftVM lives in the menu bar. Its item there opens a panel with every virtual machine, what it is doing
+and what can be done with it, and leads to *New Virtual Machine* and the app's settings. There is no main
+window: a machine's display is a window of its own, and so are its settings and snapshots when they are
+opened from the panel. The app is in the Dock, with its menus in the menu bar, only while one of its windows
+is open, and after the last one has closed until you go on to another app.
+
 ## Status
 
 Early development. Working today:
@@ -62,6 +68,15 @@ Good to know:
   the machine starts again. When two running machines would take the same device, it goes to the one
   that had it last. A copy of a machine takes none by itself until you say so.
 
+- Opening SwiftVM puts its item in the menu bar and opens no window, unless there is no virtual machine
+  yet: then it opens *New Virtual Machine*. Opening it again while it runs, from the Finder or Spotlight,
+  brings its windows forward, or opens its settings when it has no window open. A virtual machine, an
+  installer disc (ISO) or a macOS restore image (IPSW) can be dropped on the *New Virtual Machine* window.
+- Errors and notices about a machine show in its own window when that is open. Otherwise they are at the
+  top of the panel, and the item in the menu bar turns into a warning sign until they have been read. It
+  does the same when a machine couldn't be created.
+- The item can't be taken out of the menu bar: dragged out, it comes back. It is all there is of the app
+  while no window is open.
 - A macOS guest without the guest tools asks on its own screen before it shuts down, so *Shut Down* and
   `swiftvm stop` need someone to confirm in the machine's window. With the guest tools it shuts down at
   once, the way `sudo shutdown -h now` does: the apps in it aren't asked about documents that haven't
@@ -119,7 +134,7 @@ See `docs/spikes.md` for platform findings that shaped the design.
 
 ```sh
 scripts/build.sh          # the app, optimized, at build/SwiftVM.app
-scripts/test.sh           # unit tests
+scripts/test.sh           # unit tests: the SwiftVMKit package's, then the app's
 open build/SwiftVM.app
 ```
 
@@ -147,7 +162,8 @@ app without both: everything works but USB devices, and the USB button isn't sho
 ## Command line
 
 The `swiftvm` tool is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`. *Install Command Line Tool…*
-in SwiftVM › Settings puts it on your `PATH`, as a link in `/usr/local/bin`. The app must be running.
+in the app's settings (*Settings…* in the panel) puts it on your `PATH`, as a link in `/usr/local/bin`. The
+app must be running.
 
 ```sh
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
@@ -218,7 +234,8 @@ What the two copies do share: the downloaded images in `~/Library/Caches/SwiftVM
 the same system at the same time), the SSH key SwiftVM makes when you have none, the one place for the
 `swiftvm` link in `/usr/local/bin`, and `~/.ssh/config` if *Add machines to ~/.ssh/config* is on in both, where
 a name used for a machine in both copies leads to only one of them. Machines opened from the Finder go to
-the app; the development copy takes one that is dropped on its window.
+the app; the development copy takes one that is dropped on its *New Virtual Machine* window. Both copies
+have the same item in the menu bar; the panel says at its top which one it belongs to.
 
 The development copy is signed with an Apple Development certificate if your keychain has one, and keeps to
 the certificate it was first signed with, so that macOS doesn't ask for the microphone again after every
@@ -240,13 +257,14 @@ swift run SwiftVM --background
 
 | Path | What |
 |---|---|
-| `Package.swift`, `App/` | The SwiftUI app, as the package product `SwiftVM`, and its icon (`AppIcon.icon`, an Icon Composer document) |
+| `Package.swift`, `App/` | The SwiftUI app, as the package product `SwiftVM`, and its icon (`AppIcon.icon`, an Icon Composer document). `App/MenuBar` is the menu bar item and its panel, `App/Windows` what opens the app's windows and keeps it in the Dock while one is open |
+| `Tests/SwiftVMTests/` | The app's unit tests |
 | `Packages/SwiftVMKit/` | Engine code as a Swift package: `VMCore`, `VZEngine`, `VMNetworking`, `SSHIntegration`, `DiskTools`, `Installers`, `VMControl`, `GuestChannel` (the protocol between the app and the agent in a guest), and the `swiftvm` tool |
 | `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgent/` | The guest agent for Linux, its systemd units and its installer |
 | `Packages/SwiftVMKit/Sources/GuestAgentMac/`, `Sources/swiftvm-agent/` | The guest agent for macOS. It is built with the app, travels inside it at `Contents/Helpers/swiftvm-agent`, and only ever runs in a guest |
 | `Packages/SwiftVMKit/Sources/Installers/Resources/GuestAgentMac/` | Its installer, which carries the program and its launchd jobs into a guest |
 | `Config/` | The app's `Info.plist` and its entitlements |
-| `scripts/` | `build.sh` builds the app, `run-dev.sh` a development copy, `bundle-app.sh` puts either together and signs it, `test.sh` runs the unit tests |
+| `scripts/` | `build.sh` builds the app, `run-dev.sh` a development copy, `bundle-app.sh` puts either together and signs it, `test.sh` runs the unit tests of both packages |
 | `docs/` | Notes |
 
 ## License

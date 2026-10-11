@@ -39,5 +39,12 @@ let package = Package(
                 .enableUpcomingFeature("InferIsolatedConformances"),
             ]
         ),
+        .testTarget(
+            name: "SwiftVMTests",
+            dependencies: [
+                "SwiftVM",
+                .product(name: "VMCore", package: "SwiftVMKit"),
+            ]
+        ),
     ]
 )

@@ -7,7 +7,7 @@ import VMCore
 import VMNetworking
 import VZEngine
 
-/// A machine that is still being downloaded and prepared; shown in the library with its progress.
+/// A machine that is still being downloaded and prepared; shown in the menu bar panel with its progress.
 @Observable
 final class MachineCreation: Identifiable {
     let id = UUID()
@@ -370,7 +370,7 @@ extension AppModel {
             }
             machine.notice = VMErrorInfo(
                 title: "The guest tools couldn't be installed in “\(machine.name)”",
-                message: "\(reason)\n\nThe virtual machine works without them, but it asks on its screen before it shuts down and doesn't share the clipboard. Install Guest Tools… in the Virtual Machine menu tries again."
+                message: "\(reason)\n\nThe virtual machine works without them, but it asks on its screen before it shuts down and doesn't share the clipboard. Install Guest Tools… in the machine's menu tries again."
             )
         }
     }

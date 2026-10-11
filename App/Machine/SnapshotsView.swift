@@ -1,7 +1,8 @@
 import SwiftUI
 import VMCore
 
-/// The sheet that lists a machine's snapshots and takes, restores and deletes them.
+/// Lists a machine's snapshots and takes, restores and deletes them: a sheet in the machine's window, a
+/// window of its own when it is opened from the menu bar.
 struct SnapshotsView: View {
     let machine: VirtualMachine
 
@@ -60,6 +61,8 @@ struct SnapshotsView: View {
         }
         .frame(width: 540, height: 460)
         .interactiveDismissDisabled(isWorking)
+        // The same for the window this is in when it was opened from the menu bar.
+        .windowDismissBehavior(isWorking ? .disabled : .automatic)
         .confirmationDialog(
             "Go back to “\(snapshotPendingRevert?.name ?? "")”?",
             isPresented: Binding(get: { snapshotPendingRevert != nil }, set: { if !$0 { snapshotPendingRevert = nil } }),

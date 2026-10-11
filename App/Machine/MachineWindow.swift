@@ -5,18 +5,9 @@ import VMCore
 struct MachineWindow: View {
     let machineID: UUID?
 
-    @Environment(AppModel.self) private var model
-
     var body: some View {
-        if let machineID, let machine = model.library.machine(id: machineID) {
+        MachineLookup(machineID: machineID) { machine in
             MachineView(machine: machine)
-        } else {
-            ContentUnavailableView(
-                "Virtual Machine Not Found",
-                systemImage: "questionmark.square.dashed",
-                description: Text("It may have been deleted or moved.")
-            )
-            .frame(minWidth: 480, minHeight: 320)
         }
     }
 }
@@ -137,7 +128,7 @@ struct MachineView: View {
 
     private func placeholder(title: String, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {
         VStack(spacing: 18) {
-            OSGlyph(os: machine.configuration.os, size: 64)
+            OSGlyph(os: machine.configuration.os, size: 74)
             VStack(spacing: 6) {
                 Text(title)
                     .font(.title2.weight(.semibold))
@@ -206,7 +197,7 @@ struct MachineActions {
 }
 
 extension FocusedValues {
-    /// The machine shown in the focused window, or selected in the library, for menu commands.
+    /// The machine shown in the focused window, for menu commands.
     @Entry var machine: VirtualMachine?
     @Entry var machineActions: MachineActions?
 }

@@ -31,8 +31,17 @@ final class AppModel {
 
     /// Machines that are still being downloaded or prepared.
     var creations: [MachineCreation] = []
-    /// Machines whose own window is open; their errors are shown there instead of in the library.
+    /// Machines whose own window is open; their errors are shown there instead of in the menu bar panel.
     var openMachineWindows: Set<UUID> = []
+    /// Whether the app's item is in the menu bar. It always is: with no window open the item is all there
+    /// is of the app. macOS lets an item be dragged out of the menu bar all the same, so one that is
+    /// taken out is put back.
+    var isMenuBarItemInserted = true {
+        didSet {
+            guard !isMenuBarItemInserted else { return }
+            Task { isMenuBarItemInserted = true }
+        }
+    }
     /// A problem that isn't tied to a single machine.
     var generalError: VMErrorInfo?
     /// Whether `~/.ssh/config` includes SwiftVM's generated hosts.
@@ -46,8 +55,10 @@ final class AppModel {
     @ObservationIgnored private var addressMonitorPause: CheckedContinuation<Void, Never>?
     /// Someone asked for another round while one was under way.
     @ObservationIgnored private var isAddressRefreshDue = false
-    /// Shows a machine's window; set by the library window, which owns the SwiftUI window actions.
-    @ObservationIgnored var showMachineWindow: ((UUID) -> Void)?
+    /// Opens the app's windows.
+    @ObservationIgnored let windows = AppWindows()
+    /// Whether ``offerFirstMachine()`` has had its one turn.
+    @ObservationIgnored var hasOfferedFirstMachine = false
     @ObservationIgnored private var controlServer: ControlServer?
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
@@ -495,15 +506,12 @@ final class AppModel {
     /// simply stays running.
     ///
     /// - Parameter activatingApp: Also bring the app forward for that dialog, for a request that was
-    ///   made from outside the app's windows.
+    ///   made by someone at this Mac rather than by the command-line tool.
     @discardableResult
     func shutDown(_ machine: VirtualMachine, thenRestart: Bool = false, activatingApp: Bool = false) async -> ShutdownRequest? {
         let request = thenRestart ? await machine.restart() : await machine.shutDown()
         if request == .powerButton, machine.configuration.asksBeforeShuttingDown {
-            if activatingApp {
-                NSApp.activate()
-            }
-            showMachineWindow?(machine.id)
+            windows.showMachine(machine.id, activatingApp: activatingApp)
         }
         return request
     }

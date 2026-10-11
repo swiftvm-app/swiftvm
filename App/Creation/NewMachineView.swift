@@ -5,12 +5,12 @@ import VMCore
 import VZEngine
 import Virtualization
 
-/// A request to show the New Virtual Machine sheet, and what it starts with.
+/// What the New Virtual Machine form starts with.
 struct NewMachineRequest: Identifiable {
     enum Source {
         /// Ask which system to install.
         case chooser
-        /// A Linux installer disc image, for example one that was dropped on the library.
+        /// A Linux installer disc image, for example one that was dropped on the window.
         case installerDisc(URL)
         /// A macOS restore image (IPSW).
         case restoreImage(URL)
@@ -19,7 +19,7 @@ struct NewMachineRequest: Identifiable {
     let id = UUID()
     var source = Source.chooser
 
-    /// The request for a file dropped on the library, or `nil` if a machine can't be made from it.
+    /// The request for a file dropped on the window, or `nil` if a machine can't be made from it.
     init?(droppedFile url: URL) {
         switch url.pathExtension.lowercased() {
         case "iso": source = .installerDisc(url)
@@ -31,14 +31,14 @@ struct NewMachineRequest: Identifiable {
     init() {}
 }
 
-/// The sheet that creates a new virtual machine.
+/// The form that creates a new virtual machine, shown in the New Virtual Machine window.
 struct NewMachineView: View {
     /// Called when the new machine is in the library; the flag says whether to start it right away.
     let onReady: (VirtualMachine, Bool) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var family: GuestFamily?
-    /// The file the sheet was opened for. Going back to the chooser forgets it.
+    /// The file the form was opened for. Going back to the chooser forgets it.
     @State private var source: NewMachineRequest.Source
 
     init(request: NewMachineRequest = NewMachineRequest(), onReady: @escaping (VirtualMachine, Bool) -> Void) {
@@ -92,13 +92,10 @@ private struct SystemChooser: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            VStack(spacing: 6) {
-                Text("New Virtual Machine")
-                    .font(.title2.weight(.semibold))
-                Text("Choose the operating system to install.")
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 26)
+            // The window's title bar says what this is.
+            Text("Choose the operating system to install.")
+                .font(.title3.weight(.medium))
+                .padding(.top, 22)
 
             HStack(spacing: 14) {
                 card(.macOS, detail: "The latest version, or your own restore image", isAvailable: true)
@@ -108,6 +105,10 @@ private struct SystemChooser: View {
             .padding(.horizontal, 26)
 
             HStack {
+                Text("Or drop an installer disc (ISO), a macOS restore image (IPSW) or a virtual machine here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -121,7 +122,7 @@ private struct SystemChooser: View {
             selection = family
         } label: {
             VStack(spacing: 10) {
-                OSGlyph(os: GuestOS(family: family, distribution: family == .linux ? "ubuntu" : nil), size: 44)
+                OSGlyph(os: GuestOS(family: family, distribution: family == .linux ? "ubuntu" : nil), size: 54)
                 Text(family.displayName)
                     .font(.headline)
                 Text(detail)

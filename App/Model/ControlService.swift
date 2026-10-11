@@ -99,8 +99,9 @@ extension AppModel {
                 try? await Task.sleep(for: .milliseconds(100))
             }
         case .open:
-            guard let showMachineWindow else { return .failure("The library window isn't available.") }
-            showMachineWindow(machine.id)
+            guard windows.showMachine(machine.id, activatingApp: false) else {
+                return .failure("\(AppIdentity.current.name) has only just opened and can't show a window yet. Try again in a moment.")
+            }
         case .delete:
             guard !machine.state.isActive else { return .failure("Stop “\(machine.name)” before deleting it.") }
             let summary = summary(of: machine)
@@ -535,7 +536,7 @@ extension AppModel {
             }
             return success(machine)
         case .failure(let error):
-            // The caller reports the failure; don't leave a failed row behind in the library.
+            // The caller reports the failure; don't leave a failed row behind in the menu bar panel.
             creations.removeAll { $0.name == name && $0.errorMessage != nil }
             return .failure(error.localizedDescription)
         }

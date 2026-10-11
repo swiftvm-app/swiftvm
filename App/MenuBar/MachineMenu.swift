@@ -1,7 +1,8 @@
 import SwiftUI
 import VMCore
 
-/// The actions available for a machine, used by the row's “…” menu, its context menu and the window toolbar.
+/// The actions available for a machine, used by its row in the menu bar panel (the “…” menu and the
+/// context menu) and by the window toolbar.
 struct MachineMenu: View {
     let machine: VirtualMachine
     /// Starts the machine and shows its window.
@@ -80,8 +81,14 @@ struct MachineMenu: View {
         case .running:
             Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
             Button("Pause", systemImage: "pause") { Task { await machine.pause() } }
-            Button("Restart", systemImage: "arrow.clockwise") { Task { await model.shutDown(machine, thenRestart: true) } }
-            Button("Shut Down", systemImage: "power") { Task { await model.shutDown(machine) } }
+            // A guest that asks for confirmation on its screen has its window brought forward, also
+            // when the request came from the menu bar.
+            Button("Restart", systemImage: "arrow.clockwise") {
+                Task { await model.shutDown(machine, thenRestart: true, activatingApp: true) }
+            }
+            Button("Shut Down", systemImage: "power") {
+                Task { await model.shutDown(machine, activatingApp: true) }
+            }
             Button("Force Stop", systemImage: "xmark.octagon", role: .destructive) { Task { await machine.forceStop() } }
         case .paused:
             Button("Resume", systemImage: "play") { Task { await machine.resume() } }

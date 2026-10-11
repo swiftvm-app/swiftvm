@@ -61,6 +61,9 @@ struct MachineSettingsView: View {
             name = configuration.name
             sshUser = configuration.ssh.user
         }
+        // In a window of their own the settings can be closed without Done. What was typed is kept all
+        // the same.
+        .onDisappear(perform: commitTextFields)
     }
 
     // MARK: Sections

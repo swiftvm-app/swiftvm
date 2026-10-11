@@ -1,7 +1,8 @@
 import SwiftUI
 import VMCore
 
-/// Menu bar commands for the machine in the focused window, or the one selected in the library.
+/// The app's menus, which are in the menu bar while one of its windows is open: commands for the machine
+/// in the focused window, and the ways to a new machine and to the app's settings.
 struct MachineCommands: Commands {
     @FocusedValue(\.machine) private var machine
     @FocusedValue(\.machineActions) private var actions
@@ -12,12 +13,14 @@ struct MachineCommands: Commands {
     }
 
     var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { AppModel.shared.windows.showAppSettings() }
+                .keyboardShortcut(",")
+        }
+
         CommandGroup(replacing: .newItem) {
-            Button("New Virtual Machine…") {
-                NSApp.activate()
-                NotificationCenter.default.post(name: .newMachineRequested, object: nil)
-            }
-            .keyboardShortcut("n")
+            Button("New Virtual Machine…") { AppModel.shared.windows.showNewMachine() }
+                .keyboardShortcut("n")
         }
 
         CommandMenu("Virtual Machine") {

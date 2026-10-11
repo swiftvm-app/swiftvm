@@ -1,7 +1,7 @@
 import Foundation
 import VMCore
 
-/// Text formatting shared by the library and machine windows.
+/// Text formatting shared by the menu bar panel and the machine windows.
 enum Formatting {
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -14,13 +14,15 @@ enum Formatting {
         byteFormatter.string(fromByteCount: Int64(clamping: value))
     }
 
+    /// `4 CPU · 8 GB RAM`
+    static func hardware(of configuration: VMConfiguration) -> String {
+        "\(configuration.cpuCount) CPU · \(bytes(configuration.memorySize)) RAM"
+    }
+
     /// `4 CPU · 8 GB RAM · 7.47 GB of 1 TB · macOS 27.0.1 (26A434)`
     static func summary(of machine: VirtualMachine) -> String {
         let configuration = machine.configuration
-        var parts = [
-            "\(configuration.cpuCount) CPU",
-            "\(bytes(configuration.memorySize)) RAM",
-        ]
+        var parts = [hardware(of: configuration)]
         if configuration.totalDiskCapacity > 0 {
             parts.append("\(bytes(machine.allocatedDiskSize)) of \(bytes(configuration.totalDiskCapacity))")
         }

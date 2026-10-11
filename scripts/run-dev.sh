@@ -83,7 +83,9 @@ if [[ -n ${SWIFTVM_HOME:-} ]]; then
 fi
 
 if $background; then
-    "${opener[@]}" -g "$app" --args "$@"
+    # The copy is told as well: with no machine yet it opens New Virtual Machine, and would bring that
+    # forward.
+    "${opener[@]}" -g "$app" --args --background "$@"
     for attempt in {1..150}; do
         if "$tool" list > /dev/null 2>&1; then
             exit 0

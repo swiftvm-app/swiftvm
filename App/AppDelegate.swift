@@ -2,9 +2,23 @@ import AppKit
 import VMCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DockPresence.shared.start()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // Machines keep running without a window; the app stays in the Dock.
+        // Machines keep running without a window; the app stays in the menu bar.
         false
+    }
+
+    /// The app was opened again while it runs, from the Finder or Spotlight. With a window open that
+    /// comes forward. Without one there is nothing to bring forward but the menu bar item, which someone
+    /// who opens the app a second time may not have found: they get the app's settings.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        // A hidden app has its windows too, and gets them back by being shown again.
+        guard !sender.isHidden, !DockPresence.shared.hasWindows else { return true }
+        AppModel.shared.windows.showAppSettings()
+        return false
     }
 
     /// Asks the app to quit from the run loop, not from the task that wants it to.
@@ -122,12 +136,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Opening a `.swiftvm` bundle from Finder adds it to the library.
+    /// Opening a `.swiftvm` bundle from Finder adds it to the library, and shows its window: the panel in
+    /// the menu bar, where it is listed from now on, isn't open to show that anything happened.
     func application(_ application: NSApplication, open urls: [URL]) {
         let model = AppModel.shared
         for url in urls where url.pathExtension == VMBundle.pathExtension {
             do {
-                try model.library.add(VMBundle(url: url))
+                let machine = try model.library.add(VMBundle(url: url))
+                // The app may have been opened with the machine, and then can't open a window yet.
+                model.windows.whenReady { model.windows.showMachine(machine.id) }
             } catch {
                 model.generalError = VMErrorInfo(title: "Couldn't open “\(url.lastPathComponent)”", message: error.localizedDescription)
             }

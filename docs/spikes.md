@@ -935,3 +935,99 @@ macOS whether it holds the entitlement (`SecTaskCopyValueForEntitlement`) before
   Name`, `USB Vendor Name`, `USB Serial Number`. Reading those needs no entitlement.
 - **Which queue `usbController(_:usbPassthroughDeviceDidDisconnect:)` arrives on** isn't said in the
   headers. The app takes it on any and passes it to the main queue.
+
+## An app that lives in the menu bar — works
+
+- **Tried:** The development copy on macOS 27.0 with `LSUIElement` in its `Info.plist`, a `MenuBarExtra`
+  in the window style and every other scene a window that is opened on request. Looked at from outside:
+  `NSRunningApplication.activationPolicy` and `isActive` for whether it is in the Dock and in front,
+  `CGWindowListCopyWindowInfo` for its windows, and the `swiftvm` tool. Nothing was clicked.
+- **No window at launch:** a SwiftUI app opens its first window scene when it starts, also a
+  `WindowGroup(for:)`, which then shows a window for no value. `.defaultLaunchBehavior(.suppressed)` on
+  every window scene stops that; `.restorationBehavior(.disabled)` keeps windows from coming back.
+- **Opening a window without a window to ask:** SwiftUI hands `openWindow` to views only. The label of
+  the `MenuBarExtra` is a view that is on the screen from launch to quit, and the action it is given
+  works from anywhere later: `swiftvm open` showed a machine's window with no other window open and
+  the app in the background.
+- **In the Dock only with a window:** `NSApp.setActivationPolicy(.regular)` and back to `.accessory`
+  take effect at once, both ways, while the app runs. What counts as a window has to be decided by the
+  app. `NSApp.windows` also holds `NSStatusBarWindow`s (three here; they can't become main),
+  text-input helpers of the system's (`TUINSWindow`, `SPRoundedWindow`, never visible), an alert's
+  `_NSAlertPanel`, and the window of every `Window` scene that was ever opened: closing one hides it
+  and keeps it, so `isVisible` has to be asked. `isMiniaturized` is asked as well, on the reasoning
+  that minimizing the last window would otherwise take the app out of the Dock with the window in it;
+  that wasn't tried. `onAppear` and `onDisappear` of such a scene's view do fire on every open and close.
+- **Opened again while it runs** (`open -g` on the running copy): `applicationShouldHandleReopen` is
+  called. With a window open and the answer yes, no further window opened. With none, the app opens
+  its settings and answers no, and nothing else opened.
+- **Leaving the Dock while in front moves the user.** The first version took the app out of the Dock
+  the moment its last window closed. An app that becomes an accessory while it is in front gives the
+  front up, macOS brings the app forward that was in front before, and goes to the desktop (Space) that
+  app is on: the user closed a machine's window on one desktop and found themselves on the one they
+  had opened the app from. Seen from outside too: after the close the app was no longer active and
+  another app was in front. Now the app stays in the Dock and in front when its last window closes, as
+  any app does, and leaves the Dock when it stops being the active app
+  (`DockPresence.belongsInDock`): after the close it was still `regular` and active, and `accessory`
+  once another app had been brought forward.
+- **A window is there as soon as it is asked for:** right after `openWindow` returns, the window is in
+  `NSApp.windows` and visible. So opening first and bringing the app forward second leaves the user on
+  the desktop they are on, with the new window on it.
+- **The menu bar gives a panel the smallest size its content accepts**, not its ideal size. A list in
+  `ViewThatFits`, or in a `ScrollView` with only a maximum height, is 0 points tall at that size: the
+  user's first look at the panel showed its header and its footer and nothing between. In numbers
+  (`NSHostingController.sizeThatFits(in: .zero)`, three rows of 44 points): 92 points for either, 244
+  with `.frame(maxHeight:)` followed by `.fixedSize(horizontal: false, vertical: true)` on the scroll
+  view, which is also 244 at the ideal size and under a large proposal, and stops at the maximum for a
+  long list.
+- **The item can be dragged out of the menu bar, and by default that quits the app.** The SDK says of
+  `MenuBarExtra(content:label:)`: "When this item is removed from the system menu bar by the user, the
+  application will be automatically quit." With `isInserted:` the binding is set to `false` instead.
+  The app sets it back to `true` a moment later. Not tried: it takes a drag.
+- **Sizes:** a window scene with `.windowResizability(.contentSize)` is as large as its view: a
+  machine's settings came up at 560 × 672 for a view of 560 × 640.
+
+## An app in the menu bar has to insist to come forward
+
+- **Tried:** The copy above, opened on an empty data directory so that it shows New Virtual Machine at
+  launch, three ways. Which app was in front before and after: `NSWorkspace.frontmostApplication`.
+- **Outcome:**
+  - `open` and then `NSApp.activate()`: the window opens, the app is **not** made active, and the app
+    that was in front stays there. Launch Services doesn't bring an app without a Dock icon forward,
+    and nothing has yielded to it, so macOS turns the request down. The same for a copy that has been
+    running in the background for a while.
+  - `open` and then `NSApp.activate(ignoringOtherApps: true)`: active and in front, 2.5 s after `open`.
+    The call is marked "to be deprecated" in the macOS 27 headers and compiles without a warning.
+  - `open -g` and then `NSApp.activate()`: turned down as well, which is what `-g` asks for. Whether
+    the other call comes forward against `-g` wasn't tried: the app can't tell that it was opened
+    with `-g`, so nothing was left to chance.
+- **Consequence:** Windows that someone at the Mac asked for are opened with
+  `activate(ignoringOtherApps: true)` (`AppWindows.bringAppForward`). Windows that nobody asked for
+  just now (`swiftvm open`, a machine that starts minutes after it was created, a guest that puts a
+  question on its screen for the command-line tool) are opened without activating. `scripts/run-dev.sh
+  --background` passes `--background` on to the copy, which then leaves its first window behind.
+- **Alerts of the app's own were tried and dropped.** For messages that have no window to be shown in
+  (the library window used to show them), the first version ran an `NSAlert` from a timer. It worked as
+  far as it went: the main actor kept running (`swiftvm list` was answered while an alert was up), and
+  the alert was above other apps' windows, at level 8, which is where `runModal()` puts any modal
+  window. But it is modal for the whole app: it takes the keyboard from a guest someone is typing in,
+  stops every other window until it is answered, can't be taken back when the command-line tool has
+  already reported and cleared the error it shows, and may keep the app from quitting
+  (`NSWindow.preventsApplicationTerminationWhenModal`). Messages are now a card at the top of the
+  panel, and the menu bar item turns into a warning sign while there is one (`PendingMessage`).
+- **Not tried:** anything that takes a click: the panel itself, whether it closes when a window opens
+  from it, the menus appearing in the menu bar when the app goes into the Dock while it is in front.
+
+## A SwiftUI view drawn into a file, without the screen
+
+- The agent may not take screenshots, and a panel in the menu bar can't be opened without a click. A
+  view can still be looked at: put it in an `NSHostingView` inside a borderless `NSWindow` that is never
+  ordered front, size it to `fittingSize`, wait a few tenths of a second, then
+  `bitmapImageRepForCachingDisplay(in:)` and `cacheDisplay(in:to:)` draw it into a bitmap, which is
+  written as a PNG. Text, symbols, buttons, menus' labels and progress bars all come out.
+- The view needs a background of its own (`Color(nsColor: .windowBackgroundColor)`) and the hosting
+  view an explicit `appearance`: without them a dark-mode Mac draws white text on white. What a
+  material or glass would look like isn't drawn, and controls look the way they do in a window that
+  isn't key.
+- Done from a temporary hook in the app (a `DispatchSourceSignal` for `SIGUSR1` on the main queue, which
+  read a command from a file in the data directory), so that the view had the running app's model. The
+  hook was removed again; it also closed windows and showed test alerts, for the checks above.

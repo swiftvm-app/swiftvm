@@ -85,7 +85,7 @@ extension AppModel {
     }
 
     /// Duplicates a machine for a menu command. A failure is shown wherever the machine's errors are: in
-    /// its own window if that is open, otherwise in the library.
+    /// its own window if that is open, otherwise in the menu bar panel.
     func duplicateReportingErrors(_ machine: VirtualMachine) {
         Task {
             do {
