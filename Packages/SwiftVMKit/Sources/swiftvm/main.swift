@@ -43,6 +43,14 @@ Usage: swiftvm <command> [arguments]
                                     tools disc instead, to install from inside the machine
   share-clipboard <machine> on|off  Share what is copied on this Mac with the machine and the other way
                                     round, or stop. macOS guests need the guest tools for it
+  usb                               List the USB devices this Mac has given the app
+  usb attach <machine> <device>     Hand a USB device to a running machine. This Mac is without it until
+                                    it is detached or pulled out, or the machine stops
+  usb detach <machine> <device>     Give it back to this Mac
+  usb auto <machine> <device> on|off
+                                    Have the machine take the device by itself whenever both are there,
+                                    or stop. <device> is its number in the list, its vendor:product, its
+                                    serial number or its name
   ip <machine>                      Print the machine's IP address
   ssh <machine> [--vsock] [ssh arguments]
                                     Open a shell (or run a command) in the machine. With --vsock the
@@ -122,6 +130,23 @@ func printSnapshots(_ snapshots: [SnapshotSummary]) {
     }
 }
 
+func printUSBDevices(_ devices: [USBDeviceSummary]) {
+    guard !devices.isEmpty else {
+        print("No USB devices.")
+        return
+    }
+    let rows = [["NUMBER", "DEVICE", "MAKER", "VENDOR:PRODUCT", "SERIAL NUMBER", "USED BY"]] + devices.map { device in
+        // Some sticks give a serial number of over a hundred characters. Its beginning tells them apart.
+        let serialNumber = device.serialNumber.map { $0.count > 24 ? $0.prefix(24) + "…" : $0 } ?? "-"
+        return [String(device.id), device.name, device.manufacturer ?? "-", device.identifier, serialNumber, device.machine ?? "-"]
+    }
+    let widths = (0..<rows[0].count).map { column in rows.map { $0[column].count }.max() ?? 0 }
+    for row in rows {
+        let line = zip(row, widths).map { cell, width in cell.padding(toLength: width, withPad: " ", startingAt: 0) }
+        print(line.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
+    }
+}
+
 func printDetails(of machine: MachineSummary) {
     var lines: [(String, String)] = [
         ("Name", machine.name),
@@ -136,6 +161,12 @@ func printDetails(of machine: MachineSummary) {
         lines.append(("MAC address", details.macAddress ?? "-"))
         for (index, drive) in details.drives.enumerated() {
             lines.append((index == 0 ? "Drives" : "", drive.path + (drive.readOnly ? " (read-only)" : "")))
+        }
+        for (index, device) in (details.usbDevices ?? []).enumerated() {
+            lines.append((index == 0 ? "USB" : "", "\(device.name) (\(device.identifier))"))
+        }
+        for (index, rule) in (details.usbAutoConnect ?? []).enumerated() {
+            lines.append((index == 0 ? "USB, by itself" : "", rule))
         }
         for (index, folder) in details.sharedFolders.enumerated() {
             lines.append((index == 0 ? "Shared" : "", folder.path + (folder.readOnly ? " (read-only)" : "")))
@@ -311,6 +342,36 @@ case "share-clipboard":
         printDetails(of: machine)
     }
 
+case "usb":
+    guard let action = arguments.first else {
+        let response = send(ControlRequest(command: .usbList))
+        printUSBDevices(response.usbDevices ?? [])
+        if let note = response.note {
+            print("\n" + note)
+        }
+        break
+    }
+    arguments.removeFirst()
+    let commands: [String: ControlRequest.Command] = ["attach": .usbAttach, "detach": .usbDetach, "auto": .usbAuto]
+    guard let command = commands[action] else {
+        fail("Usage: swiftvm usb [attach <machine> <device> | detach <machine> <device> | auto <machine> <device> on|off]")
+    }
+    let machine = requireMachine()
+    var rest = Array(arguments.dropFirst())
+    var isOn: Bool?
+    if command == .usbAuto {
+        guard let last = rest.popLast(), ["on", "off"].contains(last) else {
+            fail("Usage: swiftvm usb auto <machine> <device> on|off")
+        }
+        isOn = last == "on"
+    }
+    // A device's name can be several words.
+    guard !rest.isEmpty else { fail("Missing USB device. `swiftvm usb` lists them.") }
+    let request = ControlRequest(command: command, machine: machine, isOn: isOn, usbDevice: rest.joined(separator: " "))
+    if let machine = send(request).machines.first {
+        printDetails(of: machine)
+    }
+
 case "resize":
     let machine = requireMachine()
     guard arguments.count >= 2, let gigabytes = Int(arguments[1]), gigabytes > 0 else { fail("Missing disk size in GB.") }
@@ -424,7 +485,9 @@ case "ssh":
     fail("Couldn't run ssh: \(String(cString: strerror(errno)))")
 
 default:
-    guard let command = ControlRequest.Command(rawValue: commandName), ![.create, .list, .quit].contains(command) else {
+    // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
+    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto]
+    guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }
     printTable(send(ControlRequest(command: command, machine: requireMachine())).machines)

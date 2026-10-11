@@ -39,6 +39,8 @@ public enum VMBackendEvent: Sendable {
     case stoppedWithError(String)
     /// A network interface lost its attachment.
     case networkDisconnected(String)
+    /// A USB device that the guest had been handed is gone: pulled out, or taken back by the host.
+    case usbDeviceDisconnected(USBDevice.ID)
 }
 
 /// How a guest was asked to shut down.
@@ -139,6 +141,10 @@ public protocol VMBackend: AnyObject {
     func detachRemovableImage(_ id: UUID) async throws
     /// Sends shortcuts such as Command-Tab to the guest, or leaves them to the host.
     func setCapturesSystemKeys(_ capturesSystemKeys: Bool)
+    /// Hands a USB device of this Mac to the running guest. The Mac is without it until it is detached.
+    func attachUSBDevice(_ device: USBDevice) async throws
+    /// Gives a USB device that the guest was handed back to this Mac.
+    func detachUSBDevice(_ id: USBDevice.ID) async throws
 
     /// Connects to a port that something in the guest listens on, over the machine's socket device
     /// (virtio-vsock). The line doesn't run over the guest's network, so it is there when the network
@@ -148,6 +154,15 @@ public protocol VMBackend: AnyObject {
     /// Lets go of host resources (network attachments, the display) after the guest has stopped, without
     /// waiting for the backend object itself to be deallocated.
     func invalidate()
+}
+
+extension VMBackend {
+    // An engine that can't hand USB devices over says so when asked, and has none to give back.
+    public func attachUSBDevice(_ device: USBDevice) async throws {
+        throw VMError.invalidConfiguration("This virtual machine's engine can't take USB devices.")
+    }
+
+    public func detachUSBDevice(_ id: USBDevice.ID) async throws {}
 }
 
 /// Creates backends and manages the host resources (networks, …) they hold.

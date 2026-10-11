@@ -20,6 +20,10 @@ final class AppModel {
     let portForwarder = PortForwarder()
     /// Passes copied text between this Mac and the guests that share their clipboard.
     let clipboardSharing = ClipboardSharing()
+    /// Hands the USB devices this Mac has given the app to guests.
+    let usb = USBPassthrough()
+    /// Hears from macOS which USB devices those are.
+    private let usbAccessories = USBAccessoryService()
 
     /// `nil` if the virtual network couldn't be set up; machines then can't start.
     private(set) var networkManager: NetworkManager?
@@ -67,7 +71,7 @@ final class AppModel {
             networkManager.onDefaultSubnetChange = { [weak self] previous, current in
                 self?.remapReservedAddresses(from: previous, to: current)
             }
-            let provider = VZBackendProvider(networkManager: networkManager)
+            let provider = VZBackendProvider(networkManager: networkManager, usbAccessories: usbAccessories)
             self.networkManager = networkManager
             self.backendProvider = provider
             library.backendProvider = provider
@@ -85,6 +89,10 @@ final class AppModel {
         library.onGuestClipboard = { [weak self] machine, text in self?.clipboardSharing.guest(machine, didCopy: text) }
         library.onGuestClipboardRequest = { [weak self] machine in self?.clipboardSharing.guestWantsClipboard(machine) }
         library.onMachineResume = { [weak self] machine in self?.correctClock(of: machine) }
+        library.onMachineStart = { [weak self] machine in self?.usb.machineDidStart(machine) }
+        usb.machines = { [weak self] in self?.library.machines ?? [] }
+        usbAccessories.onConnect = { [weak self] device in self?.usb.deviceDidConnect(device) }
+        usbAccessories.onDisconnect = { [weak self] id in self?.usb.deviceDidDisconnect(id) }
         // A guest that says where it is doesn't have to wait for the next round to be believed.
         library.onGuestAddressesChange = { [weak self] _ in self?.refreshAddressesSoon() }
         // Whatever was being created when the app last quit can't be finished.
@@ -94,6 +102,23 @@ final class AppModel {
         networkManager?.relocateDefaultSubnetIfNeeded()
         startControlServer()
         startAddressMonitor()
+        startUSBDevices()
+    }
+
+    /// Asks macOS which USB devices it has given the app, in a copy that is signed to be given any.
+    private func startUSBDevices() {
+        guard USBAccessoryService.isEntitled else {
+            usb.availability = .notSigned
+            return
+        }
+        Task {
+            do {
+                try await usbAccessories.start()
+                usb.availability = .available
+            } catch {
+                usb.availability = .failed(error.localizedDescription)
+            }
+        }
     }
 
     /// Lets the `swiftvm` command-line tool drive the app.

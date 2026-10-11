@@ -29,6 +29,9 @@ Early development. Working today:
   devices on the network. Forwards can be added and removed while the guest runs
 - **Shared folders** that can be added and removed while the guest runs
 - **Disc and disk images** (ISO, raw, ASIF) plugged in as USB drives, also while the guest runs
+- **USB devices** of your Mac handed to a running guest: a drive, a security key, a serial adapter. A
+  machine can be set to take a device by itself whenever it is plugged in. This needs a build with a
+  provisioning profile (see *Build*)
 - **Snapshots**: save a machine as it is, running or not, and go back to it later. A running guest pauses
   for a moment and comes back exactly where it was
 - **Duplicate** a machine in an instant; the copy shares disk space with the original until they differ
@@ -39,9 +42,25 @@ Early development. Working today:
   started up is in the machine's `logs/console.log`
 - **`swiftvm`** command-line tool that drives the running app
 
-Planned: Windows guests (QEMU engine), USB passthrough.
+Planned: Windows guests (QEMU engine).
 
 Good to know:
+
+- Which app a USB device is used with is decided in macOS, not in SwiftVM: while SwiftVM runs, the menu
+  bar has a *Virtual Machine Accessories* menu that lists the Mac's USB devices, each used with *This Mac*
+  or with an app. A device you set to SwiftVM there shows up under the USB button in a machine's toolbar
+  and in `swiftvm usb`, and macOS remembers the choice.
+- A device that is attached to a guest is gone from the Mac until it is detached or pulled out, or the
+  machine stops. Detaching is like pulling it out of the guest: eject a drive in the guest first. A
+  device belongs to one guest at a time.
+- Suspending a machine gives its USB devices back to the Mac: the guest finds them unplugged when it
+  comes back, and a machine that takes a device by itself takes it again then. Eject a drive in the
+  guest before you suspend, as you would before pulling it out. A running machine with a USB device
+  can't be snapshotted: detach the device or shut the machine down first.
+- A device a machine takes by itself is known by its make (vendor and product), so two sticks of the
+  same model are one to it. One that you detach by hand is left alone until it is plugged in again or
+  the machine starts again. When two running machines would take the same device, it goes to the one
+  that had it last. A copy of a machine takes none by itself until you say so.
 
 - A macOS guest without the guest tools asks on its own screen before it shuts down, so *Shut Down* and
   `swiftvm stop` need someone to confirm in the machine's window. With the guest tools it shuts down at
@@ -113,6 +132,18 @@ signed with it, Developer ID Application before Apple Development; without one i
 Mac, which is enough to run virtual machines. `SWIFTVM_SIGN_IDENTITY` picks a certificate by name or SHA-1,
 and `SWIFTVM_SIGN_IDENTITY=-` signs to run on your Mac whatever the keychain holds.
 
+Handing USB devices to guests is the one thing that takes more. macOS only lets an app at USB devices that
+carries the entitlement `com.apple.developer.accessory-access.usb`, and only honours that together with a
+provisioning profile: one made in a paid Apple Developer account for the app's identifier, with the
+capability *Claim USB Accessory*, and for the certificate the app is signed with (a Developer ID profile
+for the app, a development profile that lists your Mac for the development copy). `scripts/bundle-app.sh`
+looks for such a profile where Xcode keeps profiles (`~/Library/Developer/Xcode/UserData/Provisioning
+Profiles`) and puts it into the app with the entitlement. When there is none it says so and builds the
+app without both: everything works but USB devices, and the USB button isn't shown.
+`SWIFTVM_PROVISIONING_PROFILE` names a profile to use instead of looking for one, and
+`SWIFTVM_PROVISIONING_PROFILE=-` builds without. How the project's own profiles were made is in
+`docs/spikes.md`.
+
 ## Command line
 
 The `swiftvm` tool is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`. *Install Command Line Tool…*
@@ -130,6 +161,10 @@ swiftvm install-tools build-mac --password 'the account password'   # macOS asks
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80          # http://localhost:8080 is the guest's port 80
 swiftvm attach web-server ~/Downloads/data.img
+swiftvm usb                                 # the USB devices macOS has given SwiftVM
+swiftvm usb attach web-server "SanDisk Ultra"   # by name, vendor:product, serial number or its number in the list
+swiftvm usb auto web-server 0781:5581 on    # take it whenever it is plugged in
+swiftvm usb detach web-server 0781:5581
 swiftvm snapshot web-server "Before upgrade"
 swiftvm rename-snapshot web-server "Before upgrade" "Before 2.0"
 swiftvm revert web-server "Before 2.0"
@@ -187,7 +222,9 @@ the app; the development copy takes one that is dropped on its window.
 
 The development copy is signed with an Apple Development certificate if your keychain has one, and keeps to
 the certificate it was first signed with, so that macOS doesn't ask for the microphone again after every
-build. Without a certificate it is signed to run on your Mac.
+build. Without a certificate it is signed to run on your Mac. It is an app of its own to Apple as well: for
+USB devices it needs a provisioning profile of its own, for `com.swiftvm.app.dev`, and does without them
+when there is none.
 
 `SWIFTVM_HOME` gives the development copy another data directory, for a second set of machines. The path has
 to be short enough for a Unix socket (about 90 characters), and the `swiftvm` tool needs the same setting to

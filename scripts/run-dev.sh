@@ -22,6 +22,10 @@ source "$root/scripts/common.sh"
 if [[ -n ${SWIFTVM_HOME:-} ]]; then
     export SWIFTVM_HOME=${SWIFTVM_HOME:a}
 fi
+# The same for a profile that is named, once this script has moved to the repository.
+if [[ ${SWIFTVM_PROVISIONING_PROFILE:--} != - ]]; then
+    export SWIFTVM_PROVISIONING_PROFILE=${SWIFTVM_PROVISIONING_PROFILE:a}
+fi
 cd "$root"
 
 products="" background=false

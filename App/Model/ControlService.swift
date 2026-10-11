@@ -22,6 +22,12 @@ extension AppModel {
         case .create:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
             return await createMachine(parameters)
+        case .usbList:
+            guard usb.availability == .available else {
+                return .failure(USBPassthrough.Failure.unavailable(usb.availability).localizedDescription)
+            }
+            let devices = usb.devices.map { summary(of: $0) }
+            return ControlResponse(ok: true, note: devices.isEmpty ? USBDevicesHint.howToGiveOne : nil, usbDevices: devices)
         case .quit:
             // Quitting from the command line never puts up the dialog that asks what to do with machines.
             guard activeMachines.isEmpty else {
@@ -244,6 +250,44 @@ extension AppModel {
             if machine.lastError == nil {
                 return details(machine)
             }
+        case .usbAttach, .usbDetach, .usbAuto:
+            guard let wanted = request.usbDevice, !wanted.isEmpty else { return .failure("Missing USB device.") }
+            do {
+                switch request.command {
+                case .usbAttach:
+                    // In a copy that has no USB devices at all, that says more than "no such device".
+                    guard usb.availability == .available else { throw USBPassthrough.Failure.unavailable(usb.availability) }
+                    try await usb.attach(try findUSBDevice(wanted, among: usb.devices, preferringFree: true), to: machine)
+                case .usbDetach:
+                    guard !machine.usbDevices.matching(wanted).isEmpty else {
+                        return .failure("“\(wanted)” isn't attached to “\(machine.name)”.")
+                    }
+                    try await usb.detach(try findUSBDevice(wanted, among: machine.usbDevices), from: machine)
+                default:
+                    guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+                    let rules = machine.configuration.usb.autoConnect
+                    if !isOn, let rule = rules.first(where: { $0.id == wanted.lowercased() || $0.name.lowercased() == wanted.lowercased() }) {
+                        // A rule can be taken back while its device is somewhere else.
+                        try machine.updateConfiguration { $0.usb.autoConnect.removeAll { $0.id == rule.id } }
+                    } else {
+                        guard usb.availability == .available else { throw USBPassthrough.Failure.unavailable(usb.availability) }
+                        let device = try findUSBDevice(wanted, among: usb.devices, anyOfOneMake: true)
+                        try usb.setConnectsAutomatically(isOn, device, to: machine)
+                        if isOn, machine.state == .running {
+                            // The machine takes a device that is free a moment from now. Wait for that,
+                            // so that the answer shows it.
+                            let deadline = ContinuousClock.now + .seconds(2)
+                            while usb.devices.contains(where: { $0.id == device.id }), usb.holder(of: device.id) == nil,
+                                  ContinuousClock.now < deadline {
+                                try? await Task.sleep(for: .milliseconds(50))
+                            }
+                        }
+                    }
+                }
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return details(machine)
         case .discardState:
             guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
             machine.discardSavedState()
@@ -301,7 +345,7 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
-        case .list, .info, .console, .vsock, .create, .quit:
+        case .list, .info, .console, .vsock, .create, .quit, .usbList:
             break
         }
 
@@ -534,6 +578,41 @@ extension AppModel {
         return .success(snapshot)
     }
 
+    /// Finds the one USB device among `devices` that `text` names: by its number, its `vendor:product`,
+    /// its serial number or its name.
+    ///
+    /// - Parameters:
+    ///   - preferringFree: When several fit, take the one no guest has, if that is one.
+    ///   - anyOfOneMake: When several of one make fit, any of them will do: what is asked for goes by make.
+    private func findUSBDevice(
+        _ text: String, among devices: [USBDevice], preferringFree: Bool = false, anyOfOneMake: Bool = false
+    ) throws -> USBDevice {
+        var matches = devices.matching(text)
+        if matches.count > 1, preferringFree {
+            let free = matches.filter { usb.holder(of: $0.id) == nil }
+            if free.count == 1 {
+                matches = free
+            }
+        }
+        if anyOfOneMake, Set(matches.map(\.identifier)).count == 1 {
+            matches = Array(matches.prefix(1))
+        }
+        guard let device = matches.first else {
+            throw VMError.invalidConfiguration("No USB device “\(text)”. `swiftvm usb` lists the ones this Mac has given \(AppIdentity.current.name).")
+        }
+        guard matches.count == 1 else {
+            throw VMError.invalidConfiguration("More than one USB device fits “\(text)”. Use its number from `swiftvm usb`.")
+        }
+        return device
+    }
+
+    private func summary(of device: USBDevice) -> USBDeviceSummary {
+        USBDeviceSummary(
+            id: device.id, name: device.name, identifier: device.identifier, manufacturer: device.manufacturer,
+            serialNumber: device.serialNumber, machine: usb.holder(of: device.id)?.name
+        )
+    }
+
     private func snapshots(of machine: VirtualMachine) -> ControlResponse {
         ControlResponse(ok: true, machines: [summary(of: machine)], snapshots: machine.snapshots.map { snapshot in
             SnapshotSummary(id: snapshot.id, name: snapshot.name, createdAt: snapshot.createdAt, includesMemory: snapshot.includesMemory)
@@ -563,7 +642,9 @@ extension AppModel {
             snapshotCount: machine.snapshots.count,
             guestTools: configuration.canHaveGuestAgent
                 ? MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel) : nil,
-            sharesClipboard: configuration.clipboard.isShared
+            sharesClipboard: configuration.clipboard.isShared,
+            usbDevices: machine.usbDevices.map { self.summary(of: $0) },
+            usbAutoConnect: configuration.usb.autoConnect.map { "\($0.name) (\($0.id))" }
         )
         return ControlResponse(ok: true, machines: [summary])
     }

@@ -21,9 +21,12 @@ public final class VZBackendProvider: VMBackendProvider {
     }
 
     private let networkManager: NetworkManager
+    /// Knows the USB devices of this Mac that a guest can be handed. `nil` where there are none to hand out.
+    private let usbAccessories: USBAccessoryService?
 
-    public init(networkManager: NetworkManager) {
+    public init(networkManager: NetworkManager, usbAccessories: USBAccessoryService? = nil) {
         self.networkManager = networkManager
+        self.usbAccessories = usbAccessories
     }
 
     public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
@@ -58,7 +61,8 @@ public final class VZBackendProvider: VMBackendProvider {
                         throw ProviderError.networkUnavailable
                     }
                     return VZVmnetNetworkDeviceAttachment(network: network.reference)
-                }
+                },
+                usbAccessory: { [weak usbAccessories] id in usbAccessories?.accessory(for: id) }
             )
         } catch {
             networkManager.release(user: machineID)

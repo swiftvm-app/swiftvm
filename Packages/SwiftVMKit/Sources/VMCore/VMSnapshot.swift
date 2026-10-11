@@ -48,6 +48,8 @@ extension VMConfiguration {
         result.sharedFolders = sharedFolders
         result.ssh = ssh
         result.keyboard = keyboard
+        // Which of this Mac's USB devices the machine takes by itself.
+        result.usb = usb
         result.display.automaticallyResizes = display.automaticallyResizes
         // Whether the clipboard is shared is the host's to say as well. Only a Linux guest that comes
         // back with its memory has to find the device it was saved with, shared or not.

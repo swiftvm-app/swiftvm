@@ -27,6 +27,11 @@ struct MachineSettingsView: View {
                 if !configuration.networkInterfaces.isEmpty {
                     portForwardingSection
                 }
+                // A copy that isn't signed for USB devices has none to show, but a machine may have been
+                // told elsewhere to take some by itself, and that can be taken back here.
+                if model.usb.availability != .notSigned || !configuration.usb.autoConnect.isEmpty {
+                    usbSection
+                }
                 devicesSection
                 keyboardSection
                 if configuration.os.family == .linux {
@@ -178,6 +183,16 @@ struct MachineSettingsView: View {
             Text("Port Forwarding")
         } footer: {
             Text("A forwarded port makes a service in the guest reachable as localhost on this Mac, for example localhost:8080 for a web server on port 80. The guest can always be reached at its own address without forwarding.")
+        }
+    }
+
+    private var usbSection: some View {
+        Section {
+            USBDevicesEditor(machine: machine)
+        } header: {
+            Text("USB Devices")
+        } footer: {
+            USBDevicesFootnote()
         }
     }
 

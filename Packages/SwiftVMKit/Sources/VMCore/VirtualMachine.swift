@@ -27,6 +27,9 @@ public final class VirtualMachine: Identifiable {
     public let agent = GuestAgent()
     /// Whether the agent has mounted the shared folders, in a guest that doesn't mount them by itself.
     public private(set) var hasAgentMountedSharedFolders = false
+    /// The USB devices of this Mac that the guest has been handed. They are the guest's while it runs: a
+    /// machine that stops gives them back, and none is written down.
+    public private(set) var usbDevices: [USBDevice] = []
     /// How many times the guest has come up since the app was launched, booted or resumed. It tells one
     /// run of the guest from the next, which the state alone doesn't: a restart can be over between two looks.
     @ObservationIgnored public private(set) var startCount = 0
@@ -47,6 +50,9 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public var onConfigurationChange: (@MainActor (VirtualMachine) -> Void)?
     /// Called when the guest has been resumed from saved memory, where it believes no time has passed.
     @ObservationIgnored public var onResume: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when the guest has come up, booted or resumed. Not when it carries on after a snapshot,
+    /// for which it was only away for a moment.
+    @ObservationIgnored public var onGuestStart: (@MainActor (VirtualMachine) -> Void)?
     /// How long a guest gets to act on a shutdown request. A guest that is still up after that either
     /// ignored the request or is waiting for someone to confirm it on its screen, so the machine counts as
     /// running again rather than staying stuck in ``VMState/stopping``.
@@ -69,6 +75,8 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored private var isAboutToRestart = false
     /// A pause or resume is under way. Neither has a state of its own.
     @ObservationIgnored private var isChangingPause = false
+    /// How many USB devices are being handed to the guest at this moment.
+    @ObservationIgnored private var usbDevicesOnTheirWay = 0
     /// The guest's clock stood still for a while, suspended or paused, and has not been set since.
     @ObservationIgnored private var isGuestClockStale = false
     /// Counts the times the guest's clock has gone stale, to tell whether it did again while it was being set.
@@ -205,6 +213,48 @@ public final class VirtualMachine: Identifiable {
         }
     }
 
+    // MARK: USB devices
+
+    /// Hands a USB device of this Mac to the running guest. The Mac is without it until it is detached
+    /// or pulled out, or the machine stops.
+    public func attachUSBDevice(_ device: USBDevice) async throws {
+        if let activity {
+            throw VMError.busy(name: name, activity)
+        }
+        guard state != .paused else {
+            throw VMError.invalidConfiguration("“\(name)” is paused. Resume it to attach a USB device.")
+        }
+        guard state == .running, let backend else { throw VMError.notRunning(name: name) }
+        guard !usbDevices.contains(where: { $0.id == device.id }) else { return }
+        usbDevicesOnTheirWay += 1
+        defer { usbDevicesOnTheirWay -= 1 }
+        try await backend.attachUSBDevice(device)
+        guard isCurrent(backend) else {
+            // The guest stopped while the device was on its way, and its machine gave it back.
+            throw VMError.notRunning(name: name)
+        }
+        usbDevices.append(device)
+    }
+
+    /// Gives a USB device back to this Mac, like pulling it out of the guest: a guest that is still
+    /// writing to it loses that data.
+    public func detachUSBDevice(_ id: USBDevice.ID) async throws {
+        guard usbDevices.contains(where: { $0.id == id }), let backend else { return }
+        try await backend.detachUSBDevice(id)
+        usbDevices.removeAll { $0.id == id }
+    }
+
+    /// A USB device that the guest had is gone from this Mac. The engine says so itself when a device is
+    /// pulled out; this is for the host's word, which may come first or be the only one.
+    public func usbDeviceDidDisappear(_ id: USBDevice.ID) {
+        guard usbDevices.contains(where: { $0.id == id }) else { return }
+        usbDevices.removeAll { $0.id == id }
+        if let backend {
+            // What the engine still holds of it is of no use to the guest.
+            Task { try? await backend.detachUSBDevice(id) }
+        }
+    }
+
     // MARK: Guest agent
 
     /// Starts looking for the agent in a guest that has just come up.
@@ -293,7 +343,8 @@ public final class VirtualMachine: Identifiable {
         await performStart(inRecovery: inRecovery)
     }
 
-    private func performStart(inRecovery: Bool = false) async {
+    /// - Parameter carryingOn: The guest goes back to what it was doing a moment ago, after a snapshot.
+    private func performStart(inRecovery: Bool = false, carryingOn: Bool = false) async {
         guard state == .stopped || state == .suspended, isStartAllowed() else { return }
         let restoring = state == .suspended && bundle.hasSavedState
         lastError = nil
@@ -336,6 +387,9 @@ public final class VirtualMachine: Identifiable {
             reachForAgent()
             if restoring {
                 onResume?(self)
+            }
+            if !carryingOn {
+                onGuestStart?(self)
             }
         } catch {
             tearDownBackend()
@@ -477,6 +531,9 @@ public final class VirtualMachine: Identifiable {
         let wasRunning = state == .running
         state = .suspending
         do {
+            // The guest's USB devices stay where they are until it has stopped: if this fails, it
+            // carries on with them. They aren't part of what is saved. This Mac has them back once the
+            // guest is gone, and the guest finds them unplugged when it comes back.
             if wasRunning {
                 try await backend.pause()
             }
@@ -545,6 +602,13 @@ public final class VirtualMachine: Identifiable {
 
         let wasPaused = state == .paused
         let wasActive = state == .running || wasPaused
+        if wasActive, let device = usbDevices.first {
+            // A running guest is suspended for the moment the snapshot takes, which unplugs its USB
+            // devices: it wouldn't come back as it was, and a snapshot can't cover what is on a device.
+            throw VMError.invalidConfiguration(
+                "“\(self.name)” has the USB device “\(device.name)”, which a snapshot can't cover. Eject it in the guest and detach it, or shut down “\(self.name)”, before taking the snapshot."
+            )
+        }
         if wasActive, isHostLocked() {
             // The guest would be suspended for the snapshot and then stay that way until someone unlocks
             // the Mac. Better to leave it running and say so.
@@ -568,7 +632,7 @@ public final class VirtualMachine: Identifiable {
         }
         if wasActive {
             // Whether or not the snapshot worked out, the guest goes back to what it was doing.
-            await performStart()
+            await performStart(carryingOn: true)
             if wasPaused, state == .running, let backend, (try? await backend.pause()) != nil {
                 state = .paused
             }
@@ -648,7 +712,8 @@ public final class VirtualMachine: Identifiable {
         if let current = self.activity {
             throw VMError.busy(name: name, current)
         }
-        guard !state.isTransitioning, !isAboutToRestart, !isChangingPause else {
+        // A USB device that is on its way to the guest isn't on its list yet, and a snapshot goes by that list.
+        guard !state.isTransitioning, !isAboutToRestart, !isChangingPause, usbDevicesOnTheirWay == 0 else {
             throw VMError.invalidConfiguration("“\(name)” is busy starting up or shutting down. Try again in a moment.")
         }
         self.activity = activity
@@ -675,6 +740,9 @@ public final class VirtualMachine: Identifiable {
             lastError = VMErrorInfo(title: "“\(name)” stopped unexpectedly", message: message)
         case .networkDisconnected(let message):
             lastError = VMErrorInfo(title: "Network disconnected in “\(name)”", message: message)
+        case .usbDeviceDisconnected(let id):
+            // Pulling a device out is nothing to report.
+            usbDevices.removeAll { $0.id == id }
         }
     }
 
@@ -692,6 +760,8 @@ public final class VirtualMachine: Identifiable {
         agent.stop()
         isGuestClockStale = false
         hasAgentMountedSharedFolders = false
+        // A machine that is gone holds no device: this Mac has them back.
+        usbDevices = []
         backend?.eventHandler = nil
         backend?.invalidate()
         backend = nil

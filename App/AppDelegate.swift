@@ -64,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? "“\(active[0].name)” is still running."
             : "\(active.count) virtual machines are still running."
         alert.informativeText = "Suspend saves their state so they pick up where they left off. Shut Down turns them off without saving state; a virtual machine without the guest tools is stopped at once."
+        if active.contains(where: { !$0.usbDevices.isEmpty }) {
+            alert.informativeText += " Either way their USB devices go back to this Mac, as if they were pulled out of the virtual machine."
+        }
         alert.addButton(withTitle: "Suspend and Quit")
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Shut Down and Quit")

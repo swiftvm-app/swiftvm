@@ -15,6 +15,13 @@
 # for the microphone again after every build. Without a certificate the app is signed to run on this
 # Mac, which is enough to run virtual machines. SWIFTVM_SIGN_IDENTITY picks a certificate by name or
 # SHA-1; "-" signs to run on this Mac.
+#
+# Handing USB devices to guests takes more: an entitlement that macOS only honours together with a
+# provisioning profile, made in an Apple Developer account for this app's identifier with the capability
+# "Claim USB Accessory", and for the certificate the app is signed with. When there is such a profile
+# where Xcode keeps profiles, it goes into the app with the entitlement. When there is none the app is
+# built without both and does everything but USB. SWIFTVM_PROVISIONING_PROFILE names a profile to use
+# instead of looking for one; "-" builds without.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
@@ -120,6 +127,48 @@ if [[ -z $identity ]]; then
             print -u2 "No signing certificate in the keychain: signing $name to run on this Mac."
         fi
     fi
+fi
+
+# The certificate's SHA-1, which is how a provisioning profile names the certificates it goes with.
+certificate=""
+if [[ $identity =~ '^[0-9A-Fa-f]{40}$' ]]; then
+    certificate=$identity
+elif [[ $identity != - ]]; then
+    certificate=$(security find-identity -v -p codesigning 2> /dev/null | awk -v name="$identity" 'index($0, name) { print $2; exit }' || true)
+fi
+
+# The entitlement for USB devices and the profile that grants it go in together or not at all: an app
+# with the entitlement and no profile to go with it is ended by macOS the moment it starts.
+profile=${SWIFTVM_PROVISIONING_PROFILE:-}
+if [[ $profile == - ]]; then
+    profile=""
+elif [[ -n $profile ]]; then
+    [[ -f $profile ]] || fail "SWIFTVM_PROVISIONING_PROFILE: $profile isn't there."
+    [[ -n $certificate ]] || fail "SWIFTVM_PROVISIONING_PROFILE: a provisioning profile goes with a signing certificate, and $name is being signed to run on this Mac."
+    decode_profile "$profile" "$stage/profile.plist" || fail "SWIFTVM_PROVISIONING_PROFILE: $profile isn't a provisioning profile."
+    problem=$(profile_problem "$stage/profile.plist" "$identifier" "$certificate")
+    [[ -z $problem ]] || fail "SWIFTVM_PROVISIONING_PROFILE: the profile $problem."
+elif [[ -n $certificate ]]; then
+    find_usb_profile "$identifier" "$certificate" $profile_folders
+    profile=${reply[1]:-}
+    if [[ -z $profile ]]; then
+        print -u2 -r -- "No provisioning profile for $identifier that goes with this certificate${REPLY:+ (the profile $REPLY)}: building $name without USB passthrough."
+    fi
+elif [[ $identity != - ]]; then
+    print -u2 -r -- "Couldn't tell which certificate “$identity” is, so no provisioning profile goes with it: building $name without USB passthrough."
+else
+    print -u2 -r -- "A provisioning profile goes with a signing certificate, and $name is signed to run on this Mac: building it without USB passthrough."
+fi
+if [[ -n $profile ]]; then
+    decode_profile "$profile" "$stage/profile.plist" || fail "$profile isn't a provisioning profile."
+    cp "$profile" "$contents/embedded.provisionprofile"
+    # What says to macOS that this is the app the profile was made for.
+    for key in com.apple.application-identifier com.apple.developer.team-identifier; do
+        value=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:$key" "$stage/profile.plist" 2> /dev/null) \
+            || fail "The provisioning profile $profile doesn't say $key, which the app's signature has to repeat."
+        /usr/libexec/PlistBuddy -c "Add :$key string $value" "$stage/entitlements.plist"
+    done
+    /usr/libexec/PlistBuddy -c "Add :$usb_entitlement bool true" "$stage/entitlements.plist"
 fi
 
 sign() {

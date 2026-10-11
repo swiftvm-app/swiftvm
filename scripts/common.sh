@@ -70,3 +70,111 @@ replace_app() {
         rm -rf "$aside"
     fi
 }
+
+# The entitlement that lets the app hand USB devices to its guests. macOS honours it only in an app that
+# carries a provisioning profile which grants it to that app; an app that claims it without one is
+# ended the moment it starts.
+usb_entitlement=com.apple.developer.accessory-access.usb
+
+# Where provisioning profiles are kept on a Mac: the ones Xcode makes and the ones that were opened.
+profile_folders=(
+    "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+    "$HOME/Library/MobileDevice/Provisioning Profiles"
+)
+
+# Prints the identifier by which a development profile lists this Mac among the Macs it is good for.
+provisioning_udid() {
+    system_profiler SPHardwareDataType 2> /dev/null | awk -F': ' '/Provisioning UDID/ { print $2; exit }'
+}
+
+# Writes what the provisioning profile at $1 says to $2, as a property list. A profile is that list in
+# a signed envelope.
+decode_profile() {
+    security cms -D -i "$1" -o "$2" 2> /dev/null
+}
+
+# Prints why the decoded profile at $1 doesn't let the app with the bundle identifier $2, signed with the
+# certificate whose SHA-1 is $3, take USB devices on this Mac. Prints nothing when it does.
+profile_problem() {
+    local decoded=$1 identifier=$2 certificate=${3:u}
+    local name application expiry count index devices
+    name=$(/usr/libexec/PlistBuddy -c "Print :Name" "$decoded" 2> /dev/null || true)
+    name="“${name:-without a name}”"
+
+    # The app's identifier with the team's in front.
+    application=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.application-identifier" "$decoded" 2> /dev/null || true)
+    if [[ ${application#*.} != $identifier ]]; then
+        print -r -- "$name is for another app"
+        return 0
+    fi
+    if [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$usb_entitlement" "$decoded" 2> /dev/null || true) != true ]]; then
+        print -r -- "$name doesn't grant $usb_entitlement"
+        return 0
+    fi
+    # Both are written the same way, so that the later one sorts last.
+    expiry=$(plutil -extract ExpirationDate raw -o - "$decoded" 2> /dev/null || true)
+    if [[ -z $expiry || ! $expiry > $(date -u +%Y-%m-%dT%H:%M:%SZ) ]]; then
+        print -r -- "$name ran out${expiry:+ on ${expiry%%T*}}"
+        return 0
+    fi
+    count=$(plutil -extract DeveloperCertificates raw -o - "$decoded" 2> /dev/null || true)
+    for (( index = 0; index < ${count:-0}; index++ )); do
+        if [[ $(plutil -extract DeveloperCertificates.$index raw -o - "$decoded" | base64 -d | shasum -a 1 | awk '{ print toupper($1) }') == $certificate ]]; then
+            break
+        fi
+    done
+    if (( index >= ${count:-0} )); then
+        print -r -- "$name is for another signing certificate than this one"
+        return 0
+    fi
+    # A profile for distribution is good on any Mac. One for development lists its Macs.
+    if [[ $(plutil -extract ProvisionsAllDevices raw -o - "$decoded" 2> /dev/null || true) != true ]]; then
+        devices=$(plutil -extract ProvisionedDevices xml1 -o - "$decoded" 2> /dev/null || true)
+        if ! print -r -- "$devices" | grep -Fq -- "<string>$(provisioning_udid)</string>"; then
+            print -r -- "$name isn't for this Mac"
+            return 0
+        fi
+    fi
+}
+
+# Sets `reply` to the provisioning profile that lets the app with the bundle identifier $1, signed with
+# the certificate whose SHA-1 is $2, take USB devices: among the profiles in the folders that follow,
+# the one that lasts longest. Leaves `reply` empty when none does, and then `REPLY` says what is wrong
+# with a profile that was made for this app, if there is one.
+find_usb_profile() {
+    local identifier=$1 certificate=$2
+    shift 2
+    local scratch folder candidate problem expiry best="" best_expiry=""
+    reply=()
+    REPLY=""
+    scratch=$(mktemp -d)
+    {
+        for folder in "$@"; do
+            for candidate in "$folder"/*.(provisionprofile|mobileprovision)(N); do
+                # A developer's Mac holds profiles for every app they work on. The list inside the
+                # envelope is readable as it is, which tells the few for this app without opening them all.
+                grep -q -a -F -- ".$identifier</string>" "$candidate" || continue
+                decode_profile "$candidate" "$scratch/profile.plist" || continue
+                problem=$(profile_problem "$scratch/profile.plist" "$identifier" "$certificate")
+                if [[ -n $problem ]]; then
+                    # A profile for an app whose identifier only ends like this one's is nobody's problem.
+                    [[ $problem == *"is for another app" ]] || REPLY=$problem
+                    continue
+                fi
+                expiry=$(plutil -extract ExpirationDate raw -o - "$scratch/profile.plist" 2> /dev/null || true)
+                if [[ $expiry > $best_expiry ]]; then
+                    best=$candidate
+                    best_expiry=$expiry
+                fi
+            done
+        done
+    } always {
+        # Also when the script is stopped half-way: what a profile says isn't left lying about.
+        rm -rf "$scratch"
+    }
+    if [[ -n $best ]]; then
+        reply=("$best")
+        REPLY=""
+    fi
+    return 0
+}

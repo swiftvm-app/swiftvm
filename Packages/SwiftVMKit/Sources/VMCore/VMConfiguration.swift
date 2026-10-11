@@ -149,13 +149,15 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     /// The configuration of a copy of this machine: the same hardware and disks under a new identity.
     ///
     /// The copy gets its own network card and no address yet. Forwarded ports stay with the original,
-    /// since a port on the host can only lead to one machine, and so do drives that can be written to.
+    /// since a port on the host can only lead to one machine, and so do drives that can be written to
+    /// and the USB devices it takes by itself, which can only be with one guest.
     public func duplicated(name: String, sshAlias: String) -> VMConfiguration {
         var copy = self
         copy.id = UUID()
         copy.name = name
         copy.createdAt = Date()
         copy.ssh.alias = sshAlias
+        copy.usb.autoConnect = []
         copy.removableImages = removableImages.filter(\.readOnly).map { RemovableImage(path: $0.path, readOnly: true) }
         copy.networkInterfaces = networkInterfaces.map { interface in
             NetworkInterfaceConfiguration(networkID: interface.networkID, isConnected: interface.isConnected)

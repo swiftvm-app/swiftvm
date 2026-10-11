@@ -1,3 +1,4 @@
+import AccessoryAccess
 import AppKit
 import VMCore
 import Virtualization
@@ -16,21 +17,28 @@ public final class VZBackend: NSObject, VMBackend {
     private var capturesSystemKeys: Bool
     /// The interfaces whose cable is out because the user pulled it.
     private var unpluggedInterfaces: Set<UUID>
+    /// Finds what the system knows a USB device of this Mac by, which is what the guest is handed.
+    private let usbAccessory: @MainActor (USBDevice.ID) -> AAUSBAccessory?
+    /// The USB devices of this Mac that the guest has.
+    private var passthroughDevices: [USBDevice.ID: VZUSBPassthroughDevice] = [:]
 
     init(
         vzConfiguration: VZVirtualMachineConfiguration,
         machineConfiguration: VMConfiguration,
-        attachmentProvider: @escaping @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment
+        attachmentProvider: @escaping @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment,
+        usbAccessory: @escaping @MainActor (USBDevice.ID) -> AAUSBAccessory? = { _ in nil }
     ) {
         self.vzConfiguration = vzConfiguration
         self.machineConfiguration = machineConfiguration
         self.capturesSystemKeys = machineConfiguration.keyboard.capturesSystemKeys
         self.unpluggedInterfaces = Set(machineConfiguration.networkInterfaces.filter { !$0.isConnected }.map(\.id))
         self.attachmentProvider = attachmentProvider
+        self.usbAccessory = usbAccessory
         // Without an explicit queue the machine uses the main queue, matching this class's isolation.
         self.virtualMachine = VZVirtualMachine(configuration: vzConfiguration)
         super.init()
         virtualMachine.delegate = self
+        virtualMachine.usbControllers.first?.delegate = self
     }
 
     // MARK: Display
@@ -130,6 +138,8 @@ public final class VZBackend: NSObject, VMBackend {
     /// frees the network right away.
     public func invalidate() {
         virtualMachine.delegate = nil
+        virtualMachine.usbControllers.first?.delegate = nil
+        passthroughDevices = [:]
         for device in virtualMachine.networkDevices {
             device.attachment = nil
         }
@@ -166,6 +176,32 @@ public final class VZBackend: NSObject, VMBackend {
     public func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {
         self.capturesSystemKeys = capturesSystemKeys
         view?.capturesSystemKeys = capturesSystemKeys
+    }
+
+    // MARK: USB devices
+
+    public func attachUSBDevice(_ device: USBDevice) async throws {
+        guard let controller = virtualMachine.usbControllers.first else {
+            throw VMError.invalidConfiguration("This virtual machine has no USB controller.")
+        }
+        guard let accessory = usbAccessory(device.id) else {
+            throw VMError.invalidConfiguration("“\(device.name)” isn't with this app any more. It was pulled out, or given back to this Mac.")
+        }
+        do {
+            let passthrough = try VZUSBPassthroughDevice(configuration: VZUSBPassthroughDeviceConfiguration(device: accessory))
+            try await perform { controller.attach(device: passthrough, completionHandler: $0) }
+            passthroughDevices[device.id] = passthrough
+        } catch {
+            // The framework's own words for this are a number. The usual cause is a device that a guest
+            // has only just let go of: it comes back to this Mac as a new one a moment later.
+            throw VMError.invalidConfiguration("The guest couldn't be handed “\(device.name)”. If it was only just detached or plugged in, try again in a moment. (\(error.localizedDescription))")
+        }
+    }
+
+    public func detachUSBDevice(_ id: USBDevice.ID) async throws {
+        guard let controller = virtualMachine.usbControllers.first, let passthrough = passthroughDevices[id] else { return }
+        try await perform { controller.detach(device: passthrough, completionHandler: $0) }
+        passthroughDevices[id] = nil
     }
 
     // MARK: Guest socket
@@ -213,5 +249,22 @@ extension VZBackend: @preconcurrency VZVirtualMachineDelegate {
             return
         }
         eventHandler?(.networkDisconnected(error.localizedDescription))
+    }
+}
+
+extension VZBackend: VZUSBController.Delegate {
+    /// A device the guest had was pulled out. The framework has taken it off the controller already.
+    ///
+    /// Nothing says which queue this arrives on, so it is taken on any and passed to the main one, and
+    /// the device, which isn't made to travel between them, is told from the others by what it is.
+    public nonisolated func usbController(_ usbController: VZUSBController, usbPassthroughDeviceDidDisconnect device: VZUSBPassthroughDevice) {
+        let gone = ObjectIdentifier(device)
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let id = self.passthroughDevices.first(where: { ObjectIdentifier($0.value) == gone })?.key else { return }
+                self.passthroughDevices[id] = nil
+                self.eventHandler?(.usbDeviceDisconnected(id))
+            }
+        }
     }
 }

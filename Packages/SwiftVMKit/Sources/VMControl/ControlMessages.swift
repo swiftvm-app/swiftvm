@@ -56,6 +56,15 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case installTools = "install-tools"
         /// Turn sharing the clipboard with the machine on or off, as ``ControlRequest/isOn`` says.
         case shareClipboard = "share-clipboard"
+        /// The USB devices this Mac has given the app, and which machine has each.
+        case usbList = "usb-list"
+        /// Hand the USB device named by ``ControlRequest/usbDevice`` to a running machine.
+        case usbAttach = "usb-attach"
+        /// Give it back to this Mac.
+        case usbDetach = "usb-detach"
+        /// Have a machine take that USB device by itself whenever both are there, or stop, as
+        /// ``ControlRequest/isOn`` says.
+        case usbAuto = "usb-auto"
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -151,14 +160,17 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     /// For `install-tools` over SSH: the guest account's password, which macOS wants before it lets
     /// anything be installed.
     public var password: String?
-    /// For `share-clipboard`: whether the clipboard is to be shared.
+    /// For `share-clipboard` and `usb-auto`: whether it is to be on.
     public var isOn: Bool?
+    /// For the `usb-` commands that deal with one device: its number in the list, its `vendor:product`,
+    /// its serial number or its name.
+    public var usbDevice: String?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
-        password: String? = nil, isOn: Bool? = nil
+        password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -174,6 +186,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.usesDisc = usesDisc
         self.password = password
         self.isOn = isOn
+        self.usbDevice = usbDevice
     }
 }
 
@@ -269,6 +282,11 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     public var guestTools: GuestTools?
     /// Whether the clipboard is shared with the machine. `nil` from an app that doesn't say.
     public var sharesClipboard: Bool?
+    /// The USB devices of this Mac that the machine's guest has right now.
+    public var usbDevices: [USBDeviceSummary]?
+    /// The devices the machine takes by itself whenever they are there, each as its name and
+    /// `vendor:product`.
+    public var usbAutoConnect: [String]?
 
     public struct GuestTools: Codable, Sendable, Equatable {
         /// The version of the agent that is connected. `nil` while none is.
@@ -284,7 +302,8 @@ public struct MachineDetails: Codable, Sendable, Equatable {
 
     public init(
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
-        snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil
+        snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil,
+        usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -294,6 +313,30 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.snapshotCount = snapshotCount
         self.guestTools = guestTools
         self.sharesClipboard = sharesClipboard
+        self.usbDevices = usbDevices
+        self.usbAutoConnect = usbAutoConnect
+    }
+}
+
+/// A USB device that this Mac has given the app.
+public struct USBDeviceSummary: Codable, Sendable, Equatable {
+    /// The device's number for as long as it stays plugged in. The next time it has another.
+    public var id: UInt64
+    public var name: String
+    /// Vendor and product, as in `0781:5581`.
+    public var identifier: String
+    public var manufacturer: String?
+    public var serialNumber: String?
+    /// The machine whose guest has the device, if one does.
+    public var machine: String?
+
+    public init(id: UInt64, name: String, identifier: String, manufacturer: String? = nil, serialNumber: String? = nil, machine: String? = nil) {
+        self.id = id
+        self.name = name
+        self.identifier = identifier
+        self.manufacturer = manufacturer
+        self.serialNumber = serialNumber
+        self.machine = machine
     }
 }
 
@@ -320,18 +363,22 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     public var machines: [MachineSummary]
     /// The machine's snapshots, for the commands that deal with them.
     public var snapshots: [SnapshotSummary]?
+    /// The USB devices this Mac has given the app, for `usb-list`.
+    public var usbDevices: [USBDeviceSummary]?
     /// Something for the person at the terminal to read once the command has done its part, such as
     /// what is left for them to do.
     public var note: String?
 
     public init(
-        ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil
+        ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil,
+        usbDevices: [USBDeviceSummary]? = nil
     ) {
         self.ok = ok
         self.error = error
         self.machines = machines
         self.snapshots = snapshots
         self.note = note
+        self.usbDevices = usbDevices
     }
 
     public static func failure(_ message: String) -> ControlResponse {

@@ -19,6 +19,8 @@ public final class VMLibrary {
     @ObservationIgnored public var onChange: (@MainActor () -> Void)?
     /// Called when a machine's guest has been resumed from saved memory.
     @ObservationIgnored public var onMachineResume: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when a machine's guest has come up, booted or resumed.
+    @ObservationIgnored public var onMachineStart: (@MainActor (VirtualMachine) -> Void)?
     /// Called when the agent in a machine's guest reports other addresses than before.
     @ObservationIgnored public var onGuestAddressesChange: (@MainActor (VirtualMachine) -> Void)?
     /// Called when the agent in a machine's guest has connected, and when it is gone again.
@@ -176,6 +178,7 @@ public final class VMLibrary {
         machine.backendProvider = backendProvider
         machine.onConfigurationChange = { [weak self] _ in self?.onChange?() }
         machine.onResume = { [weak self] machine in self?.onMachineResume?(machine) }
+        machine.onGuestStart = { [weak self] machine in self?.onMachineStart?(machine) }
         machine.onGuestAddressesChange = { [weak self] machine in self?.onGuestAddressesChange?(machine) }
         machine.onGuestAgentChange = { [weak self] machine in self?.onGuestAgentChange?(machine) }
         machine.onGuestClipboard = { [weak self] machine, text in self?.onGuestClipboard?(machine, text) }

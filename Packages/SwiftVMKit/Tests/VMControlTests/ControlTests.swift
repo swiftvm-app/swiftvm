@@ -132,6 +132,33 @@ import Testing
         #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)).sharesClipboard == nil)
     }
 
+    @Test func usbDevicesAreNamedInRequestsAndListedInAnswers() throws {
+        let attach = ControlRequest(command: .usbAttach, machine: "web", usbDevice: "0781:5581")
+        let data = try JSONEncoder().encode(attach)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"usb-attach\""))
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: data) == attach)
+        let rule = ControlRequest(command: .usbAuto, machine: "web", isOn: true, usbDevice: "SanDisk Ultra")
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(rule)) == rule)
+        #expect(try JSONEncoder().encode(ControlRequest(command: .usbList)) == Data(#"{"command":"usb-list"}"#.utf8))
+        #expect(ControlRequest.Command.allCases.filter { $0.rawValue.hasPrefix("usb-") } == [.usbList, .usbAttach, .usbDetach, .usbAuto])
+
+        let stick = USBDeviceSummary(id: 4_302_399_248, name: "Ultra", identifier: "0781:5581", manufacturer: "SanDisk", serialNumber: "4C53", machine: "Web")
+        let list = ControlResponse(ok: true, note: "Plug one in.", usbDevices: [stick, USBDeviceSummary(id: 7, name: "USB Device 05e3:0751", identifier: "05e3:0751")])
+        #expect(try JSONDecoder().decode(ControlResponse.self, from: JSONEncoder().encode(list)) == list)
+
+        var details = MachineDetails(
+            location: "/x", macAddress: nil, drives: [], sharedFolders: [], snapshotCount: 0,
+            usbDevices: [stick], usbAutoConnect: ["Ultra (0781:5581)"]
+        )
+        #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)) == details)
+        // An app from before USB devices says nothing of them, in a machine's details or anywhere else.
+        details.usbDevices = nil
+        details.usbAutoConnect = nil
+        let older = try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details))
+        #expect(older.usbDevices == nil && older.usbAutoConnect == nil)
+        #expect(try JSONDecoder().decode(ControlResponse.self, from: Data(#"{"ok":true,"machines":[]}"#.utf8)).usbDevices == nil)
+    }
+
     @Test func aSocketRequestNamesItsPort() throws {
         let request = ControlRequest(command: .vsock, machine: "web", port: 22)
         let data = try JSONEncoder().encode(request)

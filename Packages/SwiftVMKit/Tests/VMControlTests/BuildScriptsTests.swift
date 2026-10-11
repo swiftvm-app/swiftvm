@@ -170,4 +170,165 @@ import Testing
         #expect(try run("replace_app \"$1\" \"$2\"", app.path, fresh.path).status == 0)
         #expect(scratch.mark(of: fresh) == "new")
     }
+
+    // MARK: Provisioning profiles
+
+    /// Stand-ins for provisioning profiles: property lists in an envelope, signed with a certificate
+    /// that is made up on the spot and also stands in for the one the app is signed with.
+    private struct Profiles {
+        let folder: URL
+        /// The certificate as a profile lists it, and its SHA-1 as the keychain names it.
+        let certificate: Data
+        let certificateHash: String
+        private let keyPath: String
+        private let certificatePath: String
+
+        init(in root: URL) throws {
+            folder = root.appending(path: "Provisioning Profiles")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            keyPath = root.appending(path: "key.pem").path
+            certificatePath = root.appending(path: "certificate.pem").path
+            let binary = root.appending(path: "certificate.der")
+            try Self.openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", keyPath, "-out", certificatePath, "-days", "2", "-subj", "/CN=SwiftVM Test")
+            try Self.openssl("x509", "-in", certificatePath, "-outform", "der", "-out", binary.path)
+            certificate = try Data(contentsOf: binary)
+            certificateHash = try Self.output(of: "/usr/bin/shasum", "-a", "1", binary.path).prefix(40).uppercased()
+        }
+
+        /// Writes a profile for `application`, the app's identifier with a team's in front.
+        @discardableResult
+        func make(
+            _ name: String, application: String = "TEAM123456.com.swiftvm.app", grantsUSB: Bool = true,
+            expiresIn days: Double = 300, certificates: [Data]? = nil, devices: [String]? = nil
+        ) throws -> URL {
+            var entitlements: [String: Any] = ["com.apple.application-identifier": application, "com.apple.developer.team-identifier": "TEAM123456"]
+            if grantsUSB {
+                entitlements["com.apple.developer.accessory-access.usb"] = true
+            }
+            var profile: [String: Any] = [
+                "Name": name,
+                "Entitlements": entitlements,
+                "ExpirationDate": Date(timeIntervalSinceNow: days * 86_400),
+                "DeveloperCertificates": certificates ?? [Data("another certificate".utf8), certificate],
+            ]
+            if let devices {
+                profile["ProvisionedDevices"] = devices
+            } else {
+                profile["ProvisionsAllDevices"] = true
+            }
+            let list = folder.appending(path: "\(name).plist")
+            try PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0).write(to: list)
+            let url = folder.appending(path: "\(name).provisionprofile")
+            try Self.openssl("smime", "-sign", "-in", list.path, "-out", url.path, "-outform", "der", "-nodetach", "-binary", "-signer", certificatePath, "-inkey", keyPath)
+            try FileManager.default.removeItem(at: list)
+            return url
+        }
+
+        private static func openssl(_ arguments: String...) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            try #require(process.terminationStatus == 0, "openssl \(arguments.first ?? "") failed")
+        }
+
+        private static func output(of program: String, _ arguments: String...) throws -> String {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: program)
+            process.arguments = arguments
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            let printed = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(decoding: printed, as: UTF8.self)
+        }
+    }
+
+    /// What `find_usb_profile` finds for the app in `profiles`, on a Mac that goes by `THIS-MAC`: the
+    /// profile's file name, and what it says is wrong with a profile it didn't take.
+    private func findProfile(in profiles: Profiles, for identifier: String = "com.swiftvm.app") throws -> (profile: String, problem: String) {
+        let result = try run(
+            "provisioning_udid() { print THIS-MAC }; find_usb_profile \"$1\" \"$2\" \"$3\" \"$3/Not There\"; print -r -- \"${${reply[1]:-}:t}\"; print -r -- \"$REPLY\"",
+            identifier, profiles.certificateHash, profiles.folder.path
+        )
+        try #require(result.status == 0, "find_usb_profile failed: \(result.errors)")
+        let lines = result.output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        try #require(lines.count >= 2)
+        return (lines[0], lines[1])
+    }
+
+    @Test func findsTheProfileThatLetsTheAppTakeUSBDevices() throws {
+        let scratch = Scratch()
+        defer { scratch.cleanUp() }
+        try FileManager.default.createDirectory(at: scratch.root, withIntermediateDirectories: true)
+        let profiles = try Profiles(in: scratch.root)
+
+        // No profiles at all, as on the Mac of someone without a team.
+        #expect(try findProfile(in: profiles) == ("", ""))
+
+        // Profiles for other apps are nobody's problem: the development copy's, and one whose
+        // identifier only ends like the app's.
+        try profiles.make("Development Copy", application: "TEAM123456.com.swiftvm.app.dev")
+        try profiles.make("Someone Else", application: "TEAM123456.org.example.com.swiftvm.app")
+        #expect(try findProfile(in: profiles) == ("", ""))
+        #expect(try findProfile(in: profiles, for: "com.swiftvm.app.dev").profile == "Development Copy.provisionprofile")
+
+        // One for the app. Of two that would do, the one that lasts longer.
+        try profiles.make("Distribution", expiresIn: 300)
+        #expect(try findProfile(in: profiles) == ("Distribution.provisionprofile", ""))
+        try profiles.make("Distribution Renewed", expiresIn: 900)
+        try profiles.make("A Short One", expiresIn: 20)
+        #expect(try findProfile(in: profiles).profile == "Distribution Renewed.provisionprofile")
+    }
+
+    @Test func saysWhatIsWrongWithAProfileThatWontDo() throws {
+        let scratch = Scratch()
+        defer { scratch.cleanUp() }
+        try FileManager.default.createDirectory(at: scratch.root, withIntermediateDirectories: true)
+        let profiles = try Profiles(in: scratch.root)
+
+        let expired = try profiles.make("Old", expiresIn: -3)
+        var found = try findProfile(in: profiles)
+        #expect(found.profile.isEmpty)
+        #expect(found.problem.hasPrefix("“Old” ran out on 2"))
+        try FileManager.default.removeItem(at: expired)
+
+        let plain = try profiles.make("Without USB", grantsUSB: false)
+        found = try findProfile(in: profiles)
+        #expect(found == ("", "“Without USB” doesn't grant com.apple.developer.accessory-access.usb"))
+        try FileManager.default.removeItem(at: plain)
+
+        let foreign = try profiles.make("Another Certificate", certificates: [Data("another certificate".utf8)])
+        found = try findProfile(in: profiles)
+        #expect(found == ("", "“Another Certificate” is for another signing certificate than this one"))
+        try FileManager.default.removeItem(at: foreign)
+
+        // A profile for development lists the Macs it is good on.
+        let elsewhere = try profiles.make("Another Mac", devices: ["THAT-MAC", "NOT-THIS-MAC-EITHER"])
+        found = try findProfile(in: profiles)
+        #expect(found == ("", "“Another Mac” isn't for this Mac"))
+        try profiles.make("This Mac", devices: ["THAT-MAC", "THIS-MAC"])
+        found = try findProfile(in: profiles)
+        // With one that does, what is wrong with the others is of no interest.
+        #expect(found == ("This Mac.provisionprofile", ""))
+        try FileManager.default.removeItem(at: elsewhere)
+
+        // Something in the folder that isn't a profile at all.
+        try Data("TEAM123456.com.swiftvm.app</string>".utf8).write(to: profiles.folder.appending(path: "Notes.provisionprofile"))
+        #expect(try findProfile(in: profiles).profile == "This Mac.provisionprofile")
+    }
+
+    /// The entitlement's name is written down in the script and in the app, which asks macOS whether it
+    /// holds it.
+    @Test func theScriptsAndTheAppMeanTheSameEntitlement() throws {
+        let result = try run("print -r -- $usb_entitlement")
+        #expect(result.output == "com.apple.developer.accessory-access.usb\n")
+        let service = Self.sharedScript.deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "Packages/SwiftVMKit/Sources/VZEngine/USBAccessoryService.swift")
+        #expect(try String(contentsOf: service, encoding: .utf8).contains("static let entitlement = \"com.apple.developer.accessory-access.usb\""))
+    }
 }

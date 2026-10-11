@@ -11,6 +11,7 @@ struct MachineToolbar: ToolbarContent {
     @State private var isShowingNetwork = false
     @State private var isShowingFolders = false
     @State private var isShowingDrives = false
+    @State private var isShowingUSB = false
     @State private var restartNotice: RestartNotice?
 
     private enum RestartNotice: Identifiable {
@@ -61,6 +62,18 @@ struct MachineToolbar: ToolbarContent {
             .accessibilityValue("\(machine.configuration.removableImages.count) attached")
             .popover(isPresented: $isShowingDrives, arrowEdge: .bottom) {
                 RemovableDrivesPopover(machine: machine)
+            }
+
+            // A copy that isn't signed for USB devices has none to show, ever.
+            if model.usb.availability != .notSigned {
+                Button("USB Devices", systemImage: "cable.connector.horizontal") {
+                    isShowingUSB.toggle()
+                }
+                .help("USB devices")
+                .accessibilityValue("\(machine.usbDevices.count) attached")
+                .popover(isPresented: $isShowingUSB, arrowEdge: .bottom) {
+                    USBDevicesPopover(machine: machine)
+                }
             }
         }
 

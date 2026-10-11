@@ -825,3 +825,113 @@ ways over the clipboard, each within a second.
   new files ("Operation not permitted"). A three-line C program compiled on the spot runs from anywhere.
 - zsh doesn't run an `EXIT` trap when a signal ends the script, unless the signal has a trap of its own
   that exits.
+
+## What the USB entitlement asks of a signature
+
+Handing USB devices to a guest goes through Apple's AccessoryAccess framework, which wants the entitlement
+`com.apple.developer.accessory-access.usb`. Tried with a small app that registers a listener
+(`AAUSBAccessoryManager.shared.registerListener`), signed five ways, on macOS 27.0:
+
+- **Without the entitlement**, signed to run locally: the app runs, and the registration is answered with
+  `AAErrorDomain` 1, "Unable to communicate with service." Nothing crashes.
+- **With the entitlement, signed to run locally**: ended by macOS the moment it starts (exit status 137).
+  amfid: "The file is adhoc signed but contains restricted entitlements" (-424).
+- **With the entitlement and an Apple Development certificate, no provisioning profile**: ended the same
+  way. amfid: "No matching profile found" (-413).
+- **With the entitlement, an Apple Development certificate and a development profile** for the app's
+  identifier that lists this Mac: runs, the registration succeeds.
+- **With the entitlement, a Developer ID Application certificate and a Developer ID profile**: runs, the
+  registration succeeds. Not notarized, on the Mac that built it.
+
+So the entitlement and a profile that grants it go into the app together or not at all, which is what
+`scripts/bundle-app.sh` does: it looks for a profile that is for the app's identifier, grants the
+entitlement, hasn't run out, lists the certificate the app is being signed with and, if it lists Macs, this
+one. With such a profile the signature also carries `com.apple.application-identifier` and
+`com.apple.developer.team-identifier`, copied from the profile, as Xcode's signatures do. The app asks
+macOS whether it holds the entitlement (`SecTaskCopyValueForEntitlement`) before it asks for devices.
+`com.apple.security.virtualization` goes on working next to a profile: guests ran in all three builds.
+
+- **The capability** is "Claim USB Accessory" in the developer portal. Xcode's own list of capabilities
+  (`DVTPortal.framework/…/DVTPortalCachedPortalCapabilities.json`) says: public, no approval from Apple
+  needed, for Development, Ad hoc, Developer ID and App Store profiles, for teams in the Apple Developer
+  Program and the Enterprise Program. Not for a free personal team.
+- **How the project's profiles were made**, without an Xcode project in the repository: a throwaway Xcode
+  project somewhere else (one Swift file, `CODE_SIGN_STYLE = Automatic`, the team, the bundle identifier,
+  an entitlements file with the one key).
+  `xcodebuild -allowProvisioningUpdates -allowProvisioningDeviceRegistration build` with the identifier
+  `com.swiftvm.app.dev` registered that identifier in the account, turned the capability on, registered
+  this Mac as a device and made "Mac Team Provisioning Profile: com.swiftvm.app.dev" (good for a year).
+  `xcodebuild archive` with `com.swiftvm.app`, then `xcodebuild -exportArchive -allowProvisioningUpdates`
+  with an options file that says `method` = `developer-id`, `signingStyle` = `automatic` and the team,
+  made "Mac Team Direct Provisioning Profile: com.swiftvm.app" (any Mac, good for eighteen years), and as
+  a by-product a development profile for the same identifier, which nothing uses. Xcode has to be signed
+  in to the account. It keeps what it makes in `~/Library/Developer/Xcode/UserData/Provisioning Profiles`,
+  under names that say nothing; a profile downloaded from the portal lands there too when it is opened.
+- A provisioning profile is a property list in a signed envelope: `security cms -D -i <profile>` prints the
+  list, also for an envelope signed by a certificate nobody trusts, which is how the tests make stand-ins
+  (`openssl smime -sign -outform der -nodetach`). A certificate is listed as its DER bytes, whose SHA-1 is
+  what `security find-identity` prints for it.
+
+## USB devices of the Mac in a guest — works
+
+- **Tried:** a card reader (Genesys Logic, `05e3:0751`, no card in it) handed to a running Ubuntu 26.04
+  guest and taken back, through `swiftvm usb`: `VZUSBPassthroughDeviceConfiguration(device:)` with the
+  framework's `AAUSBAccessory`, `VZUSBPassthroughDevice(configuration:)`, and
+  `VZUSBController.attach(device:)` / `detach(device:)` on the machine's one XHCI controller.
+- **Which devices an app has is the user's choice, made in macOS.** While an app with the entitlement
+  listens, macOS shows a menu bar item, *Virtual Machine Accessories* (an agent inside
+  `AccessoryAccess.framework`, started on demand). It lists the Mac's USB devices, keyboard and network
+  adapter included, each used with "This Mac" or with one of the apps that listen. The app is told only
+  of the devices set to it: none at first, with hubs and an Ethernet adapter plugged in. Listening by
+  itself takes nothing away from the Mac. The choice is remembered: after the app was quit and opened
+  again, the device was reported as one it already has.
+- **Outcome:** attaching took 0.03 s. In the guest, `lsusb` shows the device under its own vendor and
+  product ("Genesys Logic, Inc. microSD Card Reader") and the kernel binds its own driver (`usb-storage`,
+  `sda` with `TRAN usb`). Detaching took 0.02 s; the guest logs `USB disconnect`.
+- **A device that a guest lets go of comes back to the Mac as a new one.** About a second after a
+  detach, the framework reports the device gone and there again, with another registry ID (the number
+  `swiftvm usb` lists). The same after its machine was stopped, suspended or force-stopped. So:
+  - What identifies a device across that is its make and serial number, not its ID.
+  - A machine that takes a device by itself would take it back the moment it was detached by hand. The
+    first time a device shows up within five seconds of a detach by hand, the app takes that for the
+    Mac getting it back and leaves it alone (`USBPassthrough.holdOff`).
+  - Between going and coming back the device isn't listed at all, for up to a second (seen twice a
+    second: there, gone, there under the new ID). `swiftvm usb detach` answers when it is back, so that
+    an `attach` to another machine can follow at once.
+  - In the second before it is back, the old entry can't be attached: `VZErrorDomain` -6, a code the
+    headers don't list, with no words of its own. A machine that restarts runs into this, reaching for
+    the device it has just let go of; the app waits three seconds (`settlingTime`) and says nothing if
+    the device has been replaced by then, because the new one is offered to the machine anew. A device
+    that comes back goes to the machine that had it last, if that one runs or is on its way up.
+- **Suspend.** The framework saves a guest that holds a passthrough device (0.42 s) and restores it without
+  the device in the configuration (0.53 s); the restored guest logs `USB disconnect` as its first act.
+  Nothing is refused and nothing hangs, but the device isn't part of what is saved. The app leaves it
+  at that: the devices stay with the guest until it has stopped, so that a suspend that fails costs it
+  nothing, the Mac has them back a second later, and a machine that takes a device by itself takes it
+  again when it resumes (seen: `USB disconnect, device number 2`, then `new high-speed USB device
+  number 3`). Detaching them before the guest is paused was tried too and looks the same from inside
+  the guest. A snapshot of a running machine, which suspends it for a moment, is refused while it has a
+  USB device: the guest wouldn't come back as it was.
+- **Pause.** A paused guest gives a device back (it logs the disconnect when it resumes). Attaching to a
+  paused guest isn't offered.
+- **Stopping.** A machine that stops or is force-stopped with a device attached gives it back; it is
+  listed as free again within a second. A guest that restarts itself (`systemctl reboot`) keeps the
+  device: the machine never stopped, the Mac's ID for the device stays, and the guest finds it again as
+  it comes up.
+- **macOS guests** take a device the same way: a macOS 27.0.1 guest listed the reader in `system_profiler
+  SPUSBHostDataType` under its own vendor and product, 0.02 s after the attach.
+- **One guest at a time.** The app refuses to hand a device to a second machine while one has it
+  ("… is in use by …"). What the framework would say wasn't tried.
+- **A drive with something on it:** a SanDisk stick (`0781:55a9`, 30.8 GB, a GUID partition table with an
+  HFS+ volume), set to the app in the menu and attached to a macOS 27.0.1 guest from the popover, by the
+  user. The guest has it as `/dev/disk7 (external, physical)` with both partitions, at 5 Gb/s; this Mac
+  lists no external disk any more. With the card reader attached to the same guest at the same time.
+  The stick calls its maker "USB" and gives a serial number of 128 characters, which `swiftvm usb` cuts
+  short in its table.
+- **Not tried by the agent:** a device pulled out while a guest has it, and a device set back to "This
+  Mac" in the menu while a guest has it.
+- **Names.** The device descriptor that `AAUSBAccessory` hands over has the vendor and product numbers.
+  What the device calls itself is in the I/O registry under the accessory's `registryID`: `USB Product
+  Name`, `USB Vendor Name`, `USB Serial Number`. Reading those needs no entitlement.
+- **Which queue `usbController(_:usbPassthroughDeviceDidDisconnect:)` arrives on** isn't said in the
+  headers. The app takes it on any and passes it to the main queue.

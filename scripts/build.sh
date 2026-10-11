@@ -19,6 +19,10 @@ while (( $# )); do
         *) fail "Usage: scripts/build.sh [debug] [--output <app>]" ;;
     esac
 done
+# A relative path would be one file here and another once this script has moved to the repository.
+if [[ ${SWIFTVM_PROVISIONING_PROFILE:--} != - ]]; then
+    export SWIFTVM_PROVISIONING_PROFILE=${SWIFTVM_PROVISIONING_PROFILE:a}
+fi
 cd "$root"
 # Said now rather than after minutes of building.
 check_replaceable "$app"
