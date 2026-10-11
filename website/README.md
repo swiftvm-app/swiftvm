@@ -24,6 +24,7 @@ npm run build    # the site, in website/dist
 | `src/static/` | Files that go to the site as they are |
 | `lib/` | The build: Markdown, navigation, the pages' frame, `llms.txt` |
 | `build.mjs` | Puts it all in `dist/` |
+| `wrangler.jsonc` | How Cloudflare serves `dist/` |
 
 ## What the build does
 
@@ -61,27 +62,23 @@ shared, is a capture of the hero at 1200 × 630.
 
 ## Deploying
 
-The site is on [Cloudflare Pages](https://pages.cloudflare.com), which builds
-it on every push to `main` and builds a preview of every pull request. To set
-it up:
+Cloudflare builds the site on every push to `main` and serves it as a Worker
+that is nothing but the files of `dist/`. `wrangler.jsonc` says so. To set it
+up:
 
-1. In the Cloudflare dashboard, go to **Workers & Pages** and choose
-   **Create application → Pages → Connect to Git**.
-2. Sign in with GitHub, give Cloudflare access to this repository, and choose
-   **Begin setup**.
-3. Fill in the build settings and choose **Save and Deploy**:
+1. In the Cloudflare dashboard, go to **Workers & Pages**, choose
+   **Create application**, and import this repository.
+2. Fill in the settings and choose **Deploy**:
 
    | Setting | Value |
    | --- | --- |
-   | Production branch | `main` |
-   | Framework preset | None |
+   | Project name | `swiftvm`, the `name` in `wrangler.jsonc` |
    | Build command | `npm run build` |
-   | Build output directory | `dist` |
-   | Root directory (advanced) | `website` |
+   | Deploy command | `npx wrangler deploy` |
+   | Root directory | `website` |
 
-4. In the project, open **Custom domains**, choose **Set up a domain**, and
-   enter `swiftvm.app`. With the domain's DNS on Cloudflare, the record is
-   added for you.
+3. In the Worker, open **Settings → Domains & Routes**, choose
+   **Add → Custom Domain**, and enter `swiftvm.app`.
 
 - Leave **Build watch paths** as they are. Limited to `website/`, a change to
   `docs/` wouldn't build the site.
