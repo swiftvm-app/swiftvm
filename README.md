@@ -41,7 +41,7 @@ See [Getting started](docs/user-guide/getting-started.md) for your first virtual
 
 ## Documentation
 
-See [docs](docs/README.md).
+See [docs](https://swiftvm.app/docs).
 
 ## License
 
