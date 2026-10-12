@@ -1,4 +1,5 @@
 import AppKit
+import GuestChannel
 import Installers
 import VMControl
 import VMCore
@@ -317,6 +318,16 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return details(machine)
+        case .automation:
+            guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            changeConfiguration(of: machine) { $0.automation.isAllowed = isOn }
+            if machine.lastError == nil {
+                return details(machine)
+            }
+        case .wait:
+            if let problem = await waitForGuestTools(of: machine, timeout: request.waitTimeout) {
+                return .failure(problem)
+            }
         case .discardState:
             guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
             machine.discardSavedState()
@@ -374,7 +385,7 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
-        case .list, .info, .console, .vsock, .create, .quit, .usbList, .scripts:
+        case .list, .info, .console, .vsock, .job, .create, .quit, .usbList, .scripts:
             break
         }
 
@@ -400,8 +411,9 @@ extension AppModel {
             return (success(machine), { connection in await Self.serveConsole(console, name: name, connection: connection) })
         case .vsock:
             guard let port = request.port, port > 0 else { return (.failure("Missing port."), nil) }
-            // The agent serves one connection, the app's. Another one would take its place.
-            guard port != GuestAgent.port else {
+            // The agent serves one connection, the app's. Another one would take its place. And what
+            // the guest tools do in the guest is asked for by name, where it can be turned off.
+            guard port != GuestAgent.port, port != GuestProtocol.jobPort else {
                 return (.failure("Port \(port) is the line between SwiftVM and the guest tools, and not for anything else."), nil)
             }
             do {
@@ -415,9 +427,61 @@ extension AppModel {
             } catch {
                 return (.failure("Nothing in “\(machine.name)” answers on port \(port) of its socket device. (\(error.localizedDescription))"), nil)
             }
+        case .job:
+            guard var job = request.job else { return (.failure("Missing what to do in the guest."), nil) }
+            // A command runs as the machine's own account unless another is named. Without either, the
+            // guest tools take whoever is logged in at the guest's screen.
+            if case .exec(var exec) = job, exec.user == nil, !machine.configuration.ssh.user.isEmpty {
+                exec.user = machine.configuration.ssh.user
+                job = .exec(exec)
+            }
+            do {
+                let guest = try await machine.openJob(job)
+                return (success(machine), { connection in
+                    // The tool only stops sending by going away, which calls the job off. An agent
+                    // that doesn't hang up after that is hung up on.
+                    await ByteRelay.run(between: connection, and: guest.fileDescriptor, patienceAfterFirstEnds: Self.jobCallOffPatience)
+                    try? guest.close()
+                })
+            } catch {
+                return (.failure(Self.explanation(of: error, for: machine)), nil)
+            }
         default:
             return (.failure("This command doesn't open a stream."), nil)
         }
+    }
+
+    /// How long a guest's agent gets to end a job that was called off, before the app closes the line.
+    private static let jobCallOffPatience: TimeInterval = 15
+
+    /// Why a job wasn't started, with what whoever is at the terminal can do about it.
+    private static func explanation(of error: any Error, for machine: VirtualMachine) -> String {
+        let alias = machine.configuration.ssh.alias
+        let name = alias.isEmpty ? machine.id.uuidString : alias
+        let advice: String? = switch error as? GuestJobError {
+        case .notAllowed: "Turn it on in the machine's settings, or with `swiftvm automation \(name) on`."
+        case .noAgent: "`swiftvm wait \(name)` waits for them, and `swiftvm install-tools \(name)` installs them."
+        case .notOffered: "Update them with `swiftvm install-tools \(name)`."
+        case .noAnswer, .tooLong, .refused, nil: nil
+        }
+        return [error.localizedDescription, advice].compactMap { $0 }.joined(separator: " ")
+    }
+
+    /// Waits until the guest tools of a machine that is up, or coming up, have answered. Returns what
+    /// is in the way if they don't.
+    private func waitForGuestTools(of machine: VirtualMachine, timeout: Duration) async -> String? {
+        let deadline = ContinuousClock.now + timeout
+        while !machine.agent.isConnected {
+            // A machine that is down isn't on its way to answering anything.
+            guard machine.state.isActive, machine.state != .stopping, machine.state != .suspending else {
+                return "“\(machine.name)” isn't running."
+            }
+            guard ContinuousClock.now < deadline else {
+                return "The guest tools in “\(machine.name)” haven't answered in time. If they aren't installed, `swiftvm install-tools` installs them."
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
     }
 
     /// Connects a `swiftvm console` session to a machine's serial console and returns when the tool hangs
@@ -699,7 +763,14 @@ extension AppModel {
             usbDevices: machine.usbDevices.map { self.summary(of: $0) },
             usbAutoConnect: configuration.usb.autoConnect.map { "\($0.name) (\($0.id))" },
             // The step a script ended at says nothing once it has come to its end.
-            setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) }
+            setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) },
+            // Of what the agent says it does, the kinds of job this app knows: no other word of a
+            // guest's is passed on.
+            automation: configuration.canHaveGuestAgent
+                ? MachineDetails.Automation(
+                    isAllowed: configuration.automation.isAllowed,
+                    features: GuestFeature.jobs.filter(machine.agent.offers)
+                ) : nil
         )
         return ControlResponse(ok: true, machines: [summary])
     }

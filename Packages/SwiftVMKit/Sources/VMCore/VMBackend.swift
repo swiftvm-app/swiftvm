@@ -221,6 +221,42 @@ public enum VMError: Error, LocalizedError {
     }
 }
 
+/// Why a guest's agent wasn't given a ``GuestJob``, or didn't take it on.
+public enum GuestJobError: Error, LocalizedError, Equatable {
+    /// The machine isn't to be driven from the command line.
+    case notAllowed(name: String)
+    /// No agent is connected: the guest has none, or isn't up yet.
+    case noAgent(name: String)
+    /// The agent that is connected doesn't do this kind of job. `version` is the agent's.
+    case notOffered(name: String, version: String?)
+    /// The agent couldn't be reached for the job, or said nothing to it.
+    case noAnswer(name: String)
+    /// The job is more than fits in one request to an agent.
+    case tooLong
+    /// The agent said no, in these words.
+    case refused(String)
+
+    /// The longest an agent's reason is kept at. A guest can say anything; what is shown of it is short.
+    public static let longestReason = 500
+
+    public var errorDescription: String? {
+        switch self {
+        case .notAllowed(let name):
+            "Automation is turned off for “\(name)”."
+        case .noAgent(let name):
+            "The guest tools in “\(name)” don't answer. They aren't installed, or the guest is still starting up."
+        case .notOffered(let name, let version):
+            "The guest tools in “\(name)”\(version.map { " (\($0))" } ?? "") are too old for this."
+        case .noAnswer(let name):
+            "The guest tools in “\(name)” didn't answer."
+        case .tooLong:
+            "That is more than the guest tools take in one request. What is long goes to a command on its input rather than in its arguments."
+        case .refused(let reason):
+            reason
+        }
+    }
+}
+
 /// Work on a machine's files during which it can't be started, stopped or changed.
 public enum VMActivity: Sendable, Hashable {
     case takingSnapshot

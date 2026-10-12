@@ -48,6 +48,8 @@ extension VMConfiguration {
         result.sharedFolders = sharedFolders
         result.ssh = ssh
         result.keyboard = keyboard
+        // Who may drive the guest is decided here and now, not by what was allowed back then.
+        result.automation = automation
         // Which of this Mac's USB devices the machine takes by itself.
         result.usb = usb
         result.display.automaticallyResizes = display.automaticallyResizes

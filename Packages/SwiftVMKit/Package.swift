@@ -32,8 +32,8 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .target(name: "VZEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools"]),
-        .target(name: "VMControl"),
-        .executableTarget(name: "swiftvm", dependencies: ["VMControl"]),
+        .target(name: "VMControl", dependencies: ["GuestChannel"]),
+        .executableTarget(name: "swiftvm", dependencies: ["VMControl", "GuestChannel"]),
         .testTarget(name: "GuestChannelTests", dependencies: ["GuestChannel"]),
         .testTarget(name: "GuestAgentMacTests", dependencies: ["GuestAgentMac", "GuestChannel"]),
         .testTarget(name: "VMCoreTests", dependencies: ["VMCore", "GuestChannel"]),
@@ -41,7 +41,7 @@ let package = Package(
         .testTarget(name: "SSHIntegrationTests", dependencies: ["SSHIntegration"]),
         .testTarget(name: "InstallersTests", dependencies: ["Installers", "DiskTools", "GuestChannel"]),
         .testTarget(name: "VMNetworkingTests", dependencies: ["VMNetworking"]),
-        .testTarget(name: "VMControlTests", dependencies: ["VMControl"]),
+        .testTarget(name: "VMControlTests", dependencies: ["VMControl", "GuestChannel"]),
         .testTarget(name: "VZEngineTests", dependencies: ["VZEngine", "VMCore"]),
     ]
 )

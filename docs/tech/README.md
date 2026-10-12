@@ -24,7 +24,8 @@ The big ideas:
    never disagree.
 4. **The guest agent needs no network.** It talks to the app over the
    machine's socket device, so the clock, shutdown, and clipboard work when
-   the guest's network is down.
+   the guest's network is down. So does everything `swiftvm` does inside a
+   guest: commands, the screen, the mouse, and the keyboard.
 5. **The engine is separate from the interface.** Everything that isn't
    interface is in the `SwiftVMKit` package, behind a backend protocol that a
    second engine can implement.

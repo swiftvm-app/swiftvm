@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import GuestChannel
 import Testing
@@ -42,6 +43,56 @@ private final class PretendSystem: AgentSystem, @unchecked Sendable {
 
     func shutDown() throws {
         lock.withLock { done.append("shut down") }
+    }
+
+    /// The only account there is: whoever runs the tests.
+    func account(named name: String?) throws -> AgentAccount {
+        let account = AgentAccount(name: NSUserName(), user: getuid(), group: getgid(), home: NSHomeDirectory(), shell: "/bin/sh")
+        guard name == nil || name == account.name else { throw AgentFailure("This Mac has no account named “\(name ?? "")”.") }
+        return account
+    }
+
+    /// Commands run as they are, with nothing in between but the search for the program.
+    func launch(_ command: [String], as account: AgentAccount) -> [String] {
+        ["/usr/bin/env"] + command
+    }
+}
+
+/// A desktop that only writes down what it is asked to do.
+private final class PretendDesktop: AgentDesktop, @unchecked Sendable {
+    private let lock = NSLock()
+    private var done: [String] = []
+    private var objection: String?
+
+    /// What the agent has done with the desktop, in order.
+    var calls: [String] { lock.withLock { done } }
+    /// What the system says instead of letting the screen be recorded, as before someone allowed it.
+    var refusal: String? {
+        get { lock.withLock { objection } }
+        set { lock.withLock { objection = newValue } }
+    }
+
+    func screenshot() throws -> Data {
+        if let refusal { throw AgentFailure(refusal) }
+        lock.withLock { done.append("screenshot") }
+        return Data("a picture".utf8)
+    }
+
+    func pointer(_ request: GuestJob.Pointer) throws {
+        lock.withLock { done.append("\(request.action.rawValue) \(request.x),\(request.y)") }
+    }
+
+    func keys(_ request: GuestJob.Keys) throws {
+        lock.withLock { done.append("keys \(request.text ?? request.keys?.joined(separator: " ") ?? "")") }
+    }
+
+    func tree(_ request: GuestJob.Tree) throws -> Data {
+        Data(#"{"applications":[],"truncated":false}"#.utf8)
+    }
+
+    func act(on request: GuestJob.Element) throws -> Data {
+        lock.withLock { done.append("\(request.action.rawValue) \(request.element)") }
+        return Data("{}".utf8)
     }
 }
 
@@ -127,6 +178,15 @@ private struct FarEnd: @unchecked Sendable {
                 if read(descriptor, &byte, 1) <= 0 { return true }
             }
             return false
+        }.value
+    }
+
+    /// The next frame of a job, or `nil` if the agent hung up or nothing came within `timeout`.
+    func frame(timeout: TimeInterval = 5) async -> JobFrame? {
+        await Task.detached {
+            var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            guard poll(&waiting, 1, Int32(timeout * 1000)) == 1 else { return nil }
+            return try? JobFrame.read(from: descriptor)
         }.value
     }
 
@@ -629,5 +689,166 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(AgentCommand.run(["--help"]) == 64)
         #expect(AgentCommand.run([]) == 64)
         #expect(AgentCommand.run(["daemon", "extra"]) == 64)
+    }
+}
+
+/// Jobs for whoever drives the system from the Mac, against the Mac's own end of a job's connection.
+@Suite struct AgentJobTests {
+    private let system = PretendSystem()
+    private let queue = DispatchQueue(label: "agent under test")
+
+    /// Has the daemon take a job on a connection of its own, and returns the Mac's end of it.
+    private func send(_ job: GuestJob, to daemon: AgentDaemon) -> FarEnd {
+        let (agent, mac) = FarEnd.makeLine()
+        daemon.serveJob(on: agent)
+        mac.send(job)
+        return mac
+    }
+
+    @Test func runsACommandAndSaysHowItEnded() async {
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let script = "echo out; echo $GREETING >&2; cat; exit 3"
+        let mac = send(.exec(.init(arguments: ["sh", "-c", script], environment: ["GREETING": "hello"])), to: daemon)
+        defer { mac.hangUp() }
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        // What the Mac sends is the command's input, and an empty frame the end of it.
+        mac.send(JobFrame(.input, Data("typed".utf8)).encoded)
+        mac.send(JobFrame(.input).encoded)
+
+        var (printed, complained) = (Data(), Data())
+        var end: JobEnd?
+        while end == nil, let frame = await mac.frame() {
+            switch frame.kind {
+            case .output: printed.append(frame.payload)
+            case .errorOutput: complained.append(frame.payload)
+            case .end: end = frame.end
+            case .input: break
+            }
+        }
+        #expect(String(decoding: printed, as: UTF8.self) == "out\ntyped")
+        #expect(String(decoding: complained, as: UTF8.self) == "hello\n")
+        #expect(end == JobEnd(status: 3))
+    }
+
+    @Test func aCommandIsCalledOffWhenTheMacHangsUp() async throws {
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let mac = send(.exec(.init(arguments: ["sh", "-c", "echo $$; exec sleep 600"])), to: daemon)
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        let first = try #require(await mac.frame())
+        let process = try #require(pid_t(String(decoding: first.payload, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(kill(process, 0) == 0)
+        // Whoever wanted the command is gone.
+        mac.hangUp()
+        #expect(await eventually { kill(process, 0) != 0 })
+    }
+
+    @Test func inputThatKeepsComingAfterItsEndIsLetGo() async {
+        // The Mac says the input is over and sends more all the same, to a command that has ended
+        // long since: a line that is torn looks like this. The agent must still be there afterwards.
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let mac = send(.exec(.init(arguments: ["sh", "-c", "exit 1"])), to: daemon)
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        mac.send(JobFrame(.input).encoded)
+        for _ in 0..<64 {
+            mac.send(JobFrame(.input, Data(repeating: 0, count: 4096)).encoded)
+        }
+        var end: JobEnd?
+        while end == nil, let frame = await mac.frame() {
+            end = frame.end
+        }
+        #expect(end == JobEnd(status: 1))
+        mac.hangUp()
+
+        let next = send(.exec(.init(arguments: ["true"])), to: daemon)
+        defer { next.hangUp() }
+        #expect(await next.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        #expect(await next.frame()?.end == .success)
+    }
+
+    @Test func refusesWhatItCannotRun() async {
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let stranger = send(.exec(.init(arguments: ["true"], user: "nobody-here")), to: daemon)
+        defer { stranger.hangUp() }
+        let answer = await stranger.receive(GuestJobAnswer.self)
+        #expect(answer?.ok == false)
+        #expect(answer?.error?.contains("nobody-here") == true)
+
+        // A job from a later version of the app gets a no, not silence.
+        let later = send(.unknown(type: "record-screen"), to: daemon)
+        defer { later.hangUp() }
+        #expect(await later.receive(GuestJobAnswer.self)?.error?.contains("record-screen") == true)
+    }
+
+    @Test func theScreenIsNobodysWhileNobodyIsLoggedIn() async {
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let mac = send(.screenshot, to: daemon)
+        defer { mac.hangUp() }
+        let answer = await mac.receive(GuestJobAnswer.self)
+        #expect(answer?.ok == false)
+        #expect(answer?.error?.contains("logged in") == true)
+    }
+
+    @Test func aJobForTheScreenIsDoneInTheUsersSession() async {
+        // Both halves, wired up as they are in a guest: the Mac asks the half that runs as root, and
+        // the half in the user's session answers.
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let desktop = PretendDesktop()
+        let session = SessionAgent(
+            pasteboard: PretendPasteboard(), queue: queue, desktop: desktop, lookInterval: 0.01, retryInterval: 0.02,
+            connect: {
+                var descriptors: [Int32] = [0, 0]
+                guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { return nil }
+                // Called on the agent's queue, where the daemon lives too.
+                daemon.serveSession(on: descriptors[0])
+                return descriptors[1]
+            },
+            connectForJob: {
+                var descriptors: [Int32] = [0, 0]
+                guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { return nil }
+                daemon.serveSessionJob(on: descriptors[0])
+                return descriptors[1]
+            }
+        )
+        session.start()
+        // The session's half has to have reached the other one before there is anyone to hand a job to.
+        queue.sync {}
+
+        let picture = send(.screenshot, to: daemon)
+        defer { picture.hangUp() }
+        #expect(await picture.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        #expect(await picture.frame() == JobFrame(.output, Data("a picture".utf8)))
+        #expect(await picture.frame()?.end == .success)
+
+        let click = send(.pointer(.init(action: .click, x: 40, y: 50)), to: daemon)
+        defer { click.hangUp() }
+        #expect(await click.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        #expect(await click.frame()?.end == .success)
+        #expect(desktop.calls == ["screenshot", "click 40,50"])
+
+        // What macOS hasn't allowed ends the job with what the desktop has to say about it.
+        desktop.refusal = "macOS hasn't let the guest tools record this Mac's screen yet."
+        let refused = send(.screenshot, to: daemon)
+        defer { refused.hangUp() }
+        #expect(await refused.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        #expect(await refused.frame()?.end == .failure("macOS hasn't let the guest tools record this Mac's screen yet."))
+        withExtendedLifetime(session) {}
+    }
+}
+
+@Suite struct MacKeyboardTests {
+    @Test func readsAPressAsItIsWritten() throws {
+        let command = MacKeyboard.Modifier(key: 55, flag: CGEventFlags.maskCommand.rawValue)
+        let shift = MacKeyboard.Modifier(key: 56, flag: CGEventFlags.maskShift.rawValue)
+        #expect(try MacKeyboard.press(for: "Return") == .init(key: 36, modifiers: []))
+        #expect(try MacKeyboard.press(for: "cmd+space") == .init(key: 49, modifiers: [command]))
+        // A letter in a shortcut is the key, whichever way it is written. A sign that takes Shift brings it.
+        #expect(try MacKeyboard.press(for: "CMD+Shift+T") == .init(key: 17, modifiers: [command, shift]))
+        #expect(try MacKeyboard.press(for: "cmd+?") == .init(key: 44, modifiers: [command, shift]))
+        // The plus sign is a key too, alone or held with others. A key that is only held is a press as well.
+        #expect(try MacKeyboard.press(for: "+") == .init(key: 24, modifiers: [shift]))
+        #expect(try MacKeyboard.press(for: "cmd++") == .init(key: 24, modifiers: [command, shift]))
+        #expect(try MacKeyboard.press(for: "super") == .init(key: nil, modifiers: [command]))
+        #expect(throws: AgentFailure.self) { try MacKeyboard.press(for: "ctrl+banana") }
+        #expect(throws: AgentFailure.self) { try MacKeyboard.press(for: "banana+c") }
     }
 }

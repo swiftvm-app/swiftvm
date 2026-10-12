@@ -86,6 +86,20 @@ Install the [guest tools](../features/guest-tools.md), or
 - A Linux guest needs a desktop with `spice-vdagent` running.
 - Only text is shared, up to about 250 kB.
 
+## `swiftvm exec` or `swiftvm screenshot` doesn't work
+
+- **The guest tools don't answer.** The guest is still starting up, or has no
+  [guest tools](../features/guest-tools.md). `swiftvm wait <machine>` waits
+  for them, and `swiftvm install-tools <machine>` installs them.
+- **The guest tools are too old.** `swiftvm install-tools <machine>` updates
+  them.
+- **Automation is turned off.** Turn on **Allow Automation** in the machine's
+  settings.
+- **A macOS guest says it isn't allowed.** Allow it
+  [in the guest](../features/automation.md#macos-guests), once.
+- **Nobody is logged in.** The tree of what is on the screen, and everything
+  about a macOS guest's screen, belongs to whoever is logged in there.
+
 ## The USB button is missing
 
 USB devices need a build with a provisioning profile. Releases have one;

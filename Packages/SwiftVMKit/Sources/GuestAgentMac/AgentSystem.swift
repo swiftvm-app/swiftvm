@@ -10,6 +10,15 @@ struct AgentFailure: Error, Sendable, Equatable {
     }
 }
 
+/// An account of the system, as far as running a command as it goes.
+struct AgentAccount: Sendable, Equatable {
+    var name: String
+    var user: uid_t
+    var group: gid_t
+    var home: String
+    var shell: String
+}
+
 /// What the agent knows about the system it runs in, and what it does to it.
 protocol AgentSystem: Sendable {
     func describe() -> GuestSystem
@@ -21,6 +30,10 @@ protocol AgentSystem: Sendable {
     /// Gives the system the time zone with this name in the time zone database.
     func setTimeZone(_ identifier: String) throws
     func shutDown() throws
+    /// The account with this name, or without a name that of whoever is logged in at the screen.
+    func account(named name: String?) throws -> AgentAccount
+    /// What to start, program first, so that `command` runs as `account`.
+    func launch(_ command: [String], as account: AgentAccount) -> [String]
 }
 
 /// macOS itself. Changing the clock, the time zone or the power takes root.
@@ -97,6 +110,52 @@ struct MacSystem: AgentSystem {
         // Nobody waits for it: it doesn't come back, and takes this agent down with everything else
         // within the second. The app has to have its answer before that.
         AgentLog.note("Shutting down at the app's request.")
+    }
+
+    func account(named name: String?) throws -> AgentAccount {
+        if let name {
+            guard let account = Self.account(named: name) else {
+                throw AgentFailure("This Mac has no account named “\(name.prefix(64))”.")
+            }
+            return account
+        }
+        guard let user = AgentSockets.consoleUser(), user != 0 else {
+            throw AgentFailure("Nobody is logged in at this Mac's screen. Name the account to run the command as.")
+        }
+        guard let account = Self.account(of: user) else { throw AgentFailure("The user at this Mac's screen has no account.") }
+        return account
+    }
+
+    /// The agent's own program, called another way (``RunAs``): it becomes the account, and then the
+    /// command. A command for whoever is logged in at the screen is started inside their session, where
+    /// it can open windows.
+    func launch(_ command: [String], as account: AgentAccount) -> [String] {
+        let inSession = account.user != 0 && account.user == AgentSockets.consoleUser()
+        return [Self.programPath, RunAs.mode, account.name] + (inSession ? [RunAs.inSession] : []) + ["--"] + command
+    }
+
+    static let programPath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+
+    static func account(named name: String) -> AgentAccount? {
+        account { entry, buffer, size, result in getpwnam_r(name, entry, buffer, size, result) }
+    }
+
+    static func account(of user: uid_t) -> AgentAccount? {
+        account { entry, buffer, size, result in getpwuid_r(user, entry, buffer, size, result) }
+    }
+
+    /// Looks an account up in a way that is safe to do from several threads at once.
+    private static func account(
+        _ lookUp: (UnsafeMutablePointer<passwd>, UnsafeMutablePointer<CChar>, Int, UnsafeMutablePointer<UnsafeMutablePointer<passwd>?>) -> Int32
+    ) -> AgentAccount? {
+        var entry = passwd()
+        var found: UnsafeMutablePointer<passwd>?
+        var buffer = [CChar](repeating: 0, count: 16 * 1024)
+        guard lookUp(&entry, &buffer, buffer.count, &found) == 0, found != nil else { return nil }
+        return AgentAccount(
+            name: String(cString: entry.pw_name), user: entry.pw_uid, group: entry.pw_gid,
+            home: String(cString: entry.pw_dir), shell: String(cString: entry.pw_shell)
+        )
     }
 
     // MARK: Private

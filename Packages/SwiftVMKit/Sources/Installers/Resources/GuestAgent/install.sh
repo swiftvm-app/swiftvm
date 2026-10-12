@@ -3,8 +3,9 @@
 #
 # They are one small program, the guest agent, that lets the SwiftVM app on the Mac see this
 # system's version and addresses, set its clock after the virtual machine was suspended, mount
-# the folders shared with it and shut it down. It talks to the app over the virtual machine's
-# socket device, so none of that needs a network.
+# the folders shared with it and shut it down. For the swiftvm command on the Mac it runs
+# commands here, shows the screen, and uses the mouse and the keyboard. It talks to the app over
+# the virtual machine's socket device, so none of that needs a network.
 #
 # Run it as root:    sudo sh install.sh
 # To remove it all:  sudo sh install.sh --remove

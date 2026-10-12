@@ -27,6 +27,13 @@ public final class GuestAgent {
     public var sharesClipboard: Bool { hello?.offers(GuestFeature.clipboard) == true }
     /// Whether the connected agent can give its system a time zone.
     public var setsTimeZone: Bool { hello?.offers(GuestFeature.timeZone) == true }
+    /// What the connected agent offers beyond what every agent does, by the names in ``GuestFeature``.
+    public var features: [String] { hello?.features ?? [] }
+
+    /// Whether the connected agent offers `feature`.
+    public func offers(_ feature: String) -> Bool {
+        hello?.offers(feature) == true
+    }
 
     /// Called when an agent has connected and said who it is.
     @ObservationIgnored public var onConnect: (@MainActor (AgentHello) -> Void)?

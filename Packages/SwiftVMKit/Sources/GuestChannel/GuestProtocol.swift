@@ -13,11 +13,14 @@ public enum GuestProtocol {
     /// The port in the guest that the agent listens on. It is below 1024, where only root may listen, so
     /// that the app knows who answers.
     public static let agentPort: UInt32 = 717
+    /// The port in the guest that the agent takes ``GuestJob``s on, each on a connection of its own.
+    /// Below 1024 like the agent's own, for the same reason.
+    public static let jobPort: UInt32 = 718
     /// No message is longer than this, its line break included.
     public static let maximumLineLength = 256 * 1024
     /// The version of the agent for macOS guests that is built from these sources, as it reports it
     /// when it connects. The agent for Linux keeps its own, in its script.
-    public static let macAgentVersion = "1.0"
+    public static let macAgentVersion = "1.1"
 
     /// The time on this Mac, in nanoseconds since 1970, as the agent takes it for setting the guest's clock.
     public static func currentTimeInNanoseconds() -> Int64 {
@@ -36,6 +39,18 @@ public enum GuestFeature {
     public static let clipboard = "clipboard"
     /// Answers ``HostMessage/setTimeZone(id:identifier:)``.
     public static let timeZone = "time-zone"
+    /// Takes ``GuestJob``s on ``GuestProtocol/jobPort``, and runs commands: ``GuestJob/exec(_:)``.
+    public static let exec = "exec"
+    /// Shows what is on the screen: ``GuestJob/screenshot``.
+    public static let screen = "screen"
+    /// Uses the mouse and the keyboard: ``GuestJob/pointer(_:)`` and ``GuestJob/keys(_:)``.
+    public static let input = "input"
+    /// Reads the screen as a tree of its parts and acts on them: ``GuestJob/tree(_:)`` and
+    /// ``GuestJob/element(_:)``.
+    public static let accessibility = "accessibility"
+
+    /// The features that are kinds of ``GuestJob``.
+    public static let jobs = [exec, screen, input, accessibility]
 }
 
 /// What an agent says about itself and its system when a connection opens.

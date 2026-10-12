@@ -28,6 +28,9 @@ case $ID in
     debian) packages="kde-plasma-desktop sddm network-manager-config-connectivity-debian firefox-esr spice-vdagent" ;;
     *) echo "This script is written for Ubuntu and Debian, not for $ID." >&2; exit 1 ;;
 esac
+# What the guest tools read the screen with, part by part, for whoever drives this machine from
+# the Mac (swiftvm ui): the desktop's own accessibility, and what Python takes to ask it.
+packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0"
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
     packages="$packages linux-image-generic"

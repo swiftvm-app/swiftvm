@@ -23,6 +23,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     public var networkInterfaces: [NetworkInterfaceConfiguration]
     public var sharedFolders: [SharedFolder]
     public var clipboard: ClipboardConfiguration
+    public var automation: AutomationConfiguration
     public var audio: AudioConfiguration
     public var boot: BootConfiguration
     public var usb: USBConfiguration
@@ -44,6 +45,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         networkInterfaces: [NetworkInterfaceConfiguration] = [],
         sharedFolders: [SharedFolder] = [],
         clipboard: ClipboardConfiguration = .init(),
+        automation: AutomationConfiguration = .init(),
         audio: AudioConfiguration = .init(),
         boot: BootConfiguration = .init(),
         usb: USBConfiguration = .init(),
@@ -65,6 +67,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         self.networkInterfaces = networkInterfaces
         self.sharedFolders = sharedFolders
         self.clipboard = clipboard
+        self.automation = automation
         self.audio = audio
         self.boot = boot
         self.usb = usb
@@ -91,6 +94,7 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         networkInterfaces = try c.decode(.networkInterfaces, default: [])
         sharedFolders = try c.decode(.sharedFolders, default: [])
         clipboard = try c.decode(.clipboard, default: .init())
+        automation = try c.decode(.automation, default: .init())
         audio = try c.decode(.audio, default: .init())
         boot = try c.decode(.boot, default: .init())
         usb = try c.decode(.usb, default: .init())
@@ -382,6 +386,17 @@ public struct ClipboardConfiguration: Codable, Sendable, Hashable {
 
     public init(isShared: Bool = true) {
         self.isShared = isShared
+    }
+}
+
+/// Whether the guest can be driven from this Mac's command line, through its agent: commands run in it,
+/// its screen looked at, its mouse and keyboard used. Something to turn off for a machine that nothing
+/// but a person is to touch.
+public struct AutomationConfiguration: Codable, Sendable, Hashable {
+    public var isAllowed: Bool
+
+    public init(isAllowed: Bool = true) {
+        self.isAllowed = isAllowed
     }
 }
 

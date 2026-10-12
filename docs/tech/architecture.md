@@ -11,6 +11,9 @@ The programs, the modules, and how they work together.
 | `swiftvm-agent` | macOS guests | The guest agent for macOS. Built with the app and carried into guests by an installer |
 | `swiftvm-agent.py` | Linux guests | The guest agent for Linux: one Python script and its systemd units |
 
+Both agents also do [jobs](#jobs-in-the-guest) for `swiftvm`: commands, the
+screen, the mouse, and the keyboard.
+
 ## Modules
 
 The app is the package at the repository's root. Everything that isn't
@@ -23,6 +26,8 @@ flowchart TB
     APP --> SSH["SSHIntegration"]
     APP --> CONTROL["VMControl"]
     CLI["swiftvm"] --> CONTROL
+    CLI --> CHANNEL
+    CONTROL --> CHANNEL
     VZ --> NETWORKING["VMNetworking"]
     VZ --> DISK["DiskTools"]
     INSTALLERS --> DISK
@@ -46,7 +51,7 @@ flowchart TB
 | `DiskTools` | Creates, grows, and converts disk images, and builds small ISO images |
 | `Installers` | The distribution catalog, setup scripts, downloads, first-boot setup for Linux, and the guest agent installers |
 | `VMControl` | The messages between the app and `swiftvm`, and which copy of the app a program belongs to |
-| `GuestChannel` | The messages between the app and a guest agent |
+| `GuestChannel` | The messages between the app and a guest agent, and the jobs an agent does for `swiftvm` |
 | `GuestAgentMac` | The guest agent for macOS |
 
 `VMCore` defines a backend protocol, and `VZEngine` is its only
@@ -98,7 +103,8 @@ sequenceDiagram
 - `swiftvm` sends one JSON request per line and waits for the answer, however
   long the operation takes.
 - The console and socket-device commands turn the connection into a byte
-  stream after the app agrees.
+  stream after the app agrees. So do the [jobs](#jobs-in-the-guest) that
+  `swiftvm` has a guest's agent do.
 - The tool finds its app by where it is: it follows its own path up to the app
   it is inside of, and uses that app's data folder.
 
@@ -113,9 +119,56 @@ sequenceDiagram
   answers. The agent only accepts connections from the host.
 - The macOS agent runs as two halves. A root daemon talks to the app and
   handles power, clock, and time zone. A second half in the login session
-  owns the clipboard and reaches the daemon over a Unix socket.
+  owns the clipboard, the screen, the mouse, and the keyboard, and reaches
+  the daemon over a Unix socket.
 - The Linux agent also passes on how the machine's
   [setup script](#setup-scripts) is doing, unasked, whenever that changes.
+
+## Jobs in the guest
+
+`swiftvm exec`, `cp`, `screenshot`, and `ui` are jobs that a guest's agent
+does. See [Automation](../features/automation.md).
+
+```mermaid
+sequenceDiagram
+    participant Tool as swiftvm
+    participant App as App
+    participant Agent as Guest agent
+    Tool->>App: job, over the control socket
+    Note over App: Is automation on? Does the agent do this?
+    App->>Agent: Connect to port 718. The job, one line
+    Agent-->>App: Yes, or no and why
+    App-->>Tool: The same
+    Note over App: From here the app only passes bytes on
+    Tool->>Agent: Frames: a command's input
+    Agent->>Tool: Frames: output, then how the job ended
+```
+
+- A job has a connection of its own, to a second port of the agent, 718. The
+  line on port 717 stays what it was: short messages, one at a time. A job
+  carries megabytes, lasts as long as a command runs, and many run at once.
+- The app decides whether a job is given: the machine's switch has to be on,
+  and the agent has to name the feature in its hello. It sends the job, reads
+  the agent's answer, and from then on is a relay. `swiftvm` and the agent
+  speak to each other in frames: a kind, a length, and that many bytes.
+- Hanging up calls a job off. The agent ends the command it was running. An
+  agent that doesn't hang up in turn is hung up on by the app, a little later.
+- The agent ends a job by saying that it sends no more and waiting for the
+  other side to hang up. See [Constraints](./constraints.md#networking).
+- `swiftvm cp` is `exec` twice over: `tar` packs on one side and unpacks on
+  the other. What a guest sends is unpacked in a folder of its own first.
+
+| Job | Linux agent | macOS agent |
+| --- | --- | --- |
+| Command | A process of the account it runs as, with the environment of that user's desktop session if there is one | The agent's own program, started as `run-as`: it becomes the account, then the command. Inside the user's session if they are logged in |
+| Screenshot | What the display shows, read from the kernel's mode setting | ScreenCaptureKit, in the session's half |
+| Mouse and keyboard | Input devices of its own, made through `uinput` | Core Graphics events, in the session's half |
+| Tree | AT-SPI, asked by the same script run as the user at the screen | The accessibility API, in the session's half |
+
+In a macOS guest, the screen, mouse, and keyboard belong to whoever is logged
+in. The root daemon takes the job, tells the session's half its name, and the
+session's half connects for it on a second Unix socket. The daemon then passes
+bytes on between the two connections.
 
 ## Networking
 

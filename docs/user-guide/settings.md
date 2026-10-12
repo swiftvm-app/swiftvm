@@ -39,6 +39,7 @@ Choose **Settings…** in a machine's menu, or the gear in its window's toolbar.
 | Storage | The disk and its size, and attached disc and disk images. See [Disks and images](../features/disks.md) |
 | Shared Folders | Folders of your Mac the guest can use. See [Shared folders and clipboard](../features/sharing.md) |
 | Clipboard | **Share Clipboard** |
+| Automation | **Allow Automation**: whether `swiftvm` may run commands in the guest, see its screen, and use its mouse and keyboard. See [Automation](../features/automation.md) |
 | Network and SSH | Cable, addresses, and the SSH user. See [Networking](../features/networking.md) |
 | Port Forwarding | Ports of the guest reachable as `localhost` on your Mac |
 | USB Devices | Devices the machine takes whenever they are plugged in. See [USB devices](../features/usb-devices.md) |

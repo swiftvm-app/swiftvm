@@ -22,6 +22,7 @@ in git history as
 | D11 | The app lives in the menu bar | No main window |
 | D12 | Swift packages and scripts, no Xcode project | `swift build` is the build |
 | D13 | A desktop is installed by a script in the guest | One file, the same kind for ours and for users' |
+| D14 | `swiftvm` works in a guest through its agent | Commands, screen, and input without a network or private API |
 
 ## D1. The Virtualization framework runs macOS and Linux guests
 
@@ -90,8 +91,9 @@ the static Linux SDK.
 ## D9. The macOS agent is one program in two halves
 
 Shutting down and setting the clock take root. The clipboard belongs to the
-session of whoever is logged in. So the agent runs as a root daemon and as a
-second half in the login session, and only the daemon talks to the Mac.
+session of whoever is logged in, and so do the screen, the mouse, and the
+keyboard. So the agent runs as a root daemon and as a second half in the login
+session, and only the daemon talks to the Mac.
 
 Turned down: letting the session half listen on the socket device itself. Its
 port would be above 1024, where any program in the guest could sit and be
@@ -145,3 +147,35 @@ distribution. Running the script as a step of first-boot setup, which isn't
 run again after an interruption. A manifest next to the script, which is two
 files to keep in step. Ready-made desktop images, which someone would have to
 build and host for every release.
+
+## D14. `swiftvm` works in a guest through its agent
+
+Scripts and AI agents need to run commands in a guest, see its screen, and use
+its mouse and keyboard. The agent is already there, runs as root, and has a
+line to the Mac that needs no network (D7). So it does these as jobs, each on
+a connection of its own to a second port, with the app as the gate and then
+the relay.
+
+- **The screen and the input are the guest's own.** The Virtualization
+  framework has no public way to read a guest's display or to press its keys.
+  A Linux agent reads the display from the kernel's mode setting and makes
+  input devices through `uinput`: no desktop is asked, nothing is installed,
+  and it works at the login screen. Measured on Ubuntu 26.04 with GNOME on
+  Wayland: 5 ms to read a 1920 by 1200 screen. A macOS agent uses the system's
+  own interfaces, which the person at the screen has to allow once.
+- **A job has its own connection.** The agent's line carries one short
+  message at a time. A screenshot is megabytes and a command runs for hours.
+- **Copying is `tar` through a command.** Both ends have `tar`, and it knows
+  folders, links, and permissions. The agent needs no code for it.
+- **One switch per machine**, on by default. Whoever can run `swiftvm` can
+  already reach a machine's disk and, in guests SwiftVM set up, sign in as an
+  administrator. The switch is for a machine that nothing but a person is to
+  touch, not a wall.
+
+Turned down: the framework's private interfaces for the display and the
+keyboard, for the reason Windows guests get another engine (D2). SSH, which
+needs a network, a key, and for root a password in macOS guests. Asking each
+desktop for a screenshot, which on Wayland is a different request for every
+desktop, most of them behind a question on the screen. A separate program for
+the screen and the keyboard, which would be a second thing to install and to
+keep in step.

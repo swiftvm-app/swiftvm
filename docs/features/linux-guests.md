@@ -116,3 +116,5 @@ there.
   the [desktops](#desktops-and-setup-scripts) SwiftVM installs bring.
 - SSH [without a network](ssh.md#without-a-network) works out of the box on
   Ubuntu 26.04 and Debian 13. Ubuntu 24.04 needs the guest tools for it.
+- `swiftvm` can [run commands in the guest, see its screen, and use its mouse
+  and keyboard](automation.md), from the login screen on.

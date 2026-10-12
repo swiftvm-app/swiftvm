@@ -1,4 +1,5 @@
 import Foundation
+import GuestChannel
 import Testing
 @testable import VMControl
 
@@ -54,8 +55,56 @@ import Testing
         #expect(decoded.machines.first?.details == nil)
     }
 
-    @Test func theConsoleAndSocketRequestsOpenAStream() {
-        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console, .vsock])
+    @Test func theConsoleSocketAndJobRequestsOpenAStream() {
+        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console, .vsock, .job])
+    }
+
+    @Test func aJobTravelsInItsRequest() throws {
+        let job = GuestJob.exec(.init(arguments: ["make", "test"], user: "root", directory: "/src", environment: ["CI": "1"]))
+        let request = ControlRequest(command: .job, machine: "web", job: job)
+        let data = try JSONEncoder().encode(request)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""command":"job""#))
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: data) == request)
+        let click = ControlRequest(command: .job, machine: "web", job: .pointer(.init(action: .click, x: 3, y: 4, count: 2)))
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(click)) == click)
+
+        let wait = ControlRequest(command: .wait, machine: "web", timeout: 30)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(wait)) == wait)
+        let off = ControlRequest(command: .automation, machine: "web", isOn: false)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(off)) == off)
+        // An app says whether a machine can be given jobs; one from before there were any says nothing.
+        var details = MachineDetails(
+            location: "/x", macAddress: nil, drives: [], sharedFolders: [], snapshotCount: 0,
+            automation: .init(isAllowed: true, features: ["exec", "screen"])
+        )
+        #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)) == details)
+        details.automation = nil
+        #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)).automation == nil)
+    }
+
+    @Test func aTimeToWaitIsOneTheAppCanCountTo() {
+        // A tool can send any number. None of them may be the app's undoing: it runs the machines.
+        func wait(_ timeout: Double?) -> Duration {
+            ControlRequest(command: .wait, machine: "web", timeout: timeout).waitTimeout
+        }
+        #expect(wait(30) == .seconds(30))
+        #expect(wait(.infinity) == .seconds(300))
+        #expect(wait(.nan) == .seconds(300))
+        #expect(wait(1e21) == .seconds(86_400))
+        #expect(wait(-5) == .zero)
+    }
+
+    @Test func aColonNamesAPlaceInAGuest() {
+        #expect(CopyEndpoint("web:/etc/hosts") == .guest(machine: "web", path: "/etc/hosts"))
+        #expect(CopyEndpoint("Web Server:notes.txt") == .guest(machine: "Web Server", path: "notes.txt"))
+        #expect(CopyEndpoint("web:") == .guest(machine: "web", path: ""))
+        // Only the first colon counts: what follows is the path, colons and all.
+        #expect(CopyEndpoint("web:/tmp/a:b") == .guest(machine: "web", path: "/tmp/a:b"))
+        #expect(CopyEndpoint("notes.txt") == .local("notes.txt"))
+        #expect(CopyEndpoint("/Users/me/notes.txt") == .local("/Users/me/notes.txt"))
+        // A slash before the colon makes it a file here whose name has a colon in it.
+        #expect(CopyEndpoint("./notes:old.txt") == .local("./notes:old.txt"))
+        #expect(CopyEndpoint(":odd") == .local(":odd"))
     }
 
     @Test func guestToolsTravelWithAMachinesDetails() throws {

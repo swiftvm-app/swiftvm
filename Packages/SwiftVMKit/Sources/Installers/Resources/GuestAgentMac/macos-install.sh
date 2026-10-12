@@ -3,8 +3,10 @@
 #
 # They are one small program, the guest agent, that lets the SwiftVM app on the Mac that runs this
 # virtual machine see this system's version and addresses, share the clipboard with it, set its
-# clock and time zone, and shut it down without a question on its screen. It talks to the app over
-# the virtual machine's socket device, so none of that needs a network.
+# clock and time zone, and shut it down without a question on its screen. For the swiftvm command
+# on that Mac it runs commands here, shows the screen, and uses the mouse and the keyboard, once
+# macOS has been told to let it. It talks to the app over the virtual machine's socket device, so
+# none of that needs a network.
 #
 # Run it as root:    sudo sh install.sh
 # To remove it all:  sudo sh /usr/local/lib/swiftvm/install.sh --remove
@@ -29,11 +31,11 @@ fail() {
 [ "$(uname -s)" = Darwin ] || fail "these are the guest tools for macOS, and this system isn't macOS"
 [ "$(id -u)" -eq 0 ] || fail "this has to run as root, for example: sudo sh $0"
 
-# The user at the screen, in whose session the clipboard is shared. Root while nobody is logged in.
+# The user at the screen, in whose session the agent's other half runs. Root while nobody is logged in.
 console_user=$(stat -f %u /dev/console 2>/dev/null || echo 0)
 
-# Everyone with a session in which the clipboard's half runs or is to run: the user at the screen, and
-# those who switched to another user and left theirs open.
+# Everyone with a session in which that half runs or is to run: the user at the screen, and those
+# who switched to another user and left theirs open.
 session_users() {
     {
         echo "$console_user"
@@ -60,7 +62,7 @@ stop_agents() {
 
 if [ "${1:-}" = "--remove" ]; then
     stop_agents
-    rm -f "$daemon" "$session" /var/run/swiftvm-agent.sock
+    rm -f "$daemon" "$session" /var/run/swiftvm-agent.sock /var/run/swiftvm-agent-jobs.sock
     rm -rf "$directory"
     echo "The SwiftVM guest tools are removed."
     exit 0
@@ -112,7 +114,8 @@ cat > "$daemon" <<'SWIFTVM_END_OF_FILE'
 </plist>
 SWIFTVM_END_OF_FILE
 
-# The half that runs in the session of whoever logs in at the screen, for the clipboard.
+# The half that runs in the session of whoever logs in at the screen: for the clipboard, and for
+# the screen, the mouse and the keyboard.
 cat > "$session" <<'SWIFTVM_END_OF_FILE'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

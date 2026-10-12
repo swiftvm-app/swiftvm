@@ -9,7 +9,7 @@ Supported platforms, and lessons that shape the code.
 | The app and `swiftvm` | macOS 27 and later, on Apple silicon |
 | macOS guests | Unattended setup and guest tools need macOS 27 or later in the guest |
 | Linux guests | ARM64. Quick Create: Ubuntu 26.04, Ubuntu 24.04, Debian 13 |
-| Linux guest tools | systemd and Python 3 |
+| Linux guest tools | systemd and Python 3. [Automation](../features/automation.md) takes Python 3.9 or newer, and the screen as a tree also `python3-gi` and `gir1.2-atspi-2.0` |
 | Linux desktops | GNOME, KDE Plasma, Xfce, and Cinnamon, on each Quick Create system |
 
 Not yet supported: Windows guests, and Intel Macs.
@@ -38,6 +38,10 @@ Not yet supported: Windows guests, and Intel Macs.
   agent, or from whichever candidate answers on the SSH port.
 - A connection that has finished can report failure before its last bytes are
   read. The port relay reads to the end before it trusts the state.
+- A side that closes a connection while the other is still sending can take
+  down with it what it had sent itself and nobody had read yet. An agent ends
+  a [job](./architecture.md#jobs-in-the-guest) by closing its own direction
+  only, and waits for the Mac to hang up.
 
 ## The Virtualization framework
 
@@ -60,6 +64,29 @@ Not yet supported: Windows guests, and Intel Macs.
 
 ## Guests
 
+- The framework has no public way to read a guest's display or to press its
+  keys. Both are done by the agent, inside the guest.
+- macOS asks whoever sits at the screen before a program may record it or use
+  the mouse and keyboard, and nothing can answer for them. A program that was
+  running when it was allowed may still not be let record, so the agent's half
+  in the session ends itself when it is refused, and launchd starts it anew.
+- A daemon's child that becomes a user can run as them, but not open a window:
+  it is outside their session. `launchctl asuser` puts it inside.
+- A Wayland desktop doesn't tell an application where on the screen its
+  windows are. What an application's accessibility says about the places of
+  its parts is zero, or counted from its own window. Only the process that
+  draws the screen knows, so only its parts are passed on with places.
+- What a display shows can be read as root from the kernel's mode setting,
+  whichever desktop put it there. The mouse pointer isn't in it: it is drawn
+  on a layer of its own.
+- A display that a desktop has turned off shows nothing, and has no size to
+  measure either. The pointer, which is what wakes it, goes by the size the
+  screen last had.
+- An input device made through `uinput` types key codes, not characters. Which
+  character a key gives is the guest's keyboard layout's business.
+- A command started by a systemd service is ended with the service. The agent
+  for Linux only has itself ended (`KillMode=process`), so that what was
+  started for someone stays when the agent is replaced by a newer one.
 - Debian's `genericcloud` image has no drivers for the display or USB storage,
   and can't be resumed. The catalog uses the `generic` image.
 - Ubuntu turns kernel messages off on every console once it is up; only errors

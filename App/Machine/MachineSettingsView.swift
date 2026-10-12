@@ -23,6 +23,9 @@ struct MachineSettingsView: View {
                 storageSection
                 sharingSection
                 clipboardSection
+                if configuration.canHaveGuestAgent {
+                    automationSection
+                }
                 networkSection
                 if !configuration.networkInterfaces.isEmpty {
                     portForwardingSection
@@ -147,6 +150,16 @@ struct MachineSettingsView: View {
             Text(configuration.os.family == .macOS
                 ? "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs the guest tools in the virtual machine."
                 : "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs spice-vdagent in the guest, which most desktop systems bring along.")
+        }
+    }
+
+    private var automationSection: some View {
+        Section {
+            Toggle("Allow Automation", isOn: binding(\.automation.isAllowed))
+        } header: {
+            Text("Automation")
+        } footer: {
+            Text("The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
         }
     }
 
