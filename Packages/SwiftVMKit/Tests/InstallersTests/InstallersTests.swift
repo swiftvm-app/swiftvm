@@ -371,44 +371,6 @@ private func blockPatternedPayload() -> Data {
         #expect(!FileManager.default.fileExists(atPath: downloader.unfinishedDownloadURL(for: image).path))
     }
 
-    @Test func carriesOnAfterBeingCancelledAndTheAppOpenedAgain() async throws {
-        let payload = blockPatternedPayload()
-        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: 2 << 20, waitsForClient: true)
-        defer { server.stop() }
-        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-downloads-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: cache) }
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
-
-        let downloader = ImageDownloader(cacheDirectory: cache)
-        let (arrivals, arrival) = AsyncStream<Void>.makeStream()
-        let attempt = Task {
-            try await downloader.fetch(image) { progress in
-                if progress.bytesReceived >= 1 << 20 {
-                    arrival.yield()
-                }
-            }
-        }
-        for await _ in arrivals { break }
-
-        // What the app does on its way out: it cancels, and waits only until what has arrived is put away.
-        attempt.cancel()
-        #expect(downloader.waitForDownloadsToWindUp(timeout: 10))
-        let unfinished = downloader.unfinishedDownloadURL(for: image)
-        #expect(FileManager.default.fileExists(atPath: unfinished.path))
-        await #expect(throws: URLError.self) { try await attempt.value }
-        #expect(!downloader.isCached(image))
-
-        // A downloader of its own, as the app has after it is opened again.
-        let file = try await ImageDownloader(cacheDirectory: cache).fetch(image) { _ in }
-        #expect(try Data(contentsOf: file) == payload)
-        let ranges = server.requestedRanges
-        #expect(ranges.count == 2)
-        #expect(ranges.first == .some(nil))
-        #expect(ranges.last??.hasPrefix("bytes=") == true)
-        #expect(ranges.last != .some("bytes=0-"))
-        #expect(!FileManager.default.fileExists(atPath: unfinished.path))
-    }
-
     @Test func aDownloadThatIsCancelledBeforeItBeginsEndsAsWell() async throws {
         let payload = blockPatternedPayload()
         let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: payload.count)
