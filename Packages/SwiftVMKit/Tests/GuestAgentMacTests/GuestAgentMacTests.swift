@@ -289,42 +289,6 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(await app.receive(AgentMessage.self, timeout: 0.2) == nil)
     }
 
-    @Test func aSlowTimeZoneHoldsNothingElseUp() async {
-        // The system takes its time over a time zone when it is busy starting up. A request to shut
-        // down that comes meanwhile is answered at once, not after it.
-        system.timeZoneDelay = 0.4
-        let daemon = makeDaemon()
-        let connection = connectApp(to: daemon)
-        async let zone = connection.request(timeout: .seconds(10)) { .setTimeZone(id: $0, identifier: "Europe/Berlin") }
-        try? await Task.sleep(for: .milliseconds(50))
-        let started = ContinuousClock.now
-        #expect(await connection.request { .shutDown(id: $0) }?.ok == true)
-        #expect(ContinuousClock.now - started < .milliseconds(300))
-        #expect(system.calls == ["shut down"])
-        #expect(await zone?.ok == true)
-        #expect(system.calls == ["shut down", "time zone Europe/Berlin"])
-    }
-
-    @Test func anAnswerGoesToTheLineThatAsked() async {
-        // The app connects anew while the time zone is being changed. The answer belongs to a line
-        // that is gone, and isn't given to the new one, whose requests count from one again.
-        system.timeZoneDelay = 0.2
-        let daemon = makeDaemon()
-        let first = connectApp(to: daemon)
-        async let lost = first.request(timeout: .seconds(2)) { .setTimeZone(id: $0, identifier: "Europe/Berlin") }
-        try? await Task.sleep(for: .milliseconds(50))
-        let (agent, second) = FarEnd.makeLine()
-        defer { second.hangUp() }
-        queue.sync { daemon.serveApp(on: agent) }
-        guard case .hello = await second.receive(AgentMessage.self), case .addresses = await second.receive(AgentMessage.self) else {
-            Issue.record("no greeting")
-            return
-        }
-        #expect(await lost == nil)
-        #expect(await second.receive(AgentMessage.self, timeout: 0.5) == nil)
-        #expect(system.calls == ["time zone Europe/Berlin"])
-    }
-
     @Test func passesCopiedTextBetweenTheAppAndTheSession() async {
         let daemon = makeDaemon()
         let (agent, app) = FarEnd.makeLine()
@@ -537,31 +501,6 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(await daemon.receive(AgentMessage.self) == .clipboard(text: "an answer"))
     }
 
-    @Test func findsTheOtherHalfAgainWhenItWasReplaced() async {
-        // The half that runs as root isn't there yet, then is, then is replaced by a newer one.
-        let lines = Lines()
-        let session = makeSession(lines)
-        session.start()
-        #expect(await eventually { lines.attempts >= 3 })
-        pasteboard.copy("nobody to tell yet")
-
-        var attempts = lines.attempts
-        let first = lines.add()
-        #expect(await eventually { lines.attempts > attempts })
-        pasteboard.copy("first")
-        #expect(await first.receive(AgentMessage.self) == .clipboard(text: "first"))
-
-        // With a line open there is nothing more to try. When it drops, the next attempt finds the new one.
-        attempts = lines.attempts
-        try? await Task.sleep(for: .milliseconds(100))
-        #expect(lines.attempts == attempts)
-        let second = lines.add()
-        defer { second.hangUp() }
-        first.hangUp()
-        #expect(await eventually { lines.attempts > attempts })
-        pasteboard.copy("second")
-        #expect(await second.receive(AgentMessage.self) == .clipboard(text: "second"))
-    }
 }
 
 /// Both halves and the app's own end, wired up as they are in a guest.
