@@ -33,7 +33,8 @@ SwiftVM lives in the menu bar. There is no main window: click its item to see
 your virtual machines, start and stop them, and reach everything else. Each
 machine's display opens in a window of its own.
 
-The first time you open SwiftVM, it opens **New Virtual Machine** for you.
+Opening SwiftVM puts its item in the menu bar and nothing else: no window
+comes up until you ask for one.
 
 ## Your first virtual machine
 
