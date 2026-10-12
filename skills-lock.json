@@ -1,6 +1,13 @@
 {
   "version": 1,
   "skills": {
+    "code-review": {
+      "source": "saeedvaziry/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/code-review/SKILL.md",
+      "computedHash": "7f25528a51b4dd594bf0b42100e39ab3135d2652e3f09355cfe004114afe16e6"
+    },
     "implement": {
       "source": "saeedvaziry/skills",
       "ref": "main",
