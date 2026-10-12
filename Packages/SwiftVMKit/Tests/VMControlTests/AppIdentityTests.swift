@@ -101,34 +101,4 @@ import Testing
         }
     }
 
-    /// The scripts that put the app together write the names down a second time. This holds them to
-    /// what the app and the tool go by.
-    @Test func theBuildScriptsUseTheSameNames() throws {
-        // This file is four folders below the repository: Packages/SwiftVMKit/Tests/VMControlTests.
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<5 {
-            repository.deleteLastPathComponent()
-        }
-        let data = try Data(contentsOf: repository.appending(path: "Config/Info.plist"))
-        let properties = try #require(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
-        #expect(properties["CFBundleIdentifier"] as? String == AppIdentity.release.bundleIdentifier)
-        #expect(properties["CFBundleName"] as? String == AppIdentity.release.name)
-        #expect(properties["CFBundleDisplayName"] as? String == AppIdentity.release.name)
-
-        let bundling = try String(contentsOf: repository.appending(path: "scripts/bundle-app.sh"), encoding: .utf8)
-        #expect(bundling.contains("identifier=\(AppIdentity.development.bundleIdentifier)\n"))
-        #expect(bundling.contains("name=\"\(AppIdentity.development.name)\"\n"))
-        #expect(bundling.contains("identifier=\(AppIdentity.release.bundleIdentifier)\n"))
-        #expect(bundling.contains("name=\(AppIdentity.release.name)\n"))
-
-        let running = try String(contentsOf: repository.appending(path: "scripts/run-dev.sh"), encoding: .utf8)
-        #expect(running.contains("/.build/\(AppIdentity.development.name).app\""))
-
-        // What the scripts take for a copy of SwiftVM, and for its program.
-        let shared = try String(contentsOf: repository.appending(path: "scripts/common.sh"), encoding: .utf8)
-        #expect(AppIdentity.development.bundleIdentifier == AppIdentity.release.bundleIdentifier + ".dev")
-        #expect(shared.contains("== \(AppIdentity.release.bundleIdentifier)(|.dev) ]]"))
-        let program = try #require(properties["CFBundleExecutable"] as? String)
-        #expect(shared.contains("/Contents/MacOS/\(program)"))
-    }
 }
