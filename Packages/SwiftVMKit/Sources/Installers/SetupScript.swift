@@ -38,7 +38,7 @@ public struct SetupScript: Sendable, Hashable, Identifiable {
             case .badFileName(let name):
                 name.isEmpty
                     ? "Give the script a name. It is saved as a file with that name."
-                    : "“\(name)” can't be the name of the script's file. Keep it under \(SetupScript.maximumNameLength) characters, leave out / and :, and don't start it with a dot or end it with ~."
+                    : "“\(name)” can't be the name of the script's file. Keep it under \(SetupScript.maximumNameLength) characters, leave out / and :, and don't start it with a dot or #, or end it with ~."
             case .nameTaken(let name):
                 "Your folder has a script called “\(name)” already."
             case .nameOfTemplate(let name):
@@ -387,7 +387,7 @@ public enum SetupScriptCatalog {
     public static func save(source: String, fileName: String, in directory: URL = userDirectory) throws -> SetupScript {
         var name = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
         // A name is one file in the folder: nothing that leads out of it, is hidden in it, or can't be shown.
-        guard !name.isEmpty, !name.hasPrefix("."), !name.hasSuffix("~"), !name.contains(where: { $0 == "/" || $0 == ":" }),
+        guard !name.isEmpty, !name.hasPrefix("."), !name.hasPrefix("#"), !name.hasSuffix("~"), !name.contains(where: { $0 == "/" || $0 == ":" }),
               name == shown(name), name.count <= SetupScript.maximumNameLength
         else {
             throw SetupScript.ScriptError.badFileName(name)

@@ -284,7 +284,7 @@ import VMCore
         }
         #expect(try String(contentsOf: folder.appending(path: "My Tools.sh"), encoding: .utf8) == SetupScriptCatalog.newScriptTemplate)
         // A name is one file in the folder, and nothing that leads out of it or hides in it.
-        for name in ["", "  ", "../escape", "a/b", ".hidden", "back~", "a:b", "bell\u{7}", String(repeating: "x", count: 61)] {
+        for name in ["", "  ", "../escape", "a/b", ".hidden", "#tools", "#tools.sh", " #tools ", "back~", "a:b", "bell\u{7}", String(repeating: "x", count: 61)] {
             #expect(throws: SetupScript.ScriptError.badFileName(name.trimmingCharacters(in: .whitespaces))) {
                 try SetupScriptCatalog.save(source: "echo hi\n", fileName: name, in: folder)
             }
