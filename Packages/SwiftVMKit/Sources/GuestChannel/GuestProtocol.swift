@@ -142,6 +142,75 @@ public struct GuestInterface: Codable, Sendable, Hashable {
     }
 }
 
+/// Text that a guest or a script says of itself, made fit to show on this Mac.
+public enum ShownText {
+    /// `text` as one line, no longer than `limit`: without line breaks and control characters, and
+    /// without the marks that turn the direction of the text around them, which could make a message
+    /// read as something it doesn't say.
+    public static func line(_ text: String, limit: Int) -> String {
+        let breaks: Set<Unicode.GeneralCategory> = [.control, .lineSeparator, .paragraphSeparator]
+        let kept = text.unicodeScalars.filter { scalar in
+            !breaks.contains(scalar.properties.generalCategory) && !directionMarks.contains(scalar.value)
+        }
+        return String(String(String.UnicodeScalarView(kept)).trimmingCharacters(in: .whitespaces).prefix(limit))
+    }
+
+    private static let directionMarks: Set<UInt32> = Set([0x061C, 0x200E, 0x200F] + Array(0x202A...0x202E) + Array(0x2066...0x2069))
+}
+
+/// How a guest's setup script is doing: the one that was picked when the machine was created, a desktop
+/// for example. The guest keeps a note of it, and its agent passes that on.
+public struct GuestSetupStatus: Codable, Sendable, Hashable {
+    public enum State: String, Codable, Sendable, Hashable {
+        /// The script runs once the system's own first-boot setup is over.
+        case pending
+        case running
+        case finished
+        /// The script stopped with an error, or never came to its end.
+        case failed
+    }
+
+    public var state: State
+    /// What the script sets up, as it calls itself.
+    public var name: String?
+    /// The step the script says it is at. For a script that failed, the one it failed at.
+    public var step: String?
+
+    /// The longest a name or a step is kept at. A guest can say anything; what is shown of it is short.
+    public static let maximumTextLength = 120
+
+    public init(state: State, name: String? = nil, step: String? = nil) {
+        self.state = state
+        self.name = name.flatMap(Self.shown)
+        self.step = step.flatMap(Self.shown)
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            state: try container.decode(State.self, forKey: .state),
+            name: try container.decodeIfPresent(String.self, forKey: .name),
+            step: try container.decodeIfPresent(String.self, forKey: .step)
+        )
+    }
+
+    /// Whether the script is still to run or running.
+    public var isUnderWay: Bool {
+        state == .pending || state == .running
+    }
+
+    /// What a setup that is under way is called: `Setting up KDE Plasma`.
+    public var title: String {
+        name.map { "Setting up \($0)" } ?? "Setting up"
+    }
+
+    /// `text` as one short line, or `nil` if nothing is left of it.
+    private static func shown(_ text: String) -> String? {
+        let line = ShownText.line(text, limit: maximumTextLength)
+        return line.isEmpty ? nil : line
+    }
+}
+
 /// The agent's answer to a request.
 public struct GuestRequestResult: Codable, Sendable, Hashable {
     /// The `id` of the request this answers.
@@ -170,6 +239,9 @@ public enum AgentMessage: Sendable, Hashable {
     /// the agent asks for what is on the Mac's. Nothing is kept in the guest for them in the meantime,
     /// so that what they get is what is on the Mac now, or nothing if it isn't shared any more.
     case clipboardRequest
+    /// How the guest's setup script is doing: once after `hello` in a guest that has one, and again
+    /// whenever that changes.
+    case setup(GuestSetupStatus)
     /// A kind of message this build doesn't know. It is ignored.
     case unknown(type: String)
 }
@@ -215,6 +287,9 @@ extension AgentMessage: Codable {
             self = .clipboard(text: try container.decode(String.self, forKey: .text))
         case "clipboard-request":
             self = .clipboardRequest
+        case "setup":
+            // A state that a later agent may know and this build doesn't is no news to it.
+            self = (try? GuestSetupStatus(from: decoder)).map(AgentMessage.setup) ?? .unknown(type: type)
         default:
             self = .unknown(type: type)
         }
@@ -237,6 +312,9 @@ extension AgentMessage: Codable {
             try container.encode(text, forKey: .text)
         case .clipboardRequest:
             try container.encode("clipboard-request", forKey: .type)
+        case .setup(let status):
+            try container.encode("setup", forKey: .type)
+            try status.encode(to: encoder)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }

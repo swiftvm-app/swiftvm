@@ -10,6 +10,7 @@ Common problems and fixes. If yours isn't here, please
 | A machine's details | `swiftvm info <machine>` |
 | A Linux guest's console output | `logs/console.log` in the machine's [package](settings.md#files) |
 | Guest tools in a Linux guest | `systemctl status swiftvm-agent` in the guest |
+| What a setup script printed | `/var/log/swiftvm-setup.log` in the guest |
 | Guest tools in a macOS guest | `sudo launchctl print system/com.swiftvm.agent` in the guest |
 
 Messages about a machine show in its window. When the window is closed, they
@@ -26,6 +27,19 @@ Without the [guest tools](../features/guest-tools.md), macOS asks on its own
 screen before it shuts down. Confirm in the machine's window, or install the
 guest tools to shut down without the question. **Force Stop** always works, but
 the guest loses what it hasn't saved.
+
+## A desktop didn't install
+
+A desktop is installed by a [setup script](../features/setup-scripts.md), and
+this goes for every setup script. SwiftVM says when one fails, and at which
+step. The usual cause is a download that didn't come through.
+
+- Read what the script printed: `/var/log/swiftvm-setup.log` in the guest.
+- Run it again: `sudo systemctl start swiftvm-setup` in the guest. Scripts
+  that were through before it are not run again.
+- A machine that is still at a text login after a long while may have no
+  internet. Check with `swiftvm info <machine>`, which shows the step the
+  script is at.
 
 ## A suspended machine won't resume
 

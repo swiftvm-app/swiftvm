@@ -45,6 +45,32 @@ import Testing
         #expect(request.create?.restoreImagePath == nil)
     }
 
+    @Test func aMachineIsCreatedWithASetupScript() throws {
+        // Each by its name in the list or as a file, in the order they run.
+        let asked = ControlRequest(command: .create, create: .init(distribution: "ubuntu-26.04", password: "secret", scripts: ["kde-plasma", "/Users/me/mine.sh"]))
+        let sent = try JSONEncoder().encode(asked)
+        #expect(String(decoding: sent, as: UTF8.self).contains(#""scripts":["kde-plasma""#))
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: sent) == asked)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: sent).create?.scripts == ["kde-plasma", "/Users/me/mine.sh"])
+        // A tool from before there were any asks for none.
+        let older = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"command":"create","create":{"distribution":"ubuntu-26.04","start":true}}"#.utf8))
+        #expect(older.create?.scripts == nil)
+
+        // The scripts are listed for every system or for one, the app's and the user's.
+        let list = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"command":"scripts","system":"debian-13"}"#.utf8))
+        #expect(list == ControlRequest(command: .scripts, system: "debian-13"))
+        let answer = ControlResponse(ok: true, note: "Your own scripts go in ~/.config/swiftvm/setup-scripts.", setupScripts: [
+            SetupScriptSummary(id: "xfce", name: "Xfce", summary: "Light", category: "desktop", systems: ["ubuntu", "debian"], minimumMemoryGigabytes: 2, minimumDiskGigabytes: 16),
+            SetupScriptSummary(id: "docker", name: "Docker", isBuiltIn: false),
+        ])
+        #expect(try JSONDecoder().decode(ControlResponse.self, from: JSONEncoder().encode(answer)) == answer)
+        // An app from before there were any says nothing about them, and about a machine's setup.
+        let plain = try JSONDecoder().decode(ControlResponse.self, from: Data(#"{"ok":true,"machines":[]}"#.utf8))
+        #expect(plain.setupScripts == nil)
+        let details = MachineDetails(location: "/x", macAddress: nil, drives: [], sharedFolders: [], snapshotCount: 0, setup: .init(name: "Xfce", state: "running", step: "Installing Xfce"))
+        #expect(try JSONDecoder().decode(MachineDetails.self, from: JSONEncoder().encode(details)).setup == details.setup)
+    }
+
     @Test func commandsUseDashedNames() throws {
         let data = try JSONEncoder().encode(ControlRequest(command: .forceStop, machine: "vm"))
         #expect(String(decoding: data, as: UTF8.self).contains("\"force-stop\""))

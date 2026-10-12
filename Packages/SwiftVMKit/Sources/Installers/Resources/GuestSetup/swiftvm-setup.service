@@ -1,0 +1,23 @@
+# Runs the setup scripts that were picked when SwiftVM made this virtual machine, once, when the
+# system is up for the first time. What it does and how to run it again is at the top of
+# /usr/local/lib/swiftvm/setup/run.sh.
+[Unit]
+Description=SwiftVM first-start setup
+Documentation=https://swiftvm.app/docs/features/setup-scripts/
+# After the system's own first-boot setup, which is what starts this on a new machine.
+After=cloud-final.service network-online.target
+Wants=network-online.target
+# The package manager's timers would take its lock from under the script.
+Before=apt-daily.service apt-daily-upgrade.service
+ConditionPathExists=/usr/local/lib/swiftvm/setup/scripts/1
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/lib/swiftvm/setup/run.sh
+# Installing a desktop takes as long as it takes.
+TimeoutStartSec=infinity
+
+[Install]
+# Not multi-user.target: the last step of the first-boot setup waits for that one, and this
+# waits for that step. The two would wait for each other.
+WantedBy=cloud-init.target

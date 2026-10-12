@@ -16,6 +16,8 @@
 
 - macOS guests that install and set themselves up
 - Linux guests from a cloud image, ready in seconds
+- Linux desktops that install themselves: GNOME, KDE Plasma, Xfce, Cinnamon
+- Setup scripts for everything else a new machine needs, in one file you write
 - `ssh <machine>` from your Mac
 - Snapshots and instant duplicates
 - Suspend and resume

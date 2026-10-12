@@ -94,6 +94,43 @@ import Testing
         #expect(GuestMessageCoding.clipboardLine("", as: AgentMessage.clipboard(text:)) != nil)
     }
 
+    @Test func readsHowAGuestsSetupIsDoing() {
+        #expect(decode(#"{"type":"setup","state":"running","name":"KDE Plasma","step":"Installing KDE Plasma"}"#)
+            == .setup(GuestSetupStatus(state: .running, name: "KDE Plasma", step: "Installing KDE Plasma")))
+        #expect(decode(#"{"type":"setup","state":"pending","name":"Xfce"}"#) == .setup(GuestSetupStatus(state: .pending, name: "Xfce")))
+        #expect(decode(#"{"type":"setup","state":"finished"}"#) == .setup(GuestSetupStatus(state: .finished)))
+        #expect(GuestSetupStatus(state: .pending).isUnderWay)
+        #expect(GuestSetupStatus(state: .running).isUnderWay)
+        #expect(!GuestSetupStatus(state: .finished).isUnderWay)
+        #expect(!GuestSetupStatus(state: .failed).isUnderWay)
+
+        // A state from a later agent is no news to this build, and a setup without one isn't one.
+        #expect(decode(#"{"type":"setup","state":"paused","name":"Xfce"}"#) == .unknown(type: "setup"))
+        #expect(decode(#"{"type":"setup","name":"Xfce"}"#) == .unknown(type: "setup"))
+
+        // A guest can say anything. What is kept of it is one short line.
+        let long = String(repeating: "x", count: 500)
+        guard case .setup(let status) = decode(#"{"type":"setup","state":"failed","name":"Two\nlines\u001b[31m","step":"\#(long)"}"#) else {
+            Issue.record("a setup with odd text in it isn't read")
+            return
+        }
+        #expect(status.name == "Twolines[31m")
+        #expect(status.step?.count == GuestSetupStatus.maximumTextLength)
+        #expect(decode(#"{"type":"setup","state":"running","name":"  ","step":"\t"}"#) == .setup(GuestSetupStatus(state: .running)))
+    }
+
+    @Test func whatAGuestSaysIsShownAsOnePlainLine() {
+        #expect(ShownText.line("  KDE Plasma \n", limit: 60) == "KDE Plasma")
+        #expect(ShownText.line("one\r\ntwo\u{2028}three\u{7}", limit: 60) == "onetwothree")
+        #expect(ShownText.line(String(repeating: "é", count: 80), limit: 60).count == 60)
+        // Marks that turn the text around them could make a message read as something it doesn't say.
+        #expect(ShownText.line("safe\u{202E}txt.exe", limit: 60) == "safetxt.exe")
+        #expect(ShownText.line("\u{2066}a\u{2069}\u{200F}b\u{061C}", limit: 60) == "ab")
+        // Other scripts and what joins an emoji together are text like any other.
+        #expect(ShownText.line("デスクトップ 👩‍💻", limit: 60) == "デスクトップ 👩‍💻")
+        #expect(ShownText.line("\u{1B}\t ", limit: 60).isEmpty)
+    }
+
     @Test func aNewerAgentIsStillUnderstood() {
         // Kinds of message and fields that came later are passed over, not held against the agent.
         #expect(decode(#"{"type":"screen","width":1920}"#) == .unknown(type: "screen"))
@@ -128,6 +165,7 @@ import Testing
             .hello(AgentHello(agent: "1.0", system: GuestSystem(id: "macos", build: "26A434"), features: [GuestFeature.clipboard])),
             .result(GuestRequestResult(id: 5, ok: false, error: "Line one\nline “two”")),
             .clipboard(text: "one\r\ntwo\u{2028}three"), .clipboardRequest, .unknown(type: "later"),
+            .setup(GuestSetupStatus(state: .running, name: "GNOME", step: "Installing “GNOME”")), .setup(GuestSetupStatus(state: .failed)),
         ]
         for message in fromTheAgent {
             let line = GuestMessageCoding.line(for: message)

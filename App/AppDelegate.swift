@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    /// Whether macOS has put the question of quitting to the app since the app last asked to quit.
+    private static var wasAskedToTerminate = false
+
     /// Asks the app to quit from the run loop, not from the task that wants it to.
     ///
     /// A quit that is asked for inside a task and answered with "later" never finishes. The answer is
@@ -32,7 +35,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     static func terminate(after delay: TimeInterval = 0) -> Timer {
         let timer = Timer(timeInterval: delay, repeats: false) { _ in
-            MainActor.assumeIsolated { NSApp.terminate(nil) }
+            MainActor.assumeIsolated {
+                wasAskedToTerminate = false
+                NSApp.terminate(nil)
+                // Still here, and never asked: macOS called the quit off by itself, as it does while a
+                // sheet is open. A quit for the command-line tool is off with it. Left on, the app
+                // would turn every command down as "quitting" for as long as it runs.
+                if !wasAskedToTerminate {
+                    AppModel.shared.cancelUnattendedQuit()
+                }
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         return timer
@@ -40,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quitting with machines running would cut their power, so offer to suspend or shut them down first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Self.wasAskedToTerminate = true
         let model = AppModel.shared
         if model.isWorkingOnMachineFiles {
             // A snapshot, a copy or a resize is over in a moment. Let it finish, then ask again.

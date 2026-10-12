@@ -2,8 +2,9 @@
 """The SwiftVM guest agent for Linux.
 
 Talks to the SwiftVM app on the Mac over the virtual machine's socket device (virtio-vsock), which
-needs no network. It tells the app which system this is and which addresses it holds, and on the
-app's request sets the clock, mounts the folders shared with the machine, or shuts the system down.
+needs no network. It tells the app which system this is, which addresses it holds and how the setup
+script it was created with is doing, and on the app's request sets the clock, mounts the folders
+shared with the machine, or shuts the system down.
 
 The agent listens; the app connects. Each side sends one JSON object per line and ignores what it
 doesn't know, so that an agent and an app of different ages get along. The protocol is described
@@ -22,7 +23,7 @@ import subprocess
 import sys
 import time
 
-AGENT_VERSION = "1.0"
+AGENT_VERSION = "1.1"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
@@ -39,6 +40,17 @@ POLL_INTERVAL = 30.0
 POLL_INTERVAL_WITHOUT_NOTICE = 5.0
 # Where the app may have the shared folders mounted.
 MOUNT_ROOTS = ("/mnt/", "/media/")
+# Where the setup script that SwiftVM put into a new machine leaves word of how it is doing: its
+# state and name in "status", one "key=value" to a line, and the step it is at in "step".
+SETUP_DIRECTORY = "/var/lib/swiftvm/setup"
+SETUP_STATES = ("pending", "running", "finished", "failed")
+# A script that is at work is looked at this often, one that has come to its end this often, and
+# a system that has no script this often.
+SETUP_POLL_INTERVAL = 1.0
+SETUP_POLL_INTERVAL_AT_REST = 15.0
+SETUP_POLL_INTERVAL_WITHOUT_ONE = 60.0
+# The longest a script's name or step is passed on at.
+MAX_SETUP_TEXT = 120
 
 RTMGRP_LINK = 0x1
 RTMGRP_IPV4_IFADDR = 0x10
@@ -68,6 +80,11 @@ def run(command, timeout=15):
         raise AgentError(output or "%s failed with status %d." % (command[0], result.returncode))
 
 
+def shown(text):
+    """One short line of what a script says of itself, fit to be passed on and shown."""
+    return "".join(character for character in text if character.isprintable()).strip()[:MAX_SETUP_TEXT]
+
+
 def read_os_release():
     """The system's description of itself, as a dictionary."""
     for path in ("/etc/os-release", "/usr/lib/os-release"):
@@ -92,6 +109,8 @@ def read_os_release():
 
 class System:
     """What the agent knows about the system it runs in, and what it does to it."""
+
+    setup_directory = SETUP_DIRECTORY
 
     def describe(self):
         release = read_os_release()
@@ -131,6 +150,32 @@ class System:
             if addresses:
                 interfaces.append({"name": str(link.get("ifname", "")), "mac": link["address"], "addresses": addresses})
         return interfaces[:MAX_INTERFACES]
+
+    def setup_status(self):
+        """How this system's setup script is doing, or None for a system that has none."""
+        values = {}
+        try:
+            with open(os.path.join(self.setup_directory, "status"), encoding="utf-8", errors="replace") as file:
+                for line in file.read(4096).splitlines():
+                    key, separator, value = line.partition("=")
+                    if separator:
+                        values[key] = value
+        except OSError:
+            return None
+        if values.get("state") not in SETUP_STATES:
+            return None
+        status = {"state": values["state"]}
+        name = shown(values.get("name", ""))
+        if name:
+            status["name"] = name
+        try:
+            with open(os.path.join(self.setup_directory, "step"), encoding="utf-8", errors="replace") as file:
+                step = shown(file.readline(4096))
+        except OSError:
+            step = ""
+        if step:
+            status["step"] = step
+        return status
 
     def set_clock(self, nanoseconds):
         difference = nanoseconds - time.time_ns()
@@ -172,6 +217,10 @@ class System:
 class PretendSystem(System):
     """Says what it would do instead of doing it, for trying the protocol without a virtual machine."""
 
+    def __init__(self, setup_directory=None):
+        # This computer's own setup, if it has one, is none of a pretended system's business.
+        self.setup_directory = setup_directory or os.devnull
+
     def set_clock(self, nanoseconds):
         log("Would set the clock to %d." % nanoseconds)
 
@@ -209,6 +258,9 @@ class Agent:
         self.notices = open_address_notices()
         self.poll_interval = POLL_INTERVAL if self.notices else POLL_INTERVAL_WITHOUT_NOTICE
         self.next_look = time.monotonic() + self.poll_interval
+        # The setup script's state as the app was last told, and when to look at it again.
+        self.setup_reported = None
+        self.next_setup_look = time.monotonic()
         self.requests = {
             "set-clock": self.set_clock,
             "mount-shared-folders": self.mount_shared_folders,
@@ -221,11 +273,14 @@ class Agent:
             self.selector.register(self.notices, selectors.EVENT_READ, self.addresses_may_have_changed)
         while True:
             # Without the app there is nobody to tell, and nothing to look for.
-            timeout = max(0.0, self.next_look - time.monotonic()) if self.connection else None
+            next_look = min(self.next_look, self.next_setup_look)
+            timeout = max(0.0, next_look - time.monotonic()) if self.connection else None
             for key, _ in self.selector.select(timeout):
                 key.data(key.fileobj)
             if self.connection and time.monotonic() >= self.next_look:
                 self.report_addresses()
+            if self.connection and time.monotonic() >= self.next_setup_look:
+                self.report_setup()
 
     # Connections
 
@@ -252,6 +307,7 @@ class Agent:
             "hostName": self.system.host_name(),
         })
         self.report_addresses(always=True)
+        self.report_setup(always=True)
 
     def hang_up(self):
         if self.connection is None:
@@ -264,6 +320,7 @@ class Agent:
         self.connection = None
         self.received = b""
         self.reported = None
+        self.setup_reported = None
 
     def send(self, message):
         if self.connection is None:
@@ -375,6 +432,24 @@ class Agent:
             self.reported = interfaces
 
 
+    # Setup
+
+    def report_setup(self, always=False):
+        status = self.system.setup_status()
+        if status is None:
+            interval = SETUP_POLL_INTERVAL_WITHOUT_ONE
+        elif status["state"] in ("pending", "running"):
+            interval = SETUP_POLL_INTERVAL
+        else:
+            interval = SETUP_POLL_INTERVAL_AT_REST
+        self.next_setup_look = time.monotonic() + interval
+        # A system without a setup script has nothing to say about one.
+        if status is not None and (always or status != self.setup_reported):
+            self.send(dict(status, type="setup"))
+            # A message that didn't get through has hung the line up, and told nobody anything.
+            self.setup_reported = status if self.connection else None
+
+
 def listen_on_socket_device():
     """Listens for the app. Waits for as long as it takes for the socket device to be there."""
     problem = None
@@ -412,8 +487,9 @@ def main(arguments):
         # Only the Mac may give orders, not a program in this system that connects to the same port.
         agent = Agent(listener, System(), lambda peer: peer[0] == socket.VMADDR_CID_HOST)
         log("SwiftVM guest agent %s, listening on port %d of the socket device." % (AGENT_VERSION, PORT))
-    elif len(arguments) == 2 and arguments[0] == "--pretend-on":
-        agent = Agent(listen_on_unix_socket(arguments[1]), PretendSystem(), lambda peer: True)
+    elif len(arguments) in (2, 4) and arguments[0] == "--pretend-on" and arguments[2:3] in ([], ["--setup-in"]):
+        system = PretendSystem(arguments[3] if len(arguments) == 4 else None)
+        agent = Agent(listen_on_unix_socket(arguments[1]), system, lambda peer: True)
         log("SwiftVM guest agent %s, pretending, listening on %s." % (AGENT_VERSION, arguments[1]))
     elif arguments == ["--version"]:
         print(AGENT_VERSION)
@@ -421,7 +497,9 @@ def main(arguments):
     else:
         print(
             "Usage: swiftvm-agent.py                      serve the SwiftVM app (as root, in a virtual machine)\n"
-            "       swiftvm-agent.py --pretend-on <path>  serve on a Unix socket and only say what would be done\n"
+            "       swiftvm-agent.py --pretend-on <path> [--setup-in <folder>]\n"
+            "                                             serve on a Unix socket and only say what would be done,\n"
+            "                                             with a setup script's state read from that folder\n"
             "       swiftvm-agent.py --version",
             file=sys.stderr,
         )

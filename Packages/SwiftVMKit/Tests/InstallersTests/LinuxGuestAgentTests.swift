@@ -125,10 +125,12 @@ struct LinuxGuestAgentConversationTests {
         let socketPath = "/tmp/swiftvm-agent-test-\(UInt32.random(in: 0...UInt32.max)).sock"
         private let output = Pipe()
 
-        init() throws {
+        /// - Parameter setupDirectory: Where the agent looks for word of a setup script, as a guest
+        ///   that was created with one has it.
+        init(setupDirectory: URL? = nil) throws {
             let script = try #require(LinuxGuestAgent.resourceURL("swiftvm-agent.py"))
             process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = ["-I", script.path, "--pretend-on", socketPath]
+            process.arguments = ["-I", script.path, "--pretend-on", socketPath] + (setupDirectory.map { ["--setup-in", $0.path] } ?? [])
             process.standardOutput = output
             process.standardError = output
             try process.run()
@@ -176,7 +178,9 @@ struct LinuxGuestAgentConversationTests {
         /// What the agent has printed, once it has been stopped.
         func stopAndReadLog() -> String {
             process.terminate()
-            process.waitUntilExit()
+            // Reading up to the end is the wait: the pipe closes when the agent is gone. `waitUntilExit`
+            // waits on the thread it is called on, which after an `await` may not be the one the agent
+            // was started on, and then it never hears of the end.
             return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         }
     }
@@ -232,6 +236,65 @@ struct LinuxGuestAgentConversationTests {
         #expect(!log.contains("etc"))
         #expect(log.contains("Would shut down."))
         #expect(!log.contains("Traceback"))
+    }
+
+    @Test func theAgentPassesOnHowTheSetupScriptIsDoing() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-setup-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        /// Leaves word the way the runner in a guest does.
+        func leaveWord(status: String, step: String) throws {
+            try Data(step.utf8).write(to: directory.appending(path: "step"), options: .atomic)
+            try Data(status.utf8).write(to: directory.appending(path: "status"), options: .atomic)
+        }
+        /// Whether what the agent says next about the setup comes to `wanted`. The runner writes the
+        /// step and the state one after the other, and the agent may look in between.
+        func hears(_ wanted: GuestSetupStatus, on messages: inout AsyncStream<AgentMessage>.AsyncIterator) async -> Bool {
+            for _ in 0..<4 {
+                guard case .setup(let status) = await messages.next() else { return false }
+                if status == wanted { return true }
+            }
+            return false
+        }
+        // A script can call itself anything. What is passed on is one short line.
+        let longName = "KDE \u{1B}[31mPlasma " + String(repeating: "x", count: 300)
+        try leaveWord(status: "state=running\nname=\(longName)\nlater=ignored\n", step: "Downloading KDE Plasma\n")
+
+        let agent = try RunningAgent(setupDirectory: directory)
+        let connection = try agent.connect()
+        var messages = connection.messages.makeAsyncIterator()
+        guard case .hello(let hello) = await messages.next(), case .addresses = await messages.next() else {
+            Issue.record("no greeting")
+            return
+        }
+        #expect(hello.agent == LinuxGuestAgent.version)
+        // Unasked, right after the greeting.
+        guard case .setup(let first) = await messages.next() else {
+            Issue.record("the agent said nothing about the setup")
+            return
+        }
+        #expect(first.state == .running)
+        #expect(first.step == "Downloading KDE Plasma")
+        #expect(first.name?.hasPrefix("KDE [31mPlasma xxx") == true)
+        #expect(first.name?.count == GuestSetupStatus.maximumTextLength)
+
+        // The script gets on, and so does what the agent says.
+        try leaveWord(status: "state=running\nname=KDE Plasma\n", step: "Installing KDE Plasma\n")
+        #expect(await hears(GuestSetupStatus(state: .running, name: "KDE Plasma", step: "Installing KDE Plasma"), on: &messages))
+        try leaveWord(status: "state=failed\nname=KDE Plasma\n", step: "Installing KDE Plasma\n")
+        #expect(await hears(GuestSetupStatus(state: .failed, name: "KDE Plasma", step: "Installing KDE Plasma"), on: &messages))
+
+        // The app, connecting anew, is told where things stand.
+        let second = try agent.connect()
+        var secondMessages = second.messages.makeAsyncIterator()
+        guard case .hello = await secondMessages.next(), case .addresses = await secondMessages.next() else {
+            Issue.record("no greeting on the second line")
+            return
+        }
+        #expect(await secondMessages.next() == .setup(GuestSetupStatus(state: .failed, name: "KDE Plasma", step: "Installing KDE Plasma")))
+        #expect(await second.request { .setClock(id: $0, nanoseconds: 5) }?.ok == true)
+        second.close()
+        #expect(!agent.stopAndReadLog().contains("Traceback"))
     }
 
     @Test func aNewConnectionTakesTheOldOnesPlace() async throws {

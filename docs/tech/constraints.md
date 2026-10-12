@@ -10,6 +10,7 @@ Supported platforms, and lessons that shape the code.
 | macOS guests | Unattended setup and guest tools need macOS 27 or later in the guest |
 | Linux guests | ARM64. Quick Create: Ubuntu 26.04, Ubuntu 24.04, Debian 13 |
 | Linux guest tools | systemd and Python 3 |
+| Linux desktops | GNOME, KDE Plasma, Xfce, and Cinnamon, on each Quick Create system |
 
 Not yet supported: Windows guests, and Intel Macs.
 
@@ -67,6 +68,30 @@ Not yet supported: Windows guests, and Intel Macs.
   older systems the guest tools add it.
 - A copy of a cloud-init guest needs a new instance ID, host name, and MAC
   address in its seed image, or it comes up without a network.
+- The last step of cloud-init waits for the system to be up. A unit that runs
+  after that step can't be wanted by the same target, or the two wait for each
+  other at every start but the first. The setup unit is wanted by cloud-init's
+  own target.
+- A desktop brings NetworkManager, and two services must not configure one
+  network card. The card stays with systemd-networkd, which asks for its
+  address by MAC, and NetworkManager only watches it. Handing the card over
+  doesn't work everywhere: Ubuntu 26.04 configures it before the system
+  starts, NetworkManager then leaves it alone, and nothing renews the address.
+- Ubuntu 24.04's kernel for virtual machines has no sound driver. The desktop
+  scripts install the full kernel there.
+- Installing a desktop by its package alone can bring another desktop's login
+  theme. The scripts name the theme where that happens.
+- What a package prints while it is installed can start with `==> `, and then
+  shows as a step. Ubuntu's Firefox package does.
+- A guest that loses power while it installs packages comes back with a
+  package manager that takes on nothing new: `apt` wants `dpkg --configure -a`
+  first. The setup runner does that before it runs a script again.
+- `chown user: file`, with nothing after the colon, sets the group on Debian
+  and leaves it alone on Ubuntu 26.04, whose tools are a different
+  implementation. Scripts for both name the group or leave the colon out.
+- macOS doesn't let an app quit while one of its windows has a sheet open, and
+  doesn't ask the app first. `swiftvm quit` refuses then, instead of waiting
+  for a quit that never comes.
 
 ## The app
 

@@ -13,6 +13,11 @@ Usage: swiftvm <command> [arguments]
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
       --user <name>  --password <password>  --no-start
       --ipsw <file>                 macOS: install this restore image instead of downloading the latest
+      --script <name>|<file>        Linux: run a setup script on the first start, a desktop for one.
+                                    By its name in `swiftvm scripts`, or a file by its path (./mine.sh).
+                                    Give it again for more scripts, which run in that order.
+                                    A desktop needs a password
+  scripts [<system>]                List the setup scripts for --script, or those for one Linux image
   start <machine>                   Start, or resume a suspended machine
   stop <machine>                    Shut down and wait
   force-stop <machine>              Stop immediately
@@ -147,6 +152,33 @@ func printUSBDevices(_ devices: [USBDeviceSummary]) {
     }
 }
 
+func printScripts(_ scripts: [SetupScriptSummary]) {
+    guard !scripts.isEmpty else {
+        print("No setup scripts.")
+        return
+    }
+    let rows = [["NAME", "SETS UP", "KIND", "FOR", "NEEDS", "FROM", "ABOUT"]] + scripts.map { script in
+        let needs = [
+            script.minimumMemoryGigabytes.map { "\($0) GB memory" },
+            script.minimumDiskGigabytes.map { "\($0) GB disk" },
+        ].compactMap { $0 }
+        return [
+            script.id,
+            script.name,
+            script.category ?? "-",
+            script.systems.isEmpty ? "any" : script.systems.joined(separator: ", "),
+            needs.isEmpty ? "-" : needs.joined(separator: ", "),
+            script.isBuiltIn ? "SwiftVM" : "your folder",
+            script.summary ?? "-",
+        ]
+    }
+    let widths = (0..<rows[0].count).map { column in rows.map { $0[column].count }.max() ?? 0 }
+    for row in rows {
+        let line = zip(row, widths).map { cell, width in cell.padding(toLength: width, withPad: " ", startingAt: 0) }
+        print(line.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
+    }
+}
+
 func printDetails(of machine: MachineSummary) {
     var lines: [(String, String)] = [
         ("Name", machine.name),
@@ -182,6 +214,11 @@ func printDetails(of machine: MachineSummary) {
             if let kernel = tools.kernel {
                 lines.append(("Kernel", kernel))
             }
+        }
+        if let setup = details.setup {
+            // `KDE Plasma: running, Installing KDE Plasma`
+            let progress = [setup.state, setup.step].compactMap { $0 }.joined(separator: ", ")
+            lines.append(("Setup", [setup.name, progress].compactMap { $0 }.joined(separator: ": ")))
         }
         if let sharesClipboard = details.sharesClipboard {
             lines.append(("Clipboard", sharesClipboard ? "shared" : "not shared"))
@@ -259,12 +296,25 @@ case "create":
         case "--user": parameters.user = value(for: option)
         case "--password": parameters.password = value(for: option)
         case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
+        case "--script":
+            // A name is one from the list. What has a slash in it is a file: ./mine.sh, ~/scripts/mine.sh.
+            // The app is told where the file is from the root, as it isn't in this folder.
+            let script = value(for: option)
+            parameters.scripts = (parameters.scripts ?? []) + [script.contains("/") ? URL(fileURLWithPath: script).standardizedFileURL.path : script]
         case "--no-start": parameters.start = false
         default: fail("Unknown option \(option).")
         }
         index += 1
     }
     printTable(send(ControlRequest(command: .create, create: parameters)).machines)
+
+case "scripts":
+    guard arguments.count <= 1 else { fail("Usage: swiftvm scripts [<system>]") }
+    let response = send(ControlRequest(command: .scripts, system: arguments.first))
+    printScripts(response.setupScripts ?? [])
+    if let note = response.note {
+        print("\n" + note)
+    }
 
 case "share", "unshare":
     let machine = requireMachine()
@@ -486,7 +536,7 @@ case "ssh":
 
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
-    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto]
+    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }

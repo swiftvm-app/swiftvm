@@ -44,7 +44,7 @@ flowchart TB
 | `VMNetworking` | The shared network, address reservations, and the port relay |
 | `SSHIntegration` | SSH names, keys, and the generated SSH configuration |
 | `DiskTools` | Creates, grows, and converts disk images, and builds small ISO images |
-| `Installers` | The distribution catalog, downloads, first-boot setup for Linux, and the guest agent installers |
+| `Installers` | The distribution catalog, setup scripts, downloads, first-boot setup for Linux, and the guest agent installers |
 | `VMControl` | The messages between the app and `swiftvm`, and which copy of the app a program belongs to |
 | `GuestChannel` | The messages between the app and a guest agent |
 | `GuestAgentMac` | The guest agent for macOS |
@@ -62,7 +62,7 @@ A machine is a `.swiftvm` package in the library folder.
 | `disk.img`, `disk.asif` | The disk: raw for Quick Create machines, ASIF for the rest |
 | `efi-vars.fd` | Linux: UEFI variables |
 | `aux.img`, `hardware-model.bin`, `machine-identifier.bin` | macOS: firmware state and the machine's identity |
-| `seed.iso` | Linux Quick Create: the first-boot setup data |
+| `seed.iso` | Linux Quick Create: the first-boot setup data, with the setup script if one was picked |
 | `state.vzvmsave` | Saved memory, while suspended |
 | `snapshots/` | One folder per snapshot |
 | `logs/console.log` | Serial console output |
@@ -114,6 +114,8 @@ sequenceDiagram
 - The macOS agent runs as two halves. A root daemon talks to the app and
   handles power, clock, and time zone. A second half in the login session
   owns the clipboard and reaches the daemon over a Unix socket.
+- The Linux agent also passes on how the machine's
+  [setup script](#setup-scripts) is doing, unasked, whenever that changes.
 
 ## Networking
 
@@ -130,12 +132,59 @@ sequenceDiagram
 
 - **Linux, Quick Create.** Download the cloud image and verify its checksum,
   convert it to a raw disk, and write a cloud-init seed image with the account,
-  SSH key, host name, network setup, and guest tools.
+  SSH key, host name, network setup, guest tools, and the setup script if one
+  was picked.
 - **Linux, installer disc.** Create an empty disk and attach the ISO as a USB
   drive.
 - **macOS.** Install the restore image onto an empty disk, then start with an
   account for macOS to create by itself. SwiftVM then installs the SSH key and
   the guest tools over SSH.
+
+## Setup scripts
+
+A [setup script](../features/setup-scripts.md) is one file with a comment
+header. One catalog is the only place scripts come from: the templates, which
+are scripts inside the app, and the files in the user's folder,
+`~/.config/swiftvm/setup-scripts`. A list fetched from elsewhere has one place
+to join. The app and the command line show the same list, by kind.
+
+A machine takes several scripts. They travel in its first-boot data, numbered
+in the order they run, and the runner in the guest goes through them: it notes
+each one that came to its end, so that a run that failed or was cut short
+carries on with the one that wasn't through.
+
+```mermaid
+sequenceDiagram
+    participant Seed as First-boot setup
+    participant Unit as swiftvm-setup.service
+    participant Runner as Runner
+    participant Agent as Guest agent
+    participant App as App
+    Seed->>Runner: Write the script, the runner, the unit. Schedule
+    Runner-->>Agent: status: pending
+    Agent->>App: setup: pending
+    Note over Seed: First-boot setup ends
+    Unit->>Runner: Run
+    loop While the script runs
+        Runner-->>Agent: status and step
+        Agent->>App: setup: running, step
+    end
+    Runner-->>Agent: status: finished or failed
+    Agent->>App: setup: finished or failed
+    Runner->>Unit: Disable. Restart the guest if asked
+```
+
+- The script travels in the seed image, next to a runner and a systemd unit.
+  First-boot setup writes them down and schedules the unit, which runs once
+  that setup is over.
+- The runner writes everything the script prints to a log, keeps a note of the
+  state and the step, and restarts the guest if the header asks. The agent
+  reads the note and tells the app.
+- The unit stays enabled until the script has finished or failed. A setup that
+  is cut short carries on at the next start; one that keeps being cut short is
+  given up on.
+- A copy of a machine goes through first-boot setup again. The runner leaves a
+  disk alone where a setup was scheduled before, so nothing is installed twice.
 
 ## Snapshots and copies
 

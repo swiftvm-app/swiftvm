@@ -22,7 +22,8 @@ SwiftVM is in the Dock only while one of its windows is open.
 
 ## Creating
 
-Choose **New Virtual Machine** and pick a system. You can also drop an
+Choose **New Virtual Machine** and pick the operating system at the top of the
+form. The window opens on the one you made last. You can also drop an
 installer disc (ISO), a macOS restore image (IPSW), or an existing virtual
 machine on the window.
 

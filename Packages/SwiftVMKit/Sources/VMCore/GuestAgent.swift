@@ -14,6 +14,9 @@ public final class GuestAgent {
     public private(set) var hello: AgentHello?
     /// The guest's network interfaces that hold addresses, as the agent last reported them.
     public private(set) var interfaces: [GuestInterface] = []
+    /// How the guest's setup script is doing, as the agent last reported it. `nil` for a guest that has
+    /// none, and while no agent is connected.
+    public private(set) var setup: GuestSetupStatus?
 
     public var isConnected: Bool { hello != nil }
     /// The connected agent's version.
@@ -36,6 +39,9 @@ public final class GuestAgent {
     @ObservationIgnored public var onClipboard: (@MainActor (String) -> Void)?
     /// Called when such an agent asks for what is on this Mac's clipboard: someone has logged in there.
     @ObservationIgnored public var onClipboardRequest: (@MainActor () -> Void)?
+    /// Called when the agent reports where the guest's setup script has got to: once when it connects
+    /// to a guest that has one, and whenever that changes.
+    @ObservationIgnored public var onSetupChange: (@MainActor (GuestSetupStatus) -> Void)?
     /// How long to wait before trying again after the agent couldn't be reached, or went away.
     @ObservationIgnored public var retryInterval: Duration = .seconds(1)
     /// The same once ``eagerAttempts`` have come to nothing. A guest that is starting up answers within
@@ -205,6 +211,11 @@ public final class GuestAgent {
                 if hasSaidHello, sharesClipboard {
                     onClipboardRequest?()
                 }
+            case .setup(let status):
+                if hasSaidHello, status != setup {
+                    setup = status
+                    onSetupChange?(status)
+                }
             case .result, .unknown:
                 break
             }
@@ -216,6 +227,9 @@ public final class GuestAgent {
         let wasConnected = hello != nil
         if wasConnected {
             hello = nil
+        }
+        if setup != nil {
+            setup = nil
         }
         if !interfaces.isEmpty {
             interfaces = []

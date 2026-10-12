@@ -5,7 +5,7 @@ no setup assistant to click through.
 
 ## Creating
 
-Choose **New Virtual Machine → macOS**.
+Choose **New Virtual Machine**, and **macOS** as the operating system.
 
 | Setting | What it is |
 | --- | --- |
