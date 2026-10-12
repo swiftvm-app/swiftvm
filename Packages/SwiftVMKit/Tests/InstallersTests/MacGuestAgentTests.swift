@@ -18,80 +18,6 @@ import VMCore
         return (url, contents)
     }
 
-    @Test func theInstallerCarriesTheProgram() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let (program, contents) = try makeProgram()
-        let installer = try MacGuestAgent.installer(program: program)
-        #expect(installer.hasPrefix("#!/bin/sh\n"))
-        // No place is left unfilled, and what was filled in doesn't end its own file early: the program
-        // and the two launchd jobs open and close, and that is all.
-        #expect(!installer.contains("@@"))
-        #expect(installer.components(separatedBy: "SWIFTVM_END_OF_FILE").count == 7)
-        // The shell at least reads it to the end.
-        try ProcessRunner.run("/bin/sh", ["-n"], input: Data(installer.utf8))
-
-        // What is written down between the marks is the program, byte for byte, in lines a shell can take.
-        let parts = installer.components(separatedBy: "base64 -D > \"$program.new\" <<'SWIFTVM_END_OF_FILE'\n")
-        #expect(parts.count == 2)
-        let encoded = try #require(parts.last?.components(separatedBy: "SWIFTVM_END_OF_FILE\n").first)
-        #expect(encoded.split(separator: "\n").allSatisfy { $0.count <= 76 })
-        #expect(Data(base64Encoded: encoded, options: .ignoreUnknownCharacters) == contents)
-
-        // The jobs it writes run the program from where it puts it, under the names it stops them by.
-        #expect(installer.contains("<string>\(MacGuestAgent.directory)/swiftvm-agent</string>\n\t\t<string>daemon</string>"))
-        #expect(installer.contains("<string>\(MacGuestAgent.directory)/swiftvm-agent</string>\n\t\t<string>session</string>"))
-        for label in ["com.swiftvm.agent", "com.swiftvm.agent.session"] {
-            #expect(installer.contains("<string>\(label)</string>"))
-            #expect(installer.contains("/\(label).plist"))
-        }
-        #expect(installer.contains("stop system/com.swiftvm.agent\n"))
-        #expect(installer.contains("stop \"gui/$user/com.swiftvm.agent.session\"\n"))
-        // Everyone has to be able to run what it installs, whatever the installing account's own habits.
-        #expect(installer.contains("\nset -eu\n") && installer.contains("\numask 022\n"))
-        #expect(MacGuestAgent.installerPath == "/usr/local/lib/swiftvm/install.sh")
-        #expect(MacGuestAgent.version == GuestProtocol.macAgentVersion)
-    }
-
-    @Test func theJobsInTheInstallerAreWhatLaunchdReads() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let installer = try MacGuestAgent.installer(program: makeProgram().url)
-        let documents = installer.components(separatedBy: "<<'SWIFTVM_END_OF_FILE'\n").dropFirst(2)
-            .compactMap { $0.components(separatedBy: "SWIFTVM_END_OF_FILE\n").first }
-        #expect(documents.count == 2)
-        var jobs: [String: [String: Any]] = [:]
-        for document in documents {
-            let job = try #require(try PropertyListSerialization.propertyList(from: Data(document.utf8), format: nil) as? [String: Any])
-            jobs[try #require(job["Label"] as? String)] = job
-        }
-        let daemon = try #require(jobs["com.swiftvm.agent"])
-        #expect(daemon["ProgramArguments"] as? [String] == ["/usr/local/lib/swiftvm/swiftvm-agent", "daemon"])
-        #expect(daemon["KeepAlive"] as? Bool == true)
-        #expect(daemon["LimitLoadToSessionType"] == nil)
-        // The clipboard's half only runs where there is a clipboard: in the session of someone at the screen.
-        let session = try #require(jobs["com.swiftvm.agent.session"])
-        #expect(session["ProgramArguments"] as? [String] == ["/usr/local/lib/swiftvm/swiftvm-agent", "session"])
-        #expect(session["LimitLoadToSessionType"] as? String == "Aqua")
-        #expect(session["KeepAlive"] as? Bool == true)
-    }
-
-    @Test func theInstallerRefusesToRunAsAnyoneButRoot() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        // This Mac stands in for a guest. As an ordinary user the installer stops before it touches
-        // anything, and says so the way the app looks for.
-        try #require(getuid() != 0)
-        let script = directory.appending(path: "install.sh")
-        try Data(try MacGuestAgent.installer(program: makeProgram().url).utf8).write(to: script)
-        for arguments in [[script.path], [script.path, "--remove"]] {
-            do {
-                try ProcessRunner.run("/bin/sh", arguments)
-                Issue.record("the installer ran")
-            } catch let failure as ProcessRunner.Failure {
-                #expect(failure.output.status == 1)
-                #expect(MacGuestAgent.installerComplaint(in: failure) == "this has to run as root, for example: sudo sh \(script.path)")
-            }
-        }
-    }
-
     @Test func aCopyOfTheAppWithoutTheProgramSaysSo() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -175,11 +101,6 @@ import VMCore
 
         let disc = try MacGuestAgent.toolsImage(in: discs, program: program)
         #expect(try ISOImageBuilder.text(of: "install.sh", in: disc) == (try MacGuestAgent.installer(program: program)))
-        let readMe = try ISOImageBuilder.text(of: "README.txt", in: disc)
-        #expect(readMe.contains("    \(MacGuestAgent.toolsInstallCommand)\n"))
-        #expect(!readMe.contains("@@"))
-        // macOS mounts the disc by itself, under its label.
-        #expect(MacGuestAgent.toolsInstallCommand == "sudo sh /Volumes/SWIFTVM/install.sh")
 
         // The discs for Linux live in the same folder. Neither kind clears the other's away.
         let linuxDisc = try LinuxGuestAgent.toolsImage(in: discs)

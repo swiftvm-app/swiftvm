@@ -13,7 +13,7 @@ jobs:
     name: Checks
     # The app needs the macOS 27 SDK, which this image has.
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +34,8 @@ jobs:
         run: scripts/build.sh --output "$RUNNER_TEMP/SwiftVM.app"
 
       - name: Test
+        # The tests take about a minute. One that hangs fails the check instead of holding it up.
+        timeout-minutes: 5
         run: scripts/test.sh
 
       - name: Save SPM cache

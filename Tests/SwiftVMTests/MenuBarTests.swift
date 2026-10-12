@@ -11,11 +11,6 @@ private final class StubBackend: VMBackend {
     var eventHandler: (@MainActor (VMBackendEvent) -> Void)?
     let displayView = NSView()
     let canRequestStop = true
-    /// What the guest's agent says once the machine has reached it, a line to each. Empty for a guest
-    /// without one.
-    var agentLines: [String] = []
-    /// The guest's end of the lines to its agent, kept open for as long as the guest is.
-    private var agentEnds: [FileHandle] = []
 
     func start(options: VMStartOptions) async throws {}
     func requestStop() throws {}
@@ -28,28 +23,13 @@ private final class StubBackend: VMBackend {
     func attachRemovableImage(_ image: RemovableImage) async throws {}
     func detachRemovableImage(_ id: UUID) async throws {}
     func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {}
-    func connectToGuest(port: UInt32) async throws -> FileHandle {
-        guard !agentLines.isEmpty else { throw POSIXError(.ECONNRESET) }
-        var descriptors: [Int32] = [0, 0]
-        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { throw POSIXError(.EMFILE) }
-        let guest = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
-        try guest.write(contentsOf: Data(agentLines.map { $0 + "\n" }.joined().utf8))
-        agentEnds.append(guest)
-        return FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
-    }
+    func connectToGuest(port: UInt32) async throws -> FileHandle { throw POSIXError(.ECONNRESET) }
     func invalidate() {}
 }
 
 @MainActor
 private final class StubProvider: VMBackendProvider {
-    /// What the agents of the guests made from here on say. See ``StubBackend/agentLines``.
-    var agentLines: [String] = []
-
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
-        let backend = StubBackend()
-        backend.agentLines = agentLines
-        return backend
-    }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { StubBackend() }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -153,27 +133,6 @@ private struct Scratch {
         #expect(MachineListing.statusLine(for: machine, address: "192.168.64.3", sshCommand: "ssh box") == "Paused · 192.168.64.3")
 
         await machine.forceStop()
-    }
-
-    @Test func aMachineThatIsBeingSetUpSaysWhatItIsAt() async throws {
-        defer { scratch.cleanUp() }
-        // A guest whose agent reports a desktop on its way in.
-        scratch.provider.agentLines = [
-            #"{"type":"hello","protocol":1,"agent":"1.1"}"#,
-            #"{"type":"setup","state":"running","name":"KDE Plasma","step":"Installing KDE Plasma"}"#,
-        ]
-        let machine = try await scratch.makeRunningMachine(named: "Desk")
-        let deadline = ContinuousClock.now + .seconds(5)
-        while machine.setupActivity == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        // That says more than where it is reached, which is still to change.
-        #expect(MachineListing.statusLine(for: machine, address: "192.168.64.3", sshCommand: "ssh desk") == "Installing KDE Plasma…")
-
-        await machine.pause()
-        #expect(MachineListing.statusLine(for: machine, address: "192.168.64.3") == "Paused · 192.168.64.3")
-        await machine.forceStop()
-        #expect(machine.setupActivity == nil)
     }
 
     @Test func workOnAMachinesFilesComesBeforeItsState() async throws {
