@@ -7,8 +7,8 @@ import GuestChannel
 enum CommandJob {
     /// How long a command that was called off gets to end by itself before it is ended.
     static let killGrace: TimeInterval = 3
-    /// How long what a command printed may take to arrive once the command has ended. Something it
-    /// left running in the background can hold its output open for good.
+    /// How long an output pipe may stay idle once the command has ended. Something it left running
+    /// in the background can hold the pipe open for good; time spent sending to the Mac doesn't count.
     static let outputGrace: TimeInterval = 2
 
     /// Where a command looks for programs: where macOS has them, and where people put their own.
@@ -57,17 +57,30 @@ enum CommandJob {
         let watch = HangUpWatch()
         let printing = DispatchGroup()
         for (pipe, kind) in [(output, JobFrame.Kind.output), (errors, .errorOutput)] {
-            // Something the command left running can hold its output open for longer than the job
-            // lasts. Whoever reads it has a number of its own for the pipe, and closes that itself:
-            // the pipe's own is closed with the job, and given to the next thing that is opened.
             let source = dup(pipe.fileHandleForReading.fileDescriptor)
             printing.enter()
             Thread.detachNewThread {
                 var buffer = [UInt8](repeating: 0, count: JobFrame.maximumPayloadLength)
+                var idleSince: ContinuousClock.Instant?
                 while source >= 0 {
+                    var waiting = pollfd(fd: source, events: Int16(POLLIN), revents: 0)
+                    let ready = poll(&waiting, 1, 250)
+                    if ready == 0 {
+                        if !process.isRunning {
+                            let now = ContinuousClock.now
+                            if let idleSince, now - idleSince >= .seconds(outputGrace) { break }
+                            if idleSince == nil { idleSince = now }
+                        }
+                        continue
+                    }
+                    if ready < 0 {
+                        if errno == EINTR { continue }
+                        break
+                    }
                     let count = read(source, &buffer, buffer.count)
                     if count > 0 {
                         guard line.send(kind, Data(buffer[0..<count])) else { break }
+                        idleSince = nil
                     } else if count == 0 || errno != EINTR {
                         break
                     }
@@ -107,24 +120,30 @@ enum CommandJob {
                 }
             }
         }
-        let identifier = process.processIdentifier
+        let watching = DispatchGroup()
+        watching.enter()
         Thread.detachNewThread {
+            defer { watching.leave() }
             guard watch.waitForHangUp(of: descriptor) else { return }
-            // The Mac is gone, and with it whoever wanted this.
-            signalGroup(identifier, SIGTERM)
-            if exited.wait(timeout: .now() + killGrace) == .timedOut {
-                signalGroup(identifier, SIGKILL)
-            } else {
-                // Passed on, for the one that waits for the command below.
-                exited.signal()
+            // The Mac is gone, and with it whoever wanted this. The parent may take TERM while a
+            // child ignores it, so it is the whole group that gets this long to end, not just its head.
+            signalGroup(process, SIGTERM)
+            let deadline = ContinuousClock.now + .seconds(killGrace)
+            while signalGroup(process, 0) {
+                if ContinuousClock.now >= deadline {
+                    signalGroup(process, SIGKILL)
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.05)
             }
         }
 
         exited.wait()
-        exited.signal()
+        // What the command printed last is still on its way. Only an idle pipe times out, never a
+        // thread waiting for the Mac to take a frame, and the end follows all of those frames.
+        printing.wait()
         watch.stop()
-        // What the command printed last is still on its way.
-        _ = printing.wait(timeout: .now() + outputGrace)
+        watching.wait()
         line.end(process.terminationReason == .uncaughtSignal ? JobEnd(signal: process.terminationStatus) : JobEnd(status: process.terminationStatus))
     }
 
@@ -137,11 +156,12 @@ enum CommandJob {
     }
 
     /// Sends a signal to a command and everything it started, which is one process group where the
-    /// command was started as its head. Where it wasn't, the command alone gets it.
-    private static func signalGroup(_ process: pid_t, _ signal: Int32) {
-        if kill(-process, signal) != 0 {
-            kill(process, signal)
-        }
+    /// command was started as its head. Where it wasn't, the command alone gets it while still running.
+    @discardableResult
+    private static func signalGroup(_ process: Process, _ signal: Int32) -> Bool {
+        let identifier = process.processIdentifier
+        if kill(-identifier, signal) == 0 { return true }
+        return process.isRunning && kill(identifier, signal) == 0
     }
 }
 

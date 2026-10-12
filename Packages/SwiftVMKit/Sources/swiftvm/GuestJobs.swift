@@ -267,7 +267,9 @@ enum GuestJobs {
         // `folder/.` is the folder's contents, as it is to cp.
         let isContents = source == "." || source.hasSuffix("/.")
         let url = URL(fileURLWithPath: source).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else { fail("“\(source)” isn't there.") }
+        // The link itself is copied, even when its target isn't on this Mac.
+        var information = stat()
+        guard lstat(url.path, &information) == 0 else { fail("“\(source)” isn't there.") }
         let (parent, name) = isContents ? (url.path, ".") : (url.deletingLastPathComponent().path, url.lastPathComponent)
 
         let archive = Pipe()
@@ -359,7 +361,8 @@ enum GuestJobs {
 
         // cp puts it where cp would: into a folder that is there, under the name given otherwise.
         let unpacked = isContents ? work.path + "/." : work.appending(path: name).path
-        guard isContents || FileManager.default.fileExists(atPath: unpacked) else { leave("The guest sent something else than what was asked for.") }
+        var information = stat()
+        guard isContents || lstat(unpacked, &information) == 0 else { leave("The guest sent something else than what was asked for.") }
         let cp = Process()
         cp.executableURL = URL(fileURLWithPath: "/bin/cp")
         cp.arguments = ["-Rc", unpacked, target.path]

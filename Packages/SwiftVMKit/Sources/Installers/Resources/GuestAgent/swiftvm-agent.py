@@ -82,8 +82,8 @@ MAX_ACCEPTED_FRAME = 1024 * 1024
 KILL_GRACE = 3.0
 # How long the app gets to hang up once a job has ended, before the agent does.
 HANG_UP_TIMEOUT = 5.0
-# How long what a command printed may take to arrive once the command has ended. Something it
-# left running in the background can hold its output open for good.
+# How long an output pipe may stay idle once the command has ended. Something it left running
+# in the background can hold the pipe open for good; time spent sending to the app doesn't count.
 OUTPUT_GRACE = 2.0
 # Where a command looks for programs when the system doesn't say.
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1586,34 +1586,52 @@ class Job:
             return
 
         finished = threading.Event()
+        stopped = threading.Event()
         printers = [
-            threading.Thread(target=self.pass_on, args=(process.stdout, FRAME_OUTPUT), daemon=True),
-            threading.Thread(target=self.pass_on, args=(process.stderr, FRAME_ERROR), daemon=True),
+            threading.Thread(target=self.pass_on, args=(process.stdout, FRAME_OUTPUT, finished), daemon=True),
+            threading.Thread(target=self.pass_on, args=(process.stderr, FRAME_ERROR, finished), daemon=True),
         ]
         for thread in printers:
             thread.start()
         threading.Thread(target=self.feed, args=(process,), daemon=True).start()
-        threading.Thread(target=self.watch, args=(process, finished), daemon=True).start()
+        watcher = threading.Thread(target=self.watch, args=(process, stopped), daemon=True)
+        watcher.start()
         status = process.wait()
         finished.set()
-        # What the command printed last is still on its way.
-        deadline = time.monotonic() + OUTPUT_GRACE
+        # What the command printed last is still on its way. Only an idle pipe times out, never a
+        # thread waiting for the app to take a frame, and the end follows all of those frames.
         for thread in printers:
-            thread.join(max(0.0, deadline - time.monotonic()))
+            thread.join()
+        stopped.set()
+        watcher.join()
         if status < 0:
             self.end(signal=-status)
         else:
             self.end(status=status)
 
-    def pass_on(self, stream, kind):
+    def pass_on(self, stream, kind, finished):
         try:
+            waiting = select.poll()
+            waiting.register(stream, select.POLLIN)
+            idle_since = None
             while True:
+                if not waiting.poll(250):
+                    if finished.is_set():
+                        now = time.monotonic()
+                        if idle_since is None:
+                            idle_since = now
+                        elif now - idle_since >= OUTPUT_GRACE:
+                            break
+                    continue
                 data = stream.read1(MAX_FRAME)
                 if not data:
                     break
                 self.send_frame(kind, data)
+                idle_since = None
         except (OSError, ValueError):
             pass
+        finally:
+            stream.close()
 
     def feed(self, process):
         """Gives the command what the app sends as its input."""
@@ -1638,7 +1656,7 @@ class Job:
         except OSError:
             pass
 
-    def watch(self, process, finished):
+    def watch(self, process, stopped):
         """Calls the command off when the app hangs up: whoever wanted it is gone.
 
         This doesn't go by what the app sends, which may be waiting behind input the command isn't
@@ -1648,19 +1666,22 @@ class Job:
         watcher = select.poll()
         try:
             watcher.register(self.connection, getattr(select, "POLLRDHUP", 0))
-            while not finished.is_set():
+            while not stopped.is_set():
                 if any(events & hung_up for _, events in watcher.poll(500)):
                     break
         except (OSError, ValueError):
             pass
-        if finished.is_set():
+        if stopped.is_set():
             return
         try:
             os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(KILL_GRACE)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
+            # The parent may take TERM while a child ignores it. Give the whole group this long to
+            # end, even when its head has already exited.
+            deadline = time.monotonic() + KILL_GRACE
+            while time.monotonic() < deadline:
+                os.killpg(process.pid, 0)
+                time.sleep(0.05)
+            os.killpg(process.pid, signal.SIGKILL)
         except OSError:
             pass
 

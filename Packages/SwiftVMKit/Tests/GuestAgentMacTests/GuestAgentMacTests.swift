@@ -730,6 +730,101 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(end == JobEnd(status: 3))
     }
 
+    @Test(arguments: [false, true]) func aSlowReaderGetsAllTheOutput(standardError: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-output-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let finished = directory.appending(path: "finished")
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let (agent, mac) = FarEnd.makeLine()
+        defer { mac.hangUp() }
+        var size: Int32 = 4096
+        for descriptor in [agent, mac.descriptor] {
+            setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+        }
+        daemon.serveJob(on: agent)
+        let script = """
+            if [ "$2" = stderr ]; then exec 1>&2; fi
+            dd if=/dev/zero bs=8192 count=1 2>/dev/null
+            sleep 0.2
+            dd if=/dev/zero bs=8192 count=1 2>/dev/null
+            : > "$1"
+            """
+        mac.send(GuestJob.exec(.init(arguments: ["sh", "-c", script, "output", finished.path, standardError ? "stderr" : "stdout"])))
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        mac.send(JobFrame(.input).encoded)
+        // The command has printed everything and can exit, but the first frame is still blocked on
+        // this reader. Time spent sending must not cost it the bytes still waiting in the pipe.
+        try #require(await eventually { FileManager.default.fileExists(atPath: finished.path) })
+        try await Task.sleep(for: .seconds(CommandJob.outputGrace + 1))
+        var printed = Data()
+        var end: JobEnd?
+        while end == nil, let frame = await mac.frame() {
+            if frame.kind == (standardError ? .errorOutput : .output) {
+                printed.append(frame.payload)
+            }
+            end = frame.end
+        }
+        #expect(printed == Data(repeating: 0, count: 16384))
+        #expect(end == .success)
+    }
+
+    @Test func anIdleInheritedPipeDoesNotHoldTheJobOpen() async throws {
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let mac = send(.exec(.init(arguments: ["sh", "-c", "sleep 30 & echo $!"])), to: daemon)
+        defer { mac.hangUp() }
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        mac.send(JobFrame(.input).encoded)
+        let first = try #require(await mac.frame())
+        let child = try #require(pid_t(String(decoding: first.payload, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { kill(child, SIGKILL) }
+        #expect(await mac.frame(timeout: CommandJob.outputGrace + 3)?.end == .success)
+        // Finishing normally is not cancellation: background work is left alone.
+        #expect(kill(child, 0) == 0)
+    }
+
+    @Test func cancellationReachesChildrenAfterTheirParentExits() async throws {
+        let daemon = AgentDaemon(system: system, queue: queue)
+        let command = """
+            POSIX::setsid() >= 0 || POSIX::setpgid(0, 0) == 0 || die "process group";
+            pipe(my $ready, my $signal) or die "pipe";
+            my $child = fork();
+            defined($child) or die "fork";
+            if ($child == 0) {
+                close $ready;
+                $SIG{TERM} = 'IGNORE';
+                syswrite($signal, 'r');
+                close $signal;
+                sleep 15;
+                exit 0;
+            }
+            close $signal;
+            sysread($ready, my $byte, 1);
+            $| = 1;
+            print "$$ $child\\n";
+            sleep 15;
+            kill 9, $child;
+            waitpid($child, 0);
+            """
+        let mac = send(.exec(.init(arguments: ["/usr/bin/perl", "-MPOSIX", "-e", command])), to: daemon)
+        defer { mac.hangUp() }
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        let first = try #require(await mac.frame())
+        let processes = String(decoding: first.payload, as: UTF8.self).split(whereSeparator: \.isWhitespace).compactMap { pid_t($0) }
+        try #require(processes.count == 2)
+        let (parent, child) = (processes[0], processes[1])
+        defer {
+            kill(child, SIGKILL)
+            kill(parent, SIGKILL)
+        }
+        #expect(getpgid(child) == parent)
+        // The parent takes TERM, but its child is already ignoring it when the Mac hangs up.
+        shutdown(mac.descriptor, SHUT_RDWR)
+        #expect(await eventually { kill(parent, 0) != 0 })
+        #expect(await eventually(within: .seconds(CommandJob.killGrace + 2)) { kill(child, 0) != 0 })
+    }
+
     @Test func aCommandIsCalledOffWhenTheMacHangsUp() async throws {
         let daemon = AgentDaemon(system: system, queue: queue)
         let mac = send(.exec(.init(arguments: ["sh", "-c", "echo $$; exec sleep 600"])), to: daemon)
