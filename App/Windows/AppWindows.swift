@@ -44,8 +44,8 @@ final class AppWindows {
         show(activatingApp: activatingApp) { $0(id: WindowID.machine, value: id) }
     }
 
-    func showNewMachine(activatingApp: Bool = true) {
-        show(activatingApp: activatingApp) { $0(id: WindowID.newMachine) }
+    func showNewMachine() {
+        show(activatingApp: true) { $0(id: WindowID.newMachine) }
     }
 
     func showSettings(of machine: VirtualMachine) {

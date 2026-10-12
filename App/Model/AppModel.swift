@@ -57,8 +57,6 @@ final class AppModel {
     @ObservationIgnored private var isAddressRefreshDue = false
     /// Opens the app's windows.
     @ObservationIgnored let windows = AppWindows()
-    /// Whether ``offerFirstMachine()`` has had its one turn.
-    @ObservationIgnored var hasOfferedFirstMachine = false
     @ObservationIgnored private var controlServer: ControlServer?
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
