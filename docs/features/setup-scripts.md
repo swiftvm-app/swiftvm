@@ -143,7 +143,9 @@ from. Give it a name and choose **Save and Add**: it is saved under that name
 in your folder, and added to the machine you are creating. The name is what
 the script goes by, unless you give it another with `# name:` in its header. A
 name that is taken, by one of your scripts or by a template, is turned down.
-To change the script later, open the file in the folder with any editor.
+Names starting with `.` or `#`, or ending with `~`, are turned down too, since
+the folder's list skips those files. To change the script later, open the file
+in the folder with any editor.
 
 ### A file, once
 
