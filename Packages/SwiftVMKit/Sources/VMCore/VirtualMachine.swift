@@ -375,6 +375,45 @@ public final class VirtualMachine: Identifiable {
         return try await backend.connectToGuest(port: port)
     }
 
+    /// Has the guest's agent take on `job`, and returns the connection that carries the job from there:
+    /// ``JobFrame``s both ways, until the agent ends it or the connection is closed, which calls it off.
+    ///
+    /// Nothing is asked of a guest whose machine isn't to be driven from the command line, and nothing
+    /// of an agent that doesn't say it does this kind of job.
+    public func openJob(_ job: GuestJob, answerTimeout: TimeInterval = 15) async throws -> FileHandle {
+        guard configuration.automation.isAllowed else { throw GuestJobError.notAllowed(name: name) }
+        guard state == .running, let backend else { throw VMError.notRunning(name: name) }
+        guard agent.isConnected else { throw GuestJobError.noAgent(name: name) }
+        guard let feature = job.feature, agent.offers(feature) else {
+            // The agent's version is the guest's word. What is shown of it is short and plain.
+            let version = agent.version.map { ShownText.line($0, limit: 32) }
+            throw GuestJobError.notOffered(name: name, version: version)
+        }
+        // A job is one line, and an agent passes over a line that is longer than lines may be.
+        guard GuestMessageCoding.line(for: job).count < GuestProtocol.maximumLineLength else { throw GuestJobError.tooLong }
+        let connection: FileHandle
+        do {
+            connection = try await backend.connectToGuest(port: GuestProtocol.jobPort)
+        } catch {
+            throw GuestJobError.noAnswer(name: name)
+        }
+        // Waiting for the agent's answer holds a thread of its own: not the main actor, and none of
+        // the few that everything else that waits here shares.
+        let descriptor = connection.fileDescriptor
+        let answer = await withCheckedContinuation { (continuation: CheckedContinuation<GuestJobAnswer?, Never>) in
+            Thread.detachNewThread {
+                continuation.resume(returning: GuestJobLine.open(job, over: descriptor, timeout: answerTimeout))
+            }
+        }
+        guard let answer else { throw GuestJobError.noAnswer(name: name) }
+        guard answer.ok else {
+            // The guest's own words, made fit to show on this Mac.
+            let reason = answer.error.map { ShownText.line($0, limit: GuestJobError.longestReason) } ?? ""
+            throw GuestJobError.refused(reason.isEmpty ? "The guest tools in “\(name)” refused, without saying why." : reason)
+        }
+        return connection
+    }
+
     public func refreshDiskUsage() {
         allocatedDiskSize = bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })
     }

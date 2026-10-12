@@ -1,4 +1,5 @@
 import Foundation
+import GuestChannel
 
 /// A request sent to the running app over its control socket (one JSON document per line).
 public struct ControlRequest: Codable, Sendable, Equatable {
@@ -68,6 +69,14 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// The setup scripts a new Linux machine can be made with, the app's and the user's, or with
         /// ``ControlRequest/system`` only those written for that system.
         case scripts
+        /// Wait until the machine's guest tools answer, which is when it can be given jobs. For at most
+        /// ``ControlRequest/timeout`` seconds.
+        case wait
+        /// Have the guest tools do ``ControlRequest/job`` in the guest: run a command, show the screen,
+        /// use the mouse and the keyboard. After the answer, the connection carries the job's frames.
+        case job
+        /// Let the machine be given jobs or not, as ``ControlRequest/isOn`` says.
+        case automation
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -167,19 +176,24 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     /// For `install-tools` over SSH: the guest account's password, which macOS wants before it lets
     /// anything be installed.
     public var password: String?
-    /// For `share-clipboard` and `usb-auto`: whether it is to be on.
+    /// For `share-clipboard`, `usb-auto` and `automation`: whether it is to be on.
     public var isOn: Bool?
     /// For the `usb-` commands that deal with one device: its number in the list, its `vendor:product`,
     /// its serial number or its name.
     public var usbDevice: String?
     /// For `scripts`: the Linux image to list them for, by its catalog identifier.
     public var system: String?
+    /// For `job`: what the guest tools are to do.
+    public var job: GuestJob?
+    /// For `wait`: how many seconds to wait at most.
+    public var timeout: Double?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
-        password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil
+        password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
+        timeout: Double? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -197,13 +211,27 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.isOn = isOn
         self.usbDevice = usbDevice
         self.system = system
+        self.job = job
+        self.timeout = timeout
+    }
+}
+
+extension ControlRequest {
+    /// The longest `wait` waits: a day.
+    public static let longestWait: Double = 86_400
+
+    /// How long `wait` waits at most: what was asked for, within what can be counted to. A tool can
+    /// send any number, and one that isn't a time must not be the app's undoing.
+    public var waitTimeout: Duration {
+        guard let timeout, timeout.isFinite else { return .seconds(300) }
+        return .seconds(min(max(timeout, 0), Self.longestWait))
     }
 }
 
 extension ControlRequest.Command {
     /// Whether a successful answer is followed by a byte stream instead of further requests.
     public var opensStream: Bool {
-        self == .console || self == .vsock
+        self == .console || self == .vsock || self == .job
     }
 }
 
@@ -300,6 +328,20 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     /// How the machine's setup script is doing, as the guest tools report it. `nil` for a machine
     /// without one, and while the guest isn't up to say.
     public var setup: Setup?
+    /// Whether the machine can be given jobs, and which. `nil` from an app that doesn't say.
+    public var automation: Automation?
+
+    public struct Automation: Codable, Sendable, Equatable {
+        public var isAllowed: Bool
+        /// What the connected guest tools do: `exec`, `screen`, `input`, `accessibility`. Empty while
+        /// none are connected.
+        public var features: [String]
+
+        public init(isAllowed: Bool, features: [String]) {
+            self.isAllowed = isAllowed
+            self.features = features
+        }
+    }
 
     public struct Setup: Codable, Sendable, Equatable {
         /// What the script sets up.
@@ -331,7 +373,8 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     public init(
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
         snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil,
-        usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil, setup: Setup? = nil
+        usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil, setup: Setup? = nil,
+        automation: Automation? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -344,6 +387,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.usbDevices = usbDevices
         self.usbAutoConnect = usbAutoConnect
         self.setup = setup
+        self.automation = automation
     }
 }
 

@@ -30,12 +30,18 @@ final class SystemPasteboard: AgentPasteboard {
 /// It tells the half that runs as root (``AgentDaemon``) when text is copied here, for the app on the
 /// Mac, and puts on the clipboard what was copied there. It has no line to the Mac of its own.
 ///
+/// It also does the jobs that take this session's screen, mouse or keyboard (``SessionJob``), when
+/// the other half says there is one.
+///
 /// macOS has no way to be told that something was copied, so this looks at the clipboard's counter a
 /// couple of times a second, which costs next to nothing, and only reads the clipboard when it has moved.
 final class SessionAgent: @unchecked Sendable {
     private let pasteboard: any AgentPasteboard
     private let queue: DispatchQueue
     private let connect: () -> Int32?
+    /// What jobs are done with. Without one, this half only shares the clipboard.
+    private let desktop: (any AgentDesktop)?
+    private let connectForJob: @Sendable () -> Int32?
     private let lookInterval: TimeInterval
     private let retryInterval: TimeInterval
     private var daemon: AgentLine?
@@ -46,13 +52,18 @@ final class SessionAgent: @unchecked Sendable {
     /// - Parameters:
     ///   - queue: Where everything happens, the clipboard included.
     ///   - connect: Opens a line to the half that runs as root, or returns `nil` while it isn't there.
+    ///   - connectForJob: Opens another one, for a job that half has announced.
     init(
-        pasteboard: any AgentPasteboard, queue: DispatchQueue, lookInterval: TimeInterval = 0.5, retryInterval: TimeInterval = 2,
-        connect: @escaping () -> Int32? = { AgentSockets.connectToUnixSocket(path: AgentSockets.sessionSocketPath) }
+        pasteboard: any AgentPasteboard, queue: DispatchQueue, desktop: (any AgentDesktop)? = nil, lookInterval: TimeInterval = 0.5,
+        retryInterval: TimeInterval = 2,
+        connect: @escaping () -> Int32? = { AgentSockets.connectToUnixSocket(path: AgentSockets.sessionSocketPath) },
+        connectForJob: @escaping @Sendable () -> Int32? = { AgentSockets.connectToUnixSocket(path: AgentSockets.sessionJobSocketPath) }
     ) {
         self.pasteboard = pasteboard
         self.queue = queue
+        self.desktop = desktop
         self.connect = connect
+        self.connectForJob = connectForJob
         self.lookInterval = lookInterval
         self.retryInterval = retryInterval
         // What is on the clipboard when the session begins was copied before anyone shared it.
@@ -94,6 +105,15 @@ final class SessionAgent: @unchecked Sendable {
     }
 
     private func handle(_ bytes: Data) {
+        if let notice = GuestMessageCoding.message(SessionJobNotice.self, from: bytes), notice.type == SessionJobNotice.kind {
+            // A job takes as long as it takes. It has a thread of its own, and the clipboard goes on.
+            if let desktop {
+                Thread.detachNewThread { [connectForJob] in
+                    SessionJob.run(token: notice.token, desktop: desktop, connect: connectForJob)
+                }
+            }
+            return
+        }
         guard case .clipboard(let text) = GuestMessageCoding.message(HostMessage.self, from: bytes) else { return }
         if pasteboard.text != text {
             pasteboard.setText(text)

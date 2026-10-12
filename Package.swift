@@ -29,6 +29,7 @@ let package = Package(
                 .product(name: "DiskTools", package: "SwiftVMKit"),
                 .product(name: "Installers", package: "SwiftVMKit"),
                 .product(name: "VMControl", package: "SwiftVMKit"),
+                .product(name: "GuestChannel", package: "SwiftVMKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "App",

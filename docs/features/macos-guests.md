@@ -58,4 +58,7 @@ macOS Recovery.
 - The shared clipboard needs the [guest tools](guest-tools.md), which need
   macOS 27 or newer in the guest.
 - macOS guests have no [serial console](linux-guests.md#serial-console).
+- `swiftvm` can [run commands in the guest](automation.md). To see its screen
+  and use its mouse and keyboard, macOS wants
+  [your say-so](automation.md#macos-guests) in the guest, once.
 - A copy of a Mac gets its own serial number.

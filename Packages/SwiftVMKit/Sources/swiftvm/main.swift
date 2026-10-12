@@ -65,15 +65,45 @@ Usage: swiftvm <command> [arguments]
                                     its socket device. Made for ssh: ProxyCommand swiftvm vsock <machine> 22
   console <machine> [--wait <seconds>]
                                     Connect this terminal to the machine's serial console
+  wait <machine> [--timeout <seconds>]
+                                    Wait until the machine's guest tools answer, which is when the
+                                    commands below work
+  exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>]
+       [--timeout <seconds>] [--] <command> [arguments]
+                                    Run a command in the machine, as its own account or another. No
+                                    shell reads it: for pipes and the like, run sh -c '...'. What is
+                                    piped in goes to the command. Ends with the command's own status,
+                                    124 when the time was up, 125 when the command couldn't be run
+  cp [--root | --user <name>] <from> <to>
+                                    Copy a file or a folder into the machine or out of it. The side in
+                                    the machine is <machine>:<path>. Works as cp -R does
+  screenshot <machine> [<file> | -] Save what is on the machine's screen as a PNG, and print where
+  ui <machine> click <x> <y> [--button left|right|middle] [--count <n>]
+  ui <machine> double-click <x> <y> | right-click <x> <y> | move <x> <y>
+  ui <machine> drag <x> <y> <to x> <to y>
+  ui <machine> scroll <x> <y> up|down|left|right [<notches>]
+                                    Use the machine's mouse. Places are in the pixels of a screenshot
+  ui <machine> type <text>          Type text on the machine's keyboard
+  ui <machine> key <key>...         Press keys, one after the other: Return, Escape, ctrl+c, cmd+space
+  ui <machine> tree [--app <name>] [--depth <levels>] [--all]
+                                    Print what is on the machine's screen as a tree of its parts, in
+                                    JSON: windows, buttons, text fields, each with an id. Boxes that
+                                    only hold other parts are left out, unless you add --all
+  ui <machine> press <element> [--action <name>] | focus <element> | set <element> <text>
+                                    Do to one part of the tree, by its id, what a click on it would or
+                                    another of its actions, give it the keyboard, or replace its text
+  automation <machine> on|off       Let exec, cp, screenshot and ui work in the machine, or not
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
 <machine> is a name, SSH alias or UUID.
+
+exec, cp, screenshot and ui need the guest tools in the machine: swiftvm install-tools.
 """
 
-func fail(_ message: String) -> Never {
+func fail(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data("swiftvm: \(message)\n".utf8))
-    exit(1)
+    exit(status)
 }
 
 func send(_ request: ControlRequest) -> ControlResponse {
@@ -222,6 +252,11 @@ func printDetails(of machine: MachineSummary) {
         }
         if let sharesClipboard = details.sharesClipboard {
             lines.append(("Clipboard", sharesClipboard ? "shared" : "not shared"))
+        }
+        if let automation = details.automation {
+            // `on (exec, screen, input, accessibility)`, with what the connected guest tools do.
+            let features = automation.features.isEmpty || !automation.isAllowed ? "" : " (\(automation.features.joined(separator: ", ")))"
+            lines.append(("Automation", (automation.isAllowed ? "on" : "off") + features))
         }
         lines.append(("Snapshots", String(details.snapshotCount)))
         lines.append(("Location", details.location))
@@ -392,6 +427,41 @@ case "share-clipboard":
         printDetails(of: machine)
     }
 
+case "automation":
+    let machine = requireMachine()
+    guard arguments.count == 2, ["on", "off"].contains(arguments[1]) else {
+        fail("Usage: swiftvm automation <machine> on|off")
+    }
+    if let machine = send(ControlRequest(command: .automation, machine: machine, isOn: arguments[1] == "on")).machines.first {
+        printDetails(of: machine)
+    }
+
+case "wait":
+    let machine = requireMachine()
+    var options = Array(arguments.dropFirst())
+    var timeout: Double?
+    if let index = options.firstIndex(of: "--timeout") {
+        guard index + 1 < options.count, let seconds = Double(options[index + 1]), seconds > 0, seconds <= ControlRequest.longestWait else {
+            fail("--timeout needs a number of seconds, a day at most.")
+        }
+        timeout = seconds
+        options.removeSubrange(index...(index + 1))
+    }
+    rejectUnknownOptions(options, allowed: [])
+    printTable(send(ControlRequest(command: .wait, machine: machine, timeout: timeout)).machines)
+
+case "exec":
+    GuestJobs.exec(arguments)
+
+case "cp":
+    GuestJobs.copy(arguments)
+
+case "screenshot":
+    GuestJobs.screenshot(arguments)
+
+case "ui":
+    GuestJobs.ui(arguments)
+
 case "usb":
     guard let action = arguments.first else {
         let response = send(ControlRequest(command: .usbList))
@@ -536,7 +606,7 @@ case "ssh":
 
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
-    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts]
+    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }

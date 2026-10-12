@@ -1,4 +1,5 @@
 import Foundation
+import GuestChannel
 import VMControl
 
 /// `swiftvm vsock`: connects this command's standard input and output to a port in a guest.

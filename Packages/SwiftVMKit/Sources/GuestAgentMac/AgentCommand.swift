@@ -5,7 +5,10 @@ import GuestChannel
 public enum AgentCommand {
     static let usage = """
         Usage: swiftvm-agent daemon      serve the SwiftVM app (as root, in a virtual machine; started by launchd)
-               swiftvm-agent session     share the clipboard of the user who is logged in (started by launchd)
+               swiftvm-agent session     share the clipboard of the user who is logged in, and their screen,
+                                         mouse and keyboard with the SwiftVM app (started by launchd)
+               swiftvm-agent run-as <account> [--in-session] -- <command> [arguments]
+                                         run a command as an account of this system (started by the daemon)
                swiftvm-agent --version
         """
 
@@ -23,9 +26,11 @@ public enum AgentCommand {
             withExtendedLifetime(daemon) { dispatchMain() }
         case ["session"]:
             signal(SIGPIPE, SIG_IGN)
-            let session = SessionAgent(pasteboard: SystemPasteboard(), queue: .main)
+            let session = SessionAgent(pasteboard: SystemPasteboard(), queue: .main, desktop: MacDesktop())
             session.start()
             withExtendedLifetime(session) { dispatchMain() }
+        case _ where arguments.first == RunAs.mode:
+            return RunAs.run(Array(arguments.dropFirst()))
         default:
             FileHandle.standardError.write(Data((usage + "\n").utf8))
             return 64

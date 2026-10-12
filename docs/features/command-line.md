@@ -92,6 +92,24 @@ SwiftVM's [templates](setup-scripts.md#templates), and
 | `usb auto <machine> <device> on\|off` | Attach it whenever it is plugged in, or stop |
 | `install-tools <machine>` | Install the [guest tools](guest-tools.md). `--disc`, `--password <password>` |
 
+## Automation
+
+These work inside a running guest, through its [guest tools](guest-tools.md).
+See [Automation](automation.md).
+
+| Command | What it does |
+| --- | --- |
+| `wait <machine>` | Wait until the guest tools answer. `--timeout <seconds>` |
+| `exec <machine> [--] <command>` | [Run a command](automation.md#commands) in the guest, and end with its exit status. `--root`, `--user <name>`, `--cwd <folder>`, `--env <name>=<value>`, `--timeout <seconds>` |
+| `cp <from> <to>` | [Copy a file or a folder](automation.md#files) into the guest or out of it. The guest's side is `<machine>:<path>`. `--root`, `--user <name>` |
+| `screenshot <machine> [file]` | Save [what is on the guest's screen](automation.md#the-screen) as a PNG |
+| `ui <machine> click <x> <y>` | Click. Also `double-click`, `right-click`, `move`, `drag <x> <y> <to x> <to y>`, and `scroll <x> <y> up\|down\|left\|right` |
+| `ui <machine> type <text>` | Type text |
+| `ui <machine> key <key>…` | Press keys: `Return`, `ctrl+c` |
+| `ui <machine> tree` | Print [what is on the screen](automation.md#what-is-on-the-screen) as a tree, in JSON. `--app <name>`, `--depth <levels>`, `--all` |
+| `ui <machine> press <element>` | Press a part of the tree, by its `id`. Also `focus <element>` and `set <element> <text>` |
+| `automation <machine> on\|off` | Let all of the above work in the machine, or [not](automation.md#turning-it-off) |
+
 ## Snapshots
 
 | Command | What it does |
@@ -117,6 +135,8 @@ swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80
 swiftvm snapshot web-server "Before upgrade"
 swiftvm ssh web-server
+swiftvm exec web-server --root -- apt-get install -y nginx
+swiftvm cp ./site web-server:/var/www
 swiftvm suspend web-server
 swiftvm start web-server
 ```

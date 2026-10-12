@@ -12,8 +12,11 @@ import GuestChannel
 /// Nothing that was copied is kept here. A session that begins asks the app, through this half, for what
 /// is on the Mac's clipboard at that moment: the app knows, and knows whether it is still shared.
 ///
+/// On a second port it takes jobs for whoever drives this system from the Mac (``AgentJobs``): commands
+/// to run, and what is done with the screen, the mouse and the keyboard, which it hands to the other half.
+///
 /// It serves one app and one session at a time, the newest of each. Everything happens on one queue,
-/// except what takes the system long to do.
+/// except what takes the system long to do, and jobs, which have threads of their own.
 final class AgentDaemon: @unchecked Sendable {
     /// How long addresses get to settle after the system says they changed, before a look.
     var settleTime: TimeInterval = 0.3
@@ -34,6 +37,9 @@ final class AgentDaemon: @unchecked Sendable {
     private var sources: [any DispatchSourceProtocol] = []
     private var addressWatcher: AddressWatcher?
     private var isLookDue = false
+    private lazy var jobs = AgentJobs(system: system, version: version) { [weak self] token in
+        self?.announceJob(token) ?? false
+    }
 
     /// - Parameter queue: Where everything the daemon does happens. Call its methods from there, except
     ///   where they say otherwise.
@@ -41,16 +47,24 @@ final class AgentDaemon: @unchecked Sendable {
         self.system = system
         self.queue = queue
         self.version = version
+        // Made now, by the one who makes the daemon: a job can be served from any thread, and two
+        // that came at once must not each make their own.
+        _ = jobs
     }
 
     // MARK: Listening
 
     /// Starts listening for the app on the socket device and for the session on a Unix socket, and
     /// keeps an eye on the system's addresses. Safe to call from anywhere.
-    func listen(port: UInt32 = GuestProtocol.agentPort, sessionSocketPath: String = AgentSockets.sessionSocketPath) {
+    func listen(
+        port: UInt32 = GuestProtocol.agentPort, jobPort: UInt32 = GuestProtocol.jobPort,
+        sessionSocketPath: String = AgentSockets.sessionSocketPath, sessionJobSocketPath: String = AgentSockets.sessionJobSocketPath
+    ) {
         queue.async { [self] in
             listenForApp(port: port, lastProblem: nil)
+            listenForJobs(port: jobPort)
             listenForSession(path: sessionSocketPath)
+            listenForSessionJobs(path: sessionJobSocketPath)
             addressWatcher = AddressWatcher(queue: queue) { [weak self] in self?.addressesMayHaveChanged() }
             let regularLook = DispatchSource.makeTimerSource(queue: queue)
             regularLook.schedule(deadline: .now() + lookInterval, repeating: lookInterval, leeway: .seconds(5))
@@ -75,6 +89,37 @@ final class AgentDaemon: @unchecked Sendable {
                 AgentLog.note("Can't listen on the socket device (\(problem)). Trying again until it works.")
             }
             queue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.listenForApp(port: port, lastProblem: problem) }
+        }
+    }
+
+    /// Jobs arrive on a port of their own, each on its own connection. The socket device is there by
+    /// the time the app's port could be listened on, or will be: this tries for as long.
+    private func listenForJobs(port: UInt32) {
+        do {
+            let listener = try AgentSockets.listenOnSocketDevice(port: port)
+            accept(on: listener) { [weak self] in
+                guard let connection = AgentSockets.acceptFromHost(on: listener) else { return }
+                self?.serveJob(on: connection)
+            }
+        } catch {
+            queue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.listenForJobs(port: port) }
+        }
+    }
+
+    private func listenForSessionJobs(path: String) {
+        do {
+            let listener = try AgentSockets.listenOnUnixSocket(path: path)
+            accept(on: listener) { [weak self] in
+                guard let (connection, user) = AgentSockets.acceptLocal(on: listener) else { return }
+                // What the Mac asks of the screen is done by whoever sits at it, and answered by nobody else.
+                guard user == AgentSockets.consoleUser() else {
+                    close(connection)
+                    return
+                }
+                self?.serveSessionJob(on: connection)
+            }
+        } catch {
+            AgentLog.note("Can't listen for the user's session to take jobs (\(error)). The screen, the mouse and the keyboard won't be reached.")
         }
     }
 
@@ -123,7 +168,10 @@ final class AgentDaemon: @unchecked Sendable {
         line.start()
         send(.hello(AgentHello(
             agent: version, system: system.describe(), hostName: system.hostName(),
-            features: [GuestFeature.clipboard, GuestFeature.timeZone]
+            features: [
+                GuestFeature.clipboard, GuestFeature.timeZone, GuestFeature.exec, GuestFeature.screen, GuestFeature.input,
+                GuestFeature.accessibility,
+            ]
         )))
         reportAddresses(always: true)
         // Someone logged in while the app wasn't there to ask.
@@ -156,6 +204,26 @@ final class AgentDaemon: @unchecked Sendable {
 
     private func send(_ message: AgentMessage) {
         app?.send(GuestMessageCoding.line(for: message))
+    }
+
+    // MARK: Jobs
+
+    /// Serves a job on a connection the Mac has made for it. Safe to call from anywhere.
+    func serveJob(on descriptor: Int32) {
+        jobs.serve(descriptor)
+    }
+
+    /// The session's half has connected for a job it was told about. Safe to call from anywhere.
+    func serveSessionJob(on descriptor: Int32) {
+        jobs.serveSession(descriptor)
+    }
+
+    /// Tells the session's half that there is a job for it under this name. `false` when nobody is
+    /// logged in to tell. Called from a job's own thread.
+    private func announceJob(_ token: String) -> Bool {
+        queue.sync {
+            session?.send(GuestMessageCoding.line(for: SessionJobNotice(token: token))) ?? false
+        }
     }
 
     // MARK: Messages

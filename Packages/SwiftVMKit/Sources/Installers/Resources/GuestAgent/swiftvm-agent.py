@@ -10,23 +10,43 @@ The agent listens; the app connects. Each side sends one JSON object per line an
 doesn't know, so that an agent and an app of different ages get along. The protocol is described
 in Sources/GuestChannel of the SwiftVM sources.
 
-Runs as root, from swiftvm-agent.service, and needs nothing but Python 3's standard library.
+On a second port it takes jobs, each on a connection of its own, for whoever drives this machine
+from the Mac's command line: run a command, show what is on the screen, use the mouse and the
+keyboard, or say what is on the screen as a tree of its parts.
+
+Runs as root, from swiftvm-agent.service, and needs nothing but Python 3's standard library. Only
+the tree of what is on the screen takes more: the system's own accessibility, where a desktop
+brings it.
 """
 
+import array
+import fcntl
+import glob
 import json
+import mmap
 import os
+import pwd
 import re
+import select
 import selectors
 import shlex
+import signal
 import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
+import zlib
 
-AGENT_VERSION = "1.1"
+AGENT_VERSION = "1.2"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
+# Where jobs are taken, each on a connection of its own.
+JOB_PORT = 718
+# What this agent does beyond what every agent does, as it tells the app.
+FEATURES = ["exec", "screen", "input", "accessibility"]
 MAX_LINE = 256 * 1024
 MAX_INTERFACES = 64
 # A clock that is this close to the Mac's is left to the system's time service.
@@ -51,6 +71,35 @@ SETUP_POLL_INTERVAL_AT_REST = 15.0
 SETUP_POLL_INTERVAL_WITHOUT_ONE = 60.0
 # The longest a script's name or step is passed on at.
 MAX_SETUP_TEXT = 120
+# A job's first line has to arrive in this time.
+JOB_REQUEST_TIMEOUT = 10.0
+# What a job carries after its first two lines: frames of one byte for the kind, four for the
+# length, and that many bytes.
+FRAME_INPUT, FRAME_OUTPUT, FRAME_ERROR, FRAME_END = 0, 1, 2, 3
+MAX_FRAME = 64 * 1024
+MAX_ACCEPTED_FRAME = 1024 * 1024
+# How long a command that was called off gets to end by itself before it is ended.
+KILL_GRACE = 3.0
+# How long the app gets to hang up once a job has ended, before the agent does.
+HANG_UP_TIMEOUT = 5.0
+# How long an output pipe may stay idle once the command has ended. Something it left running
+# in the background can hold the pipe open for good; time spent sending to the app doesn't count.
+OUTPUT_GRACE = 2.0
+# Where a command looks for programs when the system doesn't say.
+DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# What a session's programs find its screen by, taken over for commands that run as its user.
+SESSION_VARIABLES = (
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE",
+    "XDG_SESSION_DESKTOP", "DESKTOP_SESSION",
+)
+# How long the desktop may take to say what is on the screen.
+ACCESSIBILITY_TIMEOUT = 60
+# The tree of what is on the screen is cut off after this many parts, this far down unless the
+# app asks otherwise, and no part's text is passed on at more than this.
+MAX_TREE_NODES = 3000
+MAX_TREE_CHILDREN = 500
+DEFAULT_TREE_DEPTH = 40
+MAX_TREE_TEXT = 200
 
 RTMGRP_LINK = 0x1
 RTMGRP_IPV4_IFADDR = 0x10
@@ -105,6 +154,28 @@ def read_os_release():
             values[key.strip()] = words[0] if words else ""
         return values
     return {}
+
+
+def read_environment_files():
+    """What the system gives everyone who logs in: where programs are, and which language."""
+    values = {}
+    for path in ("/etc/environment", "/etc/default/locale"):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as file:
+                lines = file.read(64 * 1024).splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            key, separator, value = line.strip().partition("=")
+            key = key.replace("export ", "", 1).strip()
+            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                continue
+            try:
+                words = shlex.split(value)
+            except ValueError:
+                continue
+            values[key] = words[0] if words else ""
+    return values
 
 
 class System:
@@ -213,6 +284,147 @@ class System:
             return
         raise AgentError("This system has no command to shut down with.")
 
+    # Accounts and sessions
+
+    def account(self, name):
+        """The account a command is to run as: the one named, or whoever is logged in at the screen."""
+        if name is None:
+            user = self.session_user()
+            if user is None:
+                raise AgentError("Nobody is logged in at this system's screen. Name the account to run the command as.")
+            try:
+                return pwd.getpwuid(user)
+            except KeyError:
+                raise AgentError("The user at this system's screen has no account.")
+        if not isinstance(name, str) or not name:
+            raise AgentError("That isn't the name of an account.")
+        try:
+            return pwd.getpwnam(name)
+        except KeyError:
+            raise AgentError("This system has no account named “%s”." % name[:64])
+
+    def identity(self, account):
+        """What makes a new process run as `account` rather than as root."""
+        if account.pw_uid == 0:
+            return {}
+        groups = os.getgrouplist(account.pw_name, account.pw_gid)
+        return {"user": account.pw_uid, "group": account.pw_gid, "extra_groups": groups}
+
+    def session_user(self):
+        """The user whose desktop is on the screen, by number, or None when nobody is logged in there."""
+        try:
+            listing = subprocess.run(
+                ["loginctl", "list-sessions", "--no-legend"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True,
+            ).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            return None
+        waiting = None
+        for line in listing.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            session = self.session_properties(fields[0])
+            # The login screen has a session too, of a class of its own, and so has everyone who
+            # came in over the network.
+            if session.get("Class") != "user" or session.get("Type") not in ("wayland", "x11", "mir"):
+                continue
+            if session.get("Remote") == "yes" or not session.get("User", "").isdigit():
+                continue
+            if session.get("State") == "active":
+                return int(session["User"])
+            # Someone who switched to another user and left their desktop open.
+            waiting = int(session["User"]) if waiting is None else waiting
+        return waiting
+
+    def session_properties(self, session):
+        try:
+            output = subprocess.run(
+                ["loginctl", "show-session", session, "-p", "User", "-p", "Type", "-p", "Class", "-p", "State", "-p", "Remote"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True,
+            ).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        return dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+
+    def environment(self, account):
+        """What a command that runs as `account` finds in its environment: what a login would give
+        it, and where its user's desktop is, if that user has one."""
+        environment = {"PATH": DEFAULT_PATH, "LANG": "C.UTF-8"}
+        environment.update(read_environment_files())
+        environment.update({
+            "HOME": account.pw_dir, "USER": account.pw_name, "LOGNAME": account.pw_name,
+            "SHELL": account.pw_shell or "/bin/sh",
+        })
+        environment.update(self.session_environment(account))
+        return environment
+
+    def session_environment(self, account):
+        runtime = "/run/user/%d" % account.pw_uid
+        if not os.path.isdir(runtime):
+            return {}
+        environment = {"XDG_RUNTIME_DIR": runtime}
+        if os.path.exists(os.path.join(runtime, "bus")):
+            environment["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s/bus" % runtime
+        # The user's own service manager knows where the desktop is, once one has started.
+        try:
+            output = subprocess.run(
+                ["systemctl", "--user", "show-environment"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5,
+                env=dict(environment, PATH=DEFAULT_PATH), **self.identity(account),
+            ).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            return environment
+        for line in output.splitlines():
+            key, separator, value = line.partition("=")
+            # A value with anything unusual in it comes quoted for a shell, and none of these do.
+            if separator and key in SESSION_VARIABLES and value and not value.startswith(("$", "'", '"')):
+                environment[key] = value
+        return environment
+
+    # The screen, the mouse and the keyboard
+
+    def screenshot(self):
+        """What is on the screen right now, as a PNG."""
+        return png(*take_picture())
+
+    def pointer(self, request):
+        INPUT.pointer(request)
+
+    def keys(self, request):
+        INPUT.keys(request)
+
+    def accessibility(self, request):
+        """Has the desktop of whoever is logged in at the screen say what is on it, or do something
+        to one part of it. Returns what there is to say about that, in JSON.
+
+        The desktop only talks to its own user, so the asking is done by this same program, run as
+        that user (accessibility_main).
+        """
+        user = self.session_user()
+        if user is None:
+            raise AgentError("Nobody is logged in at this system's screen, so there is nothing on it to read.")
+        try:
+            account = pwd.getpwuid(user)
+        except KeyError:
+            raise AgentError("The user at this system's screen has no account.")
+        # The job goes in on the helper's input. Among its arguments, the text for a text field
+        # would be there for every user of this system to read while it runs.
+        command = [sys.executable, "-I", os.path.abspath(__file__), "--accessibility"]
+        try:
+            result = subprocess.run(
+                command, input=json.dumps(request, ensure_ascii=False).encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=ACCESSIBILITY_TIMEOUT, cwd="/", env=self.environment(account), **self.identity(account),
+            )
+        except subprocess.TimeoutExpired:
+            raise AgentError("The desktop didn't say what is on the screen in %d seconds." % ACCESSIBILITY_TIMEOUT)
+        except OSError as error:
+            raise AgentError("The desktop couldn't be asked: %s" % (error.strerror or error))
+        if result.returncode != 0:
+            said = result.stderr.decode("utf-8", "replace").strip().splitlines()
+            raise AgentError(said[-1][:500] if said else "The desktop couldn't be asked what is on the screen.")
+        return result.stdout
+
 
 class PretendSystem(System):
     """Says what it would do instead of doing it, for trying the protocol without a virtual machine."""
@@ -230,6 +442,737 @@ class PretendSystem(System):
     def shut_down(self):
         log("Would shut down.")
 
+    def identity(self, account):
+        # Whoever pretends isn't root, and commands run as they are.
+        return {}
+
+    def session_user(self):
+        return os.getuid()
+
+    def session_environment(self, account):
+        return {}
+
+    def screenshot(self):
+        # Two pixels by two, black.
+        return png(2, 2, 8, "XR24", bytes(16))
+
+    def pointer(self, request):
+        log("Would use the mouse: %s." % json.dumps(request, sort_keys=True))
+
+    def keys(self, request):
+        log("Would use the keyboard: %s." % json.dumps(request, sort_keys=True))
+
+    def accessibility(self, request):
+        return json.dumps({"applications": []}).encode("utf-8")
+
+
+# The display
+#
+# What a display shows is in memory that the kernel's mode setting hands to root: whichever
+# desktop put it there, at the login screen, and on a console without any desktop. Nothing has to
+# be installed for it and nobody has to be asked.
+
+def drm_request(direction, number, size):
+    """The number the kernel's mode setting knows a request by."""
+    return (direction << 30) | (size << 16) | (ord("d") << 8) | number
+
+
+DRM_DROP_MASTER = drm_request(0, 0x1F, 0)
+DRM_GETRESOURCES = drm_request(3, 0xA0, 64)
+DRM_GETCRTC = drm_request(3, 0xA1, 104)
+DRM_GETFB2 = drm_request(3, 0xCE, 104)
+DRM_MAP_DUMB = drm_request(3, 0xB3, 16)
+# Where red, green and blue are in a pixel's four bytes, by the four letters the kernel has for
+# the layout.
+PIXEL_LAYOUTS = {"XR24": (2, 1, 0), "AR24": (2, 1, 0), "XB24": (0, 1, 2), "AB24": (0, 1, 2)}
+
+
+def framebuffer_shown(card):
+    """Describes what the first display of an open graphics card shows, or None if none shows anything.
+
+    Returns its width and height, the four letters of its pixel layout, the length of a row in
+    bytes, where in its memory the pixels start, and the kernel's handle for that memory, which is
+    let go of when the card is closed.
+    """
+    counts = bytearray(64)
+    fcntl.ioctl(card, DRM_GETRESOURCES, counts)
+    count = struct.unpack_from("=I", counts, 36)[0]
+    if not count:
+        return None
+    displays = array.array("I", [0] * count)
+    request = bytearray(64)
+    struct.pack_into("=Q", request, 8, displays.buffer_info()[0])
+    struct.pack_into("=I", request, 36, count)
+    fcntl.ioctl(card, DRM_GETRESOURCES, request)
+    for display in displays:
+        state = bytearray(104)
+        struct.pack_into("=I", state, 12, display)
+        fcntl.ioctl(card, DRM_GETCRTC, state)
+        framebuffer = struct.unpack_from("=I", state, 16)[0]
+        if not framebuffer:
+            continue
+        described = bytearray(104)
+        struct.pack_into("=I", described, 0, framebuffer)
+        fcntl.ioctl(card, DRM_GETFB2, described)
+        width, height, layout = struct.unpack_from("=3I", described, 4)
+        handle = struct.unpack_from("=I", described, 20)[0]
+        pitch = struct.unpack_from("=I", described, 36)[0]
+        offset = struct.unpack_from("=I", described, 52)[0]
+        return width, height, struct.pack("=I", layout).decode("ascii", "replace"), pitch, offset, handle
+    return None
+
+
+def look_at_display(reading):
+    """Opens the graphics cards one after the other and returns what `reading` makes of the first
+    that shows something. `reading` gets the open card and what framebuffer_shown says of it."""
+    problem = "This system has no display."
+    for path in sorted(glob.glob("/dev/dri/card*")):
+        try:
+            card = os.open(path, os.O_RDWR | os.O_CLOEXEC)
+        except OSError as error:
+            problem = "The display can't be read: %s" % (error.strerror or error)
+            continue
+        try:
+            # Whoever opens a card that nobody is in charge of is put in charge of it. That is for
+            # the desktop that is about to start, not for someone who only looks.
+            try:
+                fcntl.ioctl(card, DRM_DROP_MASTER)
+            except OSError:
+                pass
+            shown = framebuffer_shown(card)
+            if shown is None:
+                problem = (
+                    "This system's display is turned off, as a desktop does after a while without input. "
+                    "A key or the mouse wakes it: swiftvm ui <machine> key shift"
+                )
+                continue
+            return reading(card, *shown)
+        except OSError as error:
+            problem = "The display can't be read: %s" % (error.strerror or error)
+        finally:
+            os.close(card)
+    raise AgentError(problem)
+
+
+# The size of the screen when it was last seen showing something.
+LAST_SCREEN_SIZE = None
+
+
+def screen_size():
+    """How many pixels the screen is wide and high.
+
+    A display that is turned off shows nothing to measure, and the mouse is what wakes it. Its
+    size is then what it was when it last showed something, or what the display says it likes best.
+    """
+    global LAST_SCREEN_SIZE
+    try:
+        LAST_SCREEN_SIZE = look_at_display(lambda card, width, height, *rest: (width, height))
+    except AgentError:
+        if LAST_SCREEN_SIZE is None:
+            LAST_SCREEN_SIZE = preferred_screen_size()
+        if LAST_SCREEN_SIZE is None:
+            raise
+    return LAST_SCREEN_SIZE
+
+
+def preferred_screen_size():
+    """The first size the first connected display offers, which is the one it likes best, or None."""
+    for connector in sorted(glob.glob("/sys/class/drm/card*-*")):
+        try:
+            with open(os.path.join(connector, "status"), encoding="ascii", errors="replace") as file:
+                if file.read().strip() != "connected":
+                    continue
+            with open(os.path.join(connector, "modes"), encoding="ascii", errors="replace") as file:
+                size = re.fullmatch(r"(\d+)x(\d+)\w*", file.readline().strip())
+        except OSError:
+            continue
+        if size:
+            return int(size.group(1)), int(size.group(2))
+    return None
+
+
+def take_picture():
+    """What is on the screen right now: its width, height, the length of a row in bytes, the
+    layout of its pixels, and the pixels themselves, four bytes each."""
+    def read_pixels(card, width, height, layout, pitch, offset, handle):
+        global LAST_SCREEN_SIZE
+        LAST_SCREEN_SIZE = (width, height)
+        if layout not in PIXEL_LAYOUTS:
+            raise AgentError("The display's pixels are laid out as “%s”, which this agent can't read." % layout)
+        if not handle or width * 4 > pitch:
+            raise AgentError("The display's memory can't be read.")
+        mapping = bytearray(16)
+        struct.pack_into("=I", mapping, 0, handle)
+        fcntl.ioctl(card, DRM_MAP_DUMB, mapping)
+        where = struct.unpack_from("=Q", mapping, 8)[0]
+        length = offset + pitch * height
+        with mmap.mmap(card, length, mmap.MAP_SHARED, mmap.PROT_READ, offset=where) as memory:
+            return width, height, pitch, layout, memory[offset:length]
+    return look_at_display(read_pixels)
+
+
+def png(width, height, pitch, layout, pixels):
+    """A picture as a PNG file, in red, green and blue."""
+    red, green, blue = PIXEL_LAYOUTS[layout]
+    rows = bytearray()
+    # Every row starts with a byte that says its bytes are as they are.
+    row = bytearray(1 + width * 3)
+    for y in range(height):
+        line = pixels[y * pitch:y * pitch + width * 4]
+        row[1::3] = line[red::4]
+        row[2::3] = line[green::4]
+        row[3::3] = line[blue::4]
+        rows += row
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(rows), 6))
+        + chunk(b"IEND", b"")
+    )
+
+
+# The mouse and the keyboard
+#
+# The kernel lets root make input devices of its own (uinput). What the agent does with them
+# reaches the system the way a real keyboard and mouse would: every desktop takes it, and so do
+# the login screen and the console.
+
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
+SYN_REPORT = 0
+ABS_X, ABS_Y = 0, 1
+REL_HWHEEL, REL_WHEEL = 6, 8
+BUTTONS = {"left": 0x110, "right": 0x111, "middle": 0x112}
+BUS_VIRTUAL = 0x06
+# The pointer says where it is on this scale, whatever the size of the screen.
+POINTER_RANGE = 32767
+# Whoever reads input devices takes a moment to find a new one.
+DEVICE_SETTLE_TIME = 1.0
+KEY_PAUSE = 0.008
+CLICK_PAUSE = 0.06
+
+
+def uinput_request(direction, number, size):
+    return (direction << 30) | (size << 16) | (ord("U") << 8) | number
+
+
+UI_DEV_CREATE = uinput_request(0, 1, 0)
+UI_DEV_SETUP = uinput_request(1, 3, 92)
+UI_ABS_SETUP = uinput_request(1, 4, 28)
+UI_SET_EVBIT = uinput_request(1, 100, 4)
+UI_SET_KEYBIT = uinput_request(1, 101, 4)
+UI_SET_RELBIT = uinput_request(1, 102, 4)
+UI_SET_ABSBIT = uinput_request(1, 103, 4)
+
+KEY_SHIFT = 42
+MODIFIER_KEYS = {
+    "ctrl": 29, "control": 29, "shift": KEY_SHIFT, "alt": 56, "option": 56,
+    "super": 125, "cmd": 125, "command": 125, "meta": 125, "win": 125,
+}
+NAMED_KEYS = {
+    "return": 28, "enter": 28, "escape": 1, "esc": 1, "tab": 15, "space": 57, "backspace": 14,
+    "delete": 111, "del": 111, "insert": 110, "home": 102, "end": 107, "pageup": 104, "pagedown": 109,
+    "up": 103, "down": 108, "left": 105, "right": 106, "capslock": 58, "printscreen": 99, "menu": 127,
+    "f1": 59, "f2": 60, "f3": 61, "f4": 62, "f5": 63, "f6": 64, "f7": 65, "f8": 66, "f9": 67, "f10": 68,
+    "f11": 87, "f12": 88,
+}
+
+
+def us_keyboard():
+    """Which key of a US keyboard types each character, and whether Shift is held for it."""
+    keys = {" ": (57, False), "\n": (28, False), "\t": (15, False), "\\": (43, False), "|": (43, True)}
+    rows = (
+        (2, "1234567890-=", "!@#$%^&*()_+"),
+        (16, "qwertyuiop[]", "QWERTYUIOP{}"),
+        (30, "asdfghjkl;'`", 'ASDFGHJKL:"~'),
+        (44, "zxcvbnm,./", "ZXCVBNM<>?"),
+    )
+    for first, plain, shifted in rows:
+        for index, character in enumerate(plain):
+            keys[character] = (first + index, False)
+            keys[shifted[index]] = (first + index, True)
+    return keys
+
+
+US_KEYS = us_keyboard()
+
+
+def keys_of_chord(text):
+    """The keys one press is made of, in the order they go down: `ctrl+shift+t`."""
+    names = text.split("+")
+    # The plus sign is a key too: alone, or as the last of several.
+    if text == "+":
+        names = ["+"]
+    elif len(names) > 2 and names[-1] == "" and names[-2] == "":
+        names = names[:-2] + ["+"]
+    codes = []
+    for position, name in enumerate(names):
+        lowered = name.lower()
+        if lowered in MODIFIER_KEYS:
+            code, shifted = MODIFIER_KEYS[lowered], False
+        elif position < len(names) - 1:
+            raise AgentError("“%s” isn't a key to hold down. Those are ctrl, shift, alt and super." % name[:32])
+        elif lowered in NAMED_KEYS:
+            code, shifted = NAMED_KEYS[lowered], False
+        elif len(name) == 1 and lowered in US_KEYS:
+            # A letter in a shortcut is the key, whichever way it is written.
+            code, shifted = US_KEYS[lowered if name.isalpha() else name]
+        else:
+            raise AgentError("There is no key called “%s”." % name[:32])
+        if shifted and KEY_SHIFT not in codes:
+            codes.append(KEY_SHIFT)
+        if code not in codes:
+            codes.append(code)
+    return codes
+
+
+class InputDevices:
+    """A keyboard and a pointer of the agent's own making. They are made when first used and stay
+    for as long as the agent runs. One thing is done with them at a time."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.keyboard = None
+        self.mouse = None
+
+    # Making the devices
+
+    def open(self):
+        if not os.path.exists("/dev/uinput"):
+            # Where it isn't built into the kernel, it is a module.
+            try:
+                run(["modprobe", "uinput"], timeout=10)
+            except AgentError:
+                pass
+        try:
+            return os.open("/dev/uinput", os.O_WRONLY | os.O_CLOEXEC)
+        except OSError as error:
+            raise AgentError("This system doesn't let input devices be made (/dev/uinput: %s)." % (error.strerror or error))
+
+    def create(self, device, name, product):
+        # A device, as the kernel wants it described: where it is from, and what it is called.
+        fcntl.ioctl(device, UI_DEV_SETUP, struct.pack("=HHHH80sI", BUS_VIRTUAL, 0x5356, product, 1, name.encode("ascii"), 0))
+        fcntl.ioctl(device, UI_DEV_CREATE)
+        time.sleep(DEVICE_SETTLE_TIME)
+
+    def keyboard_device(self):
+        if self.keyboard is None:
+            device = self.open()
+            try:
+                fcntl.ioctl(device, UI_SET_EVBIT, EV_KEY)
+                for code in range(1, 249):
+                    fcntl.ioctl(device, UI_SET_KEYBIT, code)
+                self.create(device, "SwiftVM keyboard", 1)
+            except OSError as error:
+                os.close(device)
+                raise AgentError("The agent's keyboard couldn't be made: %s" % (error.strerror or error))
+            self.keyboard = device
+        return self.keyboard
+
+    def mouse_device(self):
+        if self.mouse is None:
+            device = self.open()
+            try:
+                fcntl.ioctl(device, UI_SET_EVBIT, EV_KEY)
+                for code in BUTTONS.values():
+                    fcntl.ioctl(device, UI_SET_KEYBIT, code)
+                fcntl.ioctl(device, UI_SET_EVBIT, EV_REL)
+                for code in (REL_WHEEL, REL_HWHEEL):
+                    fcntl.ioctl(device, UI_SET_RELBIT, code)
+                # It says where on the screen it is rather than how far it moved, as a tablet does.
+                fcntl.ioctl(device, UI_SET_EVBIT, EV_ABS)
+                for code in (ABS_X, ABS_Y):
+                    fcntl.ioctl(device, UI_SET_ABSBIT, code)
+                    fcntl.ioctl(device, UI_ABS_SETUP, struct.pack("=HxxiiiiiI", code, 0, 0, POINTER_RANGE, 0, 0, 0))
+                self.create(device, "SwiftVM pointer", 2)
+            except OSError as error:
+                os.close(device)
+                raise AgentError("The agent's pointer couldn't be made: %s" % (error.strerror or error))
+            self.mouse = device
+        return self.mouse
+
+    def emit(self, device, *events):
+        """Sends events that belong together, each a kind, a code and a value."""
+        for kind, code, value in events + ((EV_SYN, SYN_REPORT, 0),):
+            # An event, as the kernel reads it: a time it fills in itself, then these three.
+            os.write(device, struct.pack("=qqHHi", 0, 0, kind, code, value))
+
+    # The keyboard
+
+    def keys(self, request):
+        text = request.get("text")
+        chords = request.get("keys")
+        if text is not None and not isinstance(text, str):
+            raise AgentError("The text to type has to be text.")
+        if chords is not None and (not isinstance(chords, list) or not all(isinstance(chord, str) and chord for chord in chords)):
+            raise AgentError("The keys to press have to be named.")
+        if not text and not chords:
+            raise AgentError("The request has neither text to type nor keys to press.")
+        # Everything is looked up before anything is typed: half a text is worse than none.
+        presses = []
+        for character in text or "":
+            if character not in US_KEYS:
+                raise AgentError(
+                    "“%s” isn't on a US keyboard, which is what this types on. Text like that can be put "
+                    "into a text field with `swiftvm ui <machine> set`." % character
+                )
+            code, shifted = US_KEYS[character]
+            presses.append([KEY_SHIFT, code] if shifted else [code])
+        presses += [keys_of_chord(chord) for chord in chords or []]
+        with self.lock:
+            device = self.keyboard_device()
+            for codes in presses:
+                for code in codes:
+                    self.emit(device, (EV_KEY, code, 1))
+                    time.sleep(KEY_PAUSE)
+                for code in reversed(codes):
+                    self.emit(device, (EV_KEY, code, 0))
+                    time.sleep(KEY_PAUSE)
+
+    # The pointer
+
+    def pointer(self, request):
+        action = request.get("action")
+        if action not in ("move", "click", "drag", "scroll"):
+            raise AgentError("The mouse doesn't do “%s”." % str(action)[:32])
+        button = BUTTONS.get(request.get("button") or "left")
+        if button is None:
+            raise AgentError("The mouse has a left, a right and a middle button.")
+        width, height = screen_size()
+
+        def place(x, y):
+            if not all(isinstance(value, int) and not isinstance(value, bool) for value in (x, y)):
+                raise AgentError("A place on the screen is two whole numbers.")
+            if not (0 <= x < width and 0 <= y < height):
+                raise AgentError("(%d, %d) isn't on the screen, which is %d by %d." % (x, y, width, height))
+            return (
+                (EV_ABS, ABS_X, round(x * POINTER_RANGE / max(width - 1, 1))),
+                (EV_ABS, ABS_Y, round(y * POINTER_RANGE / max(height - 1, 1))),
+            )
+
+        def number(name, default):
+            value = request.get(name)
+            if value is None:
+                return default
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise AgentError("%s has to be a whole number." % name)
+            return value
+
+        start = place(request.get("x"), request.get("y"))
+        end = place(request.get("toX"), request.get("toY")) if action == "drag" else None
+        count = number("count", 1)
+        if not 1 <= count <= 3:
+            raise AgentError("A click is one, two or three clicks.")
+        delta_x, delta_y = number("deltaX", 0), number("deltaY", 0)
+        if abs(delta_x) > 100 or abs(delta_y) > 100:
+            raise AgentError("That is further than the wheel is turned in one go.")
+        with self.lock:
+            device = self.mouse_device()
+            self.emit(device, *start)
+            time.sleep(CLICK_PAUSE)
+            if action == "click":
+                for _ in range(count):
+                    self.emit(device, (EV_KEY, button, 1))
+                    time.sleep(CLICK_PAUSE)
+                    self.emit(device, (EV_KEY, button, 0))
+                    time.sleep(CLICK_PAUSE)
+            elif action == "drag":
+                self.emit(device, (EV_KEY, button, 1))
+                time.sleep(CLICK_PAUSE)
+                # Whatever is dragged follows a pointer that moves, not one that jumps.
+                steps = 12
+                for step in range(1, steps + 1):
+                    self.emit(device, *(
+                        (kind, code, round(before + (after - before) * step / steps))
+                        for (kind, code, before), (_, _, after) in zip(start, end)
+                    ))
+                    time.sleep(0.02)
+                time.sleep(CLICK_PAUSE)
+                self.emit(device, (EV_KEY, button, 0))
+            elif action == "scroll":
+                # The wheel counts up for away from the hand, which scrolls up. Down is positive here.
+                for code, notches in ((REL_WHEEL, -delta_y), (REL_HWHEEL, delta_x)):
+                    for _ in range(abs(notches)):
+                        self.emit(device, (EV_REL, code, 1 if notches > 0 else -1))
+                        time.sleep(0.015)
+
+
+INPUT = InputDevices()
+
+
+# What is on the screen, as a tree
+#
+# A desktop tells its own user what is on the screen, part by part, for screen readers (AT-SPI).
+# This is the half of the agent that asks: the same program, run as the user at the screen. It
+# takes what Python brings for talking to the desktop, which a desktop system has.
+
+class ScreenTree:
+    """What is on the screen as the desktop's accessibility tells it, and what can be done to it."""
+
+    STATES = ("ACTIVE", "FOCUSED", "SELECTED", "CHECKED", "PRESSED", "EXPANDED", "EDITABLE")
+    # What pressing a part is called, by the toolkits that draw them.
+    PRESSES = ("click", "press", "activate", "toggle", "jump", "open")
+    # What makes a part worth showing. Most of a tree is boxes that only hold other boxes.
+    TELLING = ("name", "description", "value", "actions", "states")
+
+    def __init__(self, atspi, everything=False):
+        self.atspi = atspi
+        # Show the boxes too, and every action a part has.
+        self.everything = everything
+        self.count = 0
+        self.truncated = False
+        # Under Wayland an application isn't told where on the screen its windows are, and what it
+        # says about the places of its parts is not to be clicked on. Whoever draws the screen knows.
+        self.compositor = compositor_process()
+        self.places_are_real = True
+
+    def applications(self):
+        """Every application on the desktop, with its process and the name its parts' ids start with."""
+        desktop = self.atspi.get_desktop(0)
+        for index in range(desktop.get_child_count()):
+            try:
+                application = desktop.get_child_at_index(index)
+                if application is None:
+                    continue
+                process = application.get_process_id()
+            except Exception:
+                # One that has gone, or doesn't answer.
+                continue
+            # A process is what an application stays through its windows opening and closing.
+            yield application, process, str(process) if process > 0 else "n%d" % index
+
+    def read(self, only, depth):
+        applications = []
+        for application, process, identifier in self.applications():
+            try:
+                if only and only.lower() not in (application.get_name() or "").lower():
+                    continue
+                self.places_are_real = self.compositor is None or process == self.compositor
+                described = self.describe(application, identifier, depth, 0)
+            except Exception:
+                continue
+            # One without a window on the screen has nothing to show.
+            applications += [entry for entry in described if entry.get("children")]
+        return {"applications": applications, "truncated": self.truncated}
+
+    def describe(self, node, identifier, depth, level):
+        """What there is to show of `node`: the part itself with what is in it, or, for a box that
+        says nothing of itself, only what is in it. An application is at level 0, its windows at 1."""
+        states = node.get_state_set()
+        if level > 0 and not states.contains(self.atspi.StateType.SHOWING):
+            return []
+        if self.count >= MAX_TREE_NODES:
+            self.truncated = True
+            return []
+        self.count += 1
+        entry = {"id": identifier, "role": node.get_role_name()}
+        name = node.get_name()
+        if name:
+            entry["name"] = name[:MAX_TREE_TEXT]
+        description = node.get_description()
+        if description:
+            entry["description"] = description[:MAX_TREE_TEXT]
+        value = self.value(node)
+        if value not in (None, "", name):
+            entry["value"] = value
+        named = [state.lower() for state in self.STATES if states.contains(getattr(self.atspi.StateType, state))]
+        actions = self.actions(node)
+        if not self.everything:
+            # Names with a dot are the application's own commands, which every part of a window
+            # repeats. They can still be asked for by name.
+            actions = [action for action in actions if action and "." not in action]
+        if actions:
+            entry["actions"] = actions
+            if not states.contains(self.atspi.StateType.SENSITIVE):
+                named.append("disabled")
+        if named:
+            entry["states"] = named
+        bounds = self.bounds(node) if self.places_are_real else None
+        if bounds:
+            entry["bounds"] = bounds
+        children = []
+        if depth > 0:
+            total = node.get_child_count()
+            if total > MAX_TREE_CHILDREN:
+                self.truncated = True
+            for index in range(min(total, MAX_TREE_CHILDREN)):
+                try:
+                    child = node.get_child_at_index(index)
+                    if child is not None:
+                        children += self.describe(child, "%s/%d" % (identifier, index), depth - 1, level + 1)
+                except Exception:
+                    continue
+        if children:
+            entry["children"] = children
+        if self.everything or level < 2 or any(key in entry for key in self.TELLING):
+            return [entry]
+        return children
+
+    def value(self, node):
+        try:
+            # Asked for by the kind of thing it is: a part has a "get_text" of its own, which is
+            # another question.
+            text = node.get_text_iface()
+            if text is not None:
+                count = self.atspi.Text.get_character_count(text)
+                return self.atspi.Text.get_text(text, 0, min(count, MAX_TREE_TEXT))
+            value = node.get_value_iface()
+            if value is not None:
+                return self.atspi.Value.get_current_value(value)
+        except Exception:
+            pass
+        return None
+
+    def actions(self, node):
+        try:
+            action = node.get_action_iface()
+            if action is None:
+                return []
+            return [action.get_action_name(index) for index in range(action.get_n_actions())]
+        except Exception:
+            return []
+
+    def bounds(self, node):
+        try:
+            component = node.get_component_iface()
+            if component is None:
+                return None
+            box = component.get_extents(self.atspi.CoordType.SCREEN)
+        except Exception:
+            return None
+        return [box.x, box.y, box.width, box.height] if box.width > 0 and box.height > 0 else None
+
+    def done(self, doing):
+        """Whether the application did what was asked of one of its parts. Some say no by failing."""
+        try:
+            return bool(doing())
+        except Exception:
+            return False
+
+    def find(self, identifier):
+        """The part with this id, as the tree had it."""
+        first, *steps = str(identifier).split("/")
+        gone = AgentError("Nothing on the screen has the id “%s” any more. Read the tree again." % str(identifier)[:64])
+        node = next((application for application, _, name in self.applications() if name == first), None)
+        if node is None:
+            raise gone
+        for step in steps:
+            if not step.isdigit() or int(step) >= node.get_child_count():
+                raise gone
+            node = node.get_child_at_index(int(step))
+            if node is None:
+                raise gone
+        return node
+
+    def act(self, request):
+        action = request.get("action")
+        node = self.find(request.get("element"))
+        what = "The %s “%s”" % (node.get_role_name(), (node.get_name() or "")[:64])
+        if action == "press":
+            names = self.actions(node)
+            wanted = request.get("actionName")
+            if wanted is not None:
+                # One of the part's actions, asked for by name.
+                choice = next((index for index, name in enumerate(names) if name == wanted), None)
+            else:
+                choice = next((index for index, name in enumerate(names) if name.lower() in self.PRESSES), None)
+                if choice is None and len(names) == 1:
+                    choice = 0
+            if choice is None:
+                missing = "has nothing to press" if wanted is None else "has no action called “%s”" % str(wanted)[:64]
+                has = "Its actions: %s." % ", ".join(names[:24]) if names else "It has no actions."
+                raise AgentError("%s %s. %s" % (what, missing, has))
+            if not self.done(lambda: node.get_action_iface().do_action(choice)):
+                raise AgentError("%s didn't take the press." % what)
+        elif action == "set":
+            text = request.get("text")
+            if not isinstance(text, str):
+                raise AgentError("The request has no text.")
+            editable = node.get_editable_text_iface()
+            if editable is None:
+                # Some text fields say what is in them and don't let it be set.
+                raise AgentError(
+                    "%s doesn't take text this way. If it is a text field, give it the keyboard with "
+                    "`swiftvm ui <machine> focus`, and type." % what
+                )
+            if not self.done(lambda: editable.set_text_contents(text)):
+                raise AgentError("%s didn't take the text." % what)
+        elif action == "focus":
+            component = node.get_component_iface()
+            if component is None or not self.done(component.grab_focus):
+                raise AgentError("%s can't be given the keyboard this way. Click on it instead." % what)
+        else:
+            raise AgentError("A part of the screen can be pressed, set or focused, not “%s”." % str(action)[:32])
+        return {"id": str(request.get("element")), "role": node.get_role_name(), "name": node.get_name() or ""}
+
+
+def compositor_process():
+    """The process that draws a Wayland session's screen, or None where there is no such session."""
+    runtime, display = os.environ.get("XDG_RUNTIME_DIR"), os.environ.get("WAYLAND_DISPLAY")
+    if not runtime or not display:
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as line:
+            line.connect(os.path.join(runtime, display))
+            # Who is at the other end, as the kernel knows it: process, user and group.
+            return struct.unpack("=iII", line.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
+    except (OSError, AttributeError, struct.error):
+        # A Wayland session whose screen can't be asked about: nobody's places are taken as real.
+        return 0
+
+
+def turn_accessibility_on():
+    """Says that someone is listening. Some applications only describe themselves once that is said."""
+    try:
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        setting = GLib.Variant("(ssv)", ("org.a11y.Status", "IsEnabled", GLib.Variant("b", True)))
+        bus.call_sync(
+            "org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Set", setting, None,
+            Gio.DBusCallFlags.NONE, 2000, None,
+        )
+    except Exception:
+        # A desktop that has no such switch describes itself anyway, or not at all.
+        pass
+
+
+def accessibility_main(request):
+    """Reads the tree of what is on the screen, or acts on one part of it, and prints what there is
+    to say in JSON. Run as the user at the screen, by the agent."""
+    try:
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+    except (ImportError, ValueError):
+        print(
+            "Reading what is on the screen takes two packages in the guest that this system doesn't have. "
+            "Install them with: sudo apt install python3-gi gir1.2-atspi-2.0",
+            file=sys.stderr,
+        )
+        return 1
+    turn_accessibility_on()
+    tree = ScreenTree(Atspi, everything=request.get("all") is True)
+    try:
+        if request.get("type") == "tree":
+            depth = request.get("depth")
+            if not isinstance(depth, int) or isinstance(depth, bool) or depth < 1:
+                depth = DEFAULT_TREE_DEPTH
+            only = request.get("application")
+            result = tree.read(only if isinstance(only, str) else None, depth)
+        else:
+            result = tree.act(request)
+    except AgentError as problem:
+        print(problem, file=sys.stderr)
+        return 1
+    except Exception as problem:
+        print("The desktop didn't answer: %s" % (str(problem) or type(problem).__name__), file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
 
 def open_address_notices():
     """A socket on which the kernel says that links or addresses have changed, or None."""
@@ -245,8 +1188,10 @@ def open_address_notices():
 class Agent:
     """Serves the app, one connection at a time."""
 
-    def __init__(self, listener, system, is_the_app):
+    def __init__(self, listener, system, is_the_app, jobs=None):
         self.listener = listener
+        # Where jobs are taken, if this agent takes any.
+        self.jobs = jobs
         self.system = system
         # Tells whether a connection comes from the app, from the address it comes from.
         self.is_the_app = is_the_app
@@ -269,6 +1214,8 @@ class Agent:
 
     def run(self):
         self.selector.register(self.listener, selectors.EVENT_READ, self.accept)
+        if self.jobs:
+            self.selector.register(self.jobs, selectors.EVENT_READ, self.accept_job)
         if self.notices:
             self.selector.register(self.notices, selectors.EVENT_READ, self.addresses_may_have_changed)
         while True:
@@ -305,9 +1252,21 @@ class Agent:
             "agent": AGENT_VERSION,
             "system": self.system.describe(),
             "hostName": self.system.host_name(),
+            "features": FEATURES if self.jobs else [],
         })
         self.report_addresses(always=True)
         self.report_setup(always=True)
+
+    def accept_job(self, listener):
+        try:
+            connection, peer = listener.accept()
+        except OSError:
+            return
+        if not self.is_the_app(peer):
+            connection.close()
+            return
+        # A job takes as long as it takes. It has a thread of its own, and the app is served meanwhile.
+        threading.Thread(target=Job(connection, self.system).run, daemon=True).start()
 
     def hang_up(self):
         if self.connection is None:
@@ -450,14 +1409,291 @@ class Agent:
             self.setup_reported = status if self.connection else None
 
 
-def listen_on_socket_device():
+class Job:
+    """One job for whoever drives this machine from the Mac, on a connection and in a thread of its own.
+
+    The job arrives as one line of JSON and is answered with one: yes, or no and why. After a yes
+    the connection carries frames, the last of which says how the job ended. The app hangs up to
+    call a job off.
+    """
+
+    def __init__(self, connection, system):
+        self.connection = connection
+        self.system = system
+        # Frames are sent whole, also when two threads have something to send.
+        self.sending = threading.Lock()
+
+    def run(self):
+        try:
+            self.connection.settimeout(JOB_REQUEST_TIMEOUT)
+            request = self.read_request()
+            self.connection.settimeout(None)
+            if request is not None:
+                self.carry_out(request)
+        except OSError:
+            # The app has hung up.
+            pass
+        except Exception as problem:
+            log("A job went wrong: %s" % (str(problem) or type(problem).__name__))
+        finally:
+            self.hang_up()
+
+    def hang_up(self):
+        """Ends the connection without cutting off what is still on its way.
+
+        The agent says it has no more to send, and then listens until the app has hung up too.
+        Closed at once, with something of the app's still unread, the line could be torn down
+        before the app has read how the job ended.
+        """
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+            self.connection.settimeout(HANG_UP_TIMEOUT)
+            while self.connection.recv(64 * 1024):
+                pass
+        except OSError:
+            pass
+        self.connection.close()
+
+    # The connection
+
+    def read_request(self):
+        line = bytearray()
+        while True:
+            byte = self.connection.recv(1)
+            if not byte or len(line) >= MAX_LINE:
+                return None
+            if byte == b"\n":
+                break
+            line += byte
+        try:
+            request = json.loads(line.decode("utf-8"))
+        except ValueError:
+            request = None
+        if not isinstance(request, dict):
+            self.answer("That isn't a job.")
+            return None
+        return request
+
+    def answer(self, error=None):
+        answer = {"ok": error is None}
+        if error is not None:
+            answer["error"] = error
+        self.connection.sendall(json.dumps(answer, separators=(",", ":")).encode("utf-8") + b"\n")
+
+    def send_frame(self, kind, payload=b""):
+        """Sends what may be long as frames, as many as it takes and at least one."""
+        rest = memoryview(payload)
+        with self.sending:
+            while True:
+                piece, rest = rest[:MAX_FRAME], rest[MAX_FRAME:]
+                self.connection.sendall(struct.pack(">BI", kind, len(piece)) + piece)
+                if not rest:
+                    break
+
+    def read_frame(self):
+        """The next frame's kind and bytes, or None when the app has hung up."""
+        header = self.read_exactly(5)
+        if header is None:
+            return None
+        kind, length = struct.unpack(">BI", header)
+        if length > MAX_ACCEPTED_FRAME:
+            return None
+        payload = self.read_exactly(length) if length else b""
+        return None if payload is None else (kind, payload)
+
+    def read_exactly(self, count):
+        data = bytearray()
+        while len(data) < count:
+            piece = self.connection.recv(count - len(data))
+            if not piece:
+                return None
+            data += piece
+        return bytes(data)
+
+    def end(self, **how):
+        self.send_frame(FRAME_END, json.dumps(how, separators=(",", ":")).encode("utf-8"))
+
+    # Jobs
+
+    def carry_out(self, request):
+        kind = request.get("type")
+        if sys.version_info < (3, 9):
+            # What starts a process as another user came with that version.
+            self.answer("This takes Python 3.9 or newer in the guest, which has %d.%d." % sys.version_info[:2])
+            return
+        if kind == "exec":
+            self.run_command(request)
+            return
+        work = {
+            "screenshot": self.system.screenshot,
+            "pointer": lambda: self.system.pointer(request),
+            "keys": lambda: self.system.keys(request),
+            "tree": lambda: self.system.accessibility(request),
+            "element": lambda: self.system.accessibility(request),
+        }.get(kind if isinstance(kind, str) else None)
+        if work is None:
+            self.answer("This agent (%s) doesn't know what “%s” is." % (AGENT_VERSION, str(kind)[:64]))
+            return
+        # The yes comes at once: the app doesn't wait long for it, and some of this takes its time.
+        # What goes wrong from here on is how the job ends.
+        self.answer()
+        try:
+            output = work()
+        except AgentError as problem:
+            self.end(error=str(problem))
+            return
+        except OSError as problem:
+            self.end(error=problem.strerror or str(problem))
+            return
+        if output:
+            self.send_frame(FRAME_OUTPUT, output)
+        self.end(status=0)
+
+    def run_command(self, request):
+        """Runs a command as an account of this system. What it prints goes to the app as it comes,
+        what the app sends is its input, and how it exits ends the job."""
+        try:
+            arguments = request.get("arguments")
+            if (not isinstance(arguments, list) or not arguments or not arguments[0]
+                    or not all(isinstance(argument, str) and "\0" not in argument for argument in arguments)):
+                raise AgentError("The request has no command.")
+            account = self.system.account(request.get("user"))
+            environment = self.system.environment(account)
+            added = request.get("environment") or {}
+            if not isinstance(added, dict) or not all(
+                isinstance(name, str) and isinstance(value, str) and name and "=" not in name and "\0" not in name + value
+                for name, value in added.items()
+            ):
+                raise AgentError("The command's environment has to be names and values.")
+            environment.update(added)
+            directory = request.get("directory") or account.pw_dir
+            if not isinstance(directory, str) or "\0" in directory:
+                raise AgentError("That isn't a folder to run the command in.")
+        except AgentError as problem:
+            self.answer(str(problem))
+            return
+        self.answer()
+        try:
+            process = subprocess.Popen(
+                arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=directory,
+                env=environment, start_new_session=True, **self.system.identity(account),
+            )
+        except OSError as problem:
+            # 127 and 126 are what a shell says for a command that isn't there, and one it can't run.
+            missing = isinstance(problem, FileNotFoundError)
+            what = problem.filename if isinstance(problem.filename, str) else arguments[0]
+            self.end(error="%s: %s" % (what, problem.strerror or problem), status=127 if missing and what != directory else 126)
+            return
+
+        finished = threading.Event()
+        stopped = threading.Event()
+        printers = [
+            threading.Thread(target=self.pass_on, args=(process.stdout, FRAME_OUTPUT, finished), daemon=True),
+            threading.Thread(target=self.pass_on, args=(process.stderr, FRAME_ERROR, finished), daemon=True),
+        ]
+        for thread in printers:
+            thread.start()
+        threading.Thread(target=self.feed, args=(process,), daemon=True).start()
+        watcher = threading.Thread(target=self.watch, args=(process, stopped), daemon=True)
+        watcher.start()
+        status = process.wait()
+        finished.set()
+        # What the command printed last is still on its way. Only an idle pipe times out, never a
+        # thread waiting for the app to take a frame, and the end follows all of those frames.
+        for thread in printers:
+            thread.join()
+        stopped.set()
+        watcher.join()
+        if status < 0:
+            self.end(signal=-status)
+        else:
+            self.end(status=status)
+
+    def pass_on(self, stream, kind, finished):
+        try:
+            waiting = select.poll()
+            waiting.register(stream, select.POLLIN)
+            idle_since = None
+            while True:
+                if not waiting.poll(250):
+                    if finished.is_set():
+                        now = time.monotonic()
+                        if idle_since is None:
+                            idle_since = now
+                        elif now - idle_since >= OUTPUT_GRACE:
+                            break
+                    continue
+                data = stream.read1(MAX_FRAME)
+                if not data:
+                    break
+                self.send_frame(kind, data)
+                idle_since = None
+        except (OSError, ValueError):
+            pass
+        finally:
+            stream.close()
+
+    def feed(self, process):
+        """Gives the command what the app sends as its input."""
+        try:
+            while True:
+                frame = self.read_frame()
+                if frame is None:
+                    break
+                kind, payload = frame
+                if kind != FRAME_INPUT:
+                    continue
+                try:
+                    if payload:
+                        process.stdin.write(payload)
+                        process.stdin.flush()
+                    else:
+                        # An empty frame is the end of the input.
+                        process.stdin.close()
+                except (OSError, ValueError):
+                    # A command that has stopped reading, or has ended.
+                    pass
+        except OSError:
+            pass
+
+    def watch(self, process, stopped):
+        """Calls the command off when the app hangs up: whoever wanted it is gone.
+
+        This doesn't go by what the app sends, which may be waiting behind input the command isn't
+        reading. It goes by the line itself.
+        """
+        hung_up = getattr(select, "POLLRDHUP", 0) | select.POLLHUP | select.POLLERR | select.POLLNVAL
+        watcher = select.poll()
+        try:
+            watcher.register(self.connection, getattr(select, "POLLRDHUP", 0))
+            while not stopped.is_set():
+                if any(events & hung_up for _, events in watcher.poll(500)):
+                    break
+        except (OSError, ValueError):
+            pass
+        if stopped.is_set():
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            # The parent may take TERM while a child ignores it. Give the whole group this long to
+            # end, even when its head has already exited.
+            deadline = time.monotonic() + KILL_GRACE
+            while time.monotonic() < deadline:
+                os.killpg(process.pid, 0)
+                time.sleep(0.05)
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def listen_on_socket_device(port):
     """Listens for the app. Waits for as long as it takes for the socket device to be there."""
     problem = None
     while True:
         try:
             listener = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
             try:
-                listener.bind((socket.VMADDR_CID_ANY, PORT))
+                listener.bind((socket.VMADDR_CID_ANY, port))
                 listener.listen(4)
             except OSError:
                 listener.close()
@@ -466,7 +1702,7 @@ def listen_on_socket_device():
         except (AttributeError, OSError) as error:
             if str(error) != problem:
                 problem = str(error)
-                log("Can't listen on the socket device (%s). Trying again until it works." % problem)
+                log("Can't listen on port %d of the socket device (%s). Trying again until it works." % (port, problem))
             time.sleep(2)
 
 
@@ -483,14 +1719,26 @@ def listen_on_unix_socket(path):
 
 def main(arguments):
     if not arguments:
-        listener = listen_on_socket_device()
+        listener = listen_on_socket_device(PORT)
+        jobs = listen_on_socket_device(JOB_PORT)
         # Only the Mac may give orders, not a program in this system that connects to the same port.
-        agent = Agent(listener, System(), lambda peer: peer[0] == socket.VMADDR_CID_HOST)
-        log("SwiftVM guest agent %s, listening on port %d of the socket device." % (AGENT_VERSION, PORT))
+        agent = Agent(listener, System(), lambda peer: peer[0] == socket.VMADDR_CID_HOST, jobs)
+        log("SwiftVM guest agent %s, listening on ports %d and %d of the socket device." % (AGENT_VERSION, PORT, JOB_PORT))
     elif len(arguments) in (2, 4) and arguments[0] == "--pretend-on" and arguments[2:3] in ([], ["--setup-in"]):
         system = PretendSystem(arguments[3] if len(arguments) == 4 else None)
-        agent = Agent(listen_on_unix_socket(arguments[1]), system, lambda peer: True)
-        log("SwiftVM guest agent %s, pretending, listening on %s." % (AGENT_VERSION, arguments[1]))
+        jobs = listen_on_unix_socket(arguments[1] + ".jobs")
+        agent = Agent(listen_on_unix_socket(arguments[1]), system, lambda peer: True, jobs)
+        log("SwiftVM guest agent %s, pretending, listening on %s, and on %s.jobs for jobs." % (AGENT_VERSION, arguments[1], arguments[1]))
+    elif arguments == ["--accessibility"]:
+        try:
+            # All of it: the agent wrote it, and has seen to its length.
+            request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        except ValueError:
+            request = None
+        if not isinstance(request, dict):
+            print("That isn't a job.", file=sys.stderr)
+            return 64
+        return accessibility_main(request)
     elif arguments == ["--version"]:
         print(AGENT_VERSION)
         return 0
@@ -499,7 +1747,10 @@ def main(arguments):
             "Usage: swiftvm-agent.py                      serve the SwiftVM app (as root, in a virtual machine)\n"
             "       swiftvm-agent.py --pretend-on <path> [--setup-in <folder>]\n"
             "                                             serve on a Unix socket and only say what would be done,\n"
-            "                                             with a setup script's state read from that folder\n"
+            "                                             with a setup script's state read from that folder.\n"
+            "                                             Jobs are taken on <path>.jobs\n"
+            "       swiftvm-agent.py --accessibility      read what is on the screen, as the user at it. The job\n"
+            "                                             comes on standard input (run by the agent itself)\n"
             "       swiftvm-agent.py --version",
             file=sys.stderr,
         )

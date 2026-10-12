@@ -16,6 +16,8 @@ guest has no network.
 | [Shared clipboard](sharing.md#clipboard) | Uses `spice-vdagent` instead | Yes |
 | The time zone follows your Mac's, once | No | Yes |
 | [SSH without a network](ssh.md#without-a-network) on older systems | Yes | No |
+| `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes |
+| `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests) |
 
 ## Which machines have them
 
@@ -44,6 +46,8 @@ swiftvm install-tools web-server --disc   # from a disc, inside the guest
 - Otherwise SwiftVM plugs in a disc and shows one command to run in the guest.
 - The guest needs systemd and Python 3. Ubuntu and Debian have both; other
   distributions haven't been tried.
+- Reading the screen [as a tree](automation.md#what-is-on-the-screen) also
+  takes `python3-gi` and `gir1.2-atspi-2.0`, which a desktop brings.
 
 ### macOS
 
@@ -76,7 +80,8 @@ sudo sh /usr/local/lib/swiftvm/install.sh --remove
 | Guest | What |
 | --- | --- |
 | Linux | One Python script and its systemd units |
-| macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard |
+| macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard, the screen, the mouse, and the keyboard |
 
 The agent only takes orders from your Mac, and only over the machine's socket
-device.
+device. What `swiftvm` may have it do in a guest can be
+[turned off](automation.md#turning-it-off) for each machine.

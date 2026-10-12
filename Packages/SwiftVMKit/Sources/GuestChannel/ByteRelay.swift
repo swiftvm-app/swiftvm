@@ -1,7 +1,8 @@
 import Foundation
 
 /// Carries a conversation between two sockets, such as the `swiftvm` tool on one side and a port in a
-/// guest on the other.
+/// guest on the other. It is here, with the protocol, because both ends of the socket device relay: the
+/// app on the Mac, and the agent in a macOS guest between its two halves.
 public enum ByteRelay {
     /// Copies bytes both ways between `first` and `second` and returns when the conversation is over.
     ///
@@ -12,22 +13,47 @@ public enum ByteRelay {
     /// The end of one direction doesn't end the other, so this lasts for as long as either side keeps its
     /// own direction open. A side that has gone away without the other one noticing (it neither sends
     /// nor hangs up) holds the relay until it does, or until its descriptor is closed from outside.
-    public static func run(between first: Int32, and second: Int32) async {
+    ///
+    /// - Parameter patienceAfterFirstEnds: Where the end of what `first` sends ends the conversation, how
+    ///   long `second` gets to say the rest of what it has to say. After that both are shut down: a
+    ///   `second` that keeps its direction open for good doesn't hold the relay for good. Without it,
+    ///   each direction lasts for as long as its sender likes.
+    public static func run(between first: Int32, and second: Int32, patienceAfterFirstEnds: TimeInterval? = nil) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let group = DispatchGroup()
-            for (source, destination) in [(first, second), (second, first)] {
-                group.enter()
-                Thread.detachNewThread {
-                    if !copy(from: source, to: destination) {
-                        // Wakes the other direction, which may be waiting for bytes that won't come.
-                        shutdown(source, SHUT_RDWR)
-                        shutdown(destination, SHUT_RDWR)
-                    }
-                    group.leave()
-                }
+            start(between: first, and: second, patienceAfterFirstEnds: patienceAfterFirstEnds).notify(queue: .global()) {
+                continuation.resume()
             }
-            group.notify(queue: .global()) { continuation.resume() }
         }
+    }
+
+    /// The same for a caller that has a thread to spend on it: returns when the conversation is over.
+    public static func runAndWait(between first: Int32, and second: Int32) {
+        start(between: first, and: second, patienceAfterFirstEnds: nil).wait()
+    }
+
+    /// Starts copying both ways. The group is left when both directions have come to their end.
+    private static func start(between first: Int32, and second: Int32, patienceAfterFirstEnds: TimeInterval?) -> DispatchGroup {
+        let group = DispatchGroup()
+        let secondHasEnded = DispatchSemaphore(value: 0)
+        for (source, destination) in [(first, second), (second, first)] {
+            group.enter()
+            Thread.detachNewThread {
+                if !copy(from: source, to: destination) {
+                    // Wakes the other direction, which may be waiting for bytes that won't come.
+                    shutdown(source, SHUT_RDWR)
+                    shutdown(destination, SHUT_RDWR)
+                } else if source == first, let patienceAfterFirstEnds,
+                          secondHasEnded.wait(timeout: .now() + patienceAfterFirstEnds) == .timedOut {
+                    shutdown(first, SHUT_RDWR)
+                    shutdown(second, SHUT_RDWR)
+                }
+                if source == second {
+                    secondHasEnded.signal()
+                }
+                group.leave()
+            }
+        }
+        return group
     }
 
     /// Copies from `source` to `destination` until `source` ends, then tells `destination` that nothing
