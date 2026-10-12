@@ -28,6 +28,28 @@ extension AppModel {
             }
             let devices = usb.devices.map { summary(of: $0) }
             return ControlResponse(ok: true, note: devices.isEmpty ? USBDevicesHint.howToGiveOne : nil, usbDevices: devices)
+        case .scripts:
+            var distribution: LinuxDistribution?
+            if let system = request.system {
+                guard let found = DistributionCatalog.quickCreate.first(where: { $0.id == system.lowercased() }) else {
+                    let available = DistributionCatalog.quickCreate.map(\.id).joined(separator: ", ")
+                    return .failure("Unknown Linux image “\(system)”. Available: \(available).")
+                }
+                distribution = found
+            }
+            let listing = SetupScriptCatalog.listing()
+            let scripts = listing.scripts.filter { script in distribution.map(script.supports) ?? true }.map { script in
+                SetupScriptSummary(
+                    id: script.id, name: script.name, summary: script.summary, category: script.category, systems: script.systems,
+                    minimumMemoryGigabytes: script.minimumMemoryGigabytes, minimumDiskGigabytes: script.minimumDiskGigabytes,
+                    isBuiltIn: script.origin == .builtIn
+                )
+            }
+            // Where a script of one's own goes, and which of the files there aren't taken for one.
+            let folder = (SetupScriptCatalog.userDirectory.path as NSString).abbreviatingWithTildeInPath
+            let skipped = listing.skipped.map { "Not a setup script: \($0.fileName). \($0.reason)" }
+            let note = (["Your own scripts go in \(folder)."] + skipped).joined(separator: "\n")
+            return ControlResponse(ok: true, note: note, setupScripts: scripts)
         case .quit:
             // Quitting from the command line never puts up the dialog that asks what to do with machines.
             guard activeMachines.isEmpty else {
@@ -40,6 +62,12 @@ extension AppModel {
             }
             guard !isWorkingOnMachineFiles else {
                 return .failure("A virtual machine is busy with a snapshot, a copy or a resize. Try again in a moment.")
+            }
+            // macOS doesn't let an app quit while one of its windows has a sheet open or a panel waits
+            // for an answer, and there is nobody here to close it: what is being filled in there would
+            // be lost.
+            guard NSApp.modalWindow == nil, !NSApp.windows.contains(where: { $0.attachedSheet != nil }) else {
+                return .failure("\(AppIdentity.current.name) has a dialog open in one of its windows. Close it first.")
             }
             quitUnattended()
             return ControlResponse(ok: true)
@@ -346,7 +374,7 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
-        case .list, .info, .console, .vsock, .create, .quit, .usbList:
+        case .list, .info, .console, .vsock, .create, .quit, .usbList, .scripts:
             break
         }
 
@@ -438,6 +466,20 @@ extension AppModel {
             return .failure("Unknown system “\(parameters.distribution)”. Available: \(available).")
         }
         let family: GuestFamily = isMac ? .macOS : .linux
+        var setupScripts: [SetupScript] = []
+        if let asked = parameters.scripts, !asked.isEmpty {
+            guard let distribution else { return .failure("A setup script is for a Linux image, not for macOS.") }
+            do {
+                setupScripts = try SetupScriptCatalog.scripts(for: asked, distribution: distribution)
+            } catch SetupScript.ScriptError.unknown(let name, let system, let available) {
+                return .failure(SetupScript.ScriptError.unknown(name: name, system: system, available: available).localizedDescription)
+            } catch {
+                return .failure("Couldn't read the setup script: \(error.localizedDescription)")
+            }
+            if let desktop = setupScripts.first(where: \.requiresPassword), (parameters.password ?? "").isEmpty {
+                return .failure("\(desktop.name) is a desktop, which needs a password to sign in with at its login screen. Add --password <password>.")
+            }
+        }
         var name = parameters.name ?? distribution?.name.replacingOccurrences(of: " LTS", with: "") ?? "macOS"
         if parameters.name == nil {
             let base = name
@@ -457,24 +499,34 @@ extension AppModel {
             return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
         }
         let cpuCount = parameters.cpuCount ?? HostResources.recommendedCPUCount(for: family)
+        // What nobody asked for by number is at least what the setup scripts need.
         let memorySize = parameters.memoryGigabytes.map { UInt64($0) * HostResources.gibibyte }
-            ?? HostResources.recommendedMemorySize(for: family)
+            ?? max(HostResources.recommendedMemorySize(for: family), UInt64(setupScripts.minimumMemoryGigabytes ?? 0) * HostResources.gibibyte)
         let diskCapacity = parameters.diskGigabytes.map { UInt64($0) * HostResources.gibibyte }
-            ?? HostResources.recommendedDiskCapacity(for: family)
+            ?? max(HostResources.recommendedDiskCapacity(for: family), UInt64(setupScripts.minimumDiskGigabytes ?? 0) * HostResources.gibibyte)
+        if let distribution, let problem = setupScripts.problem(for: distribution, memorySize: memorySize, diskCapacity: diskCapacity) {
+            return .failure(problem)
+        }
 
         let start: () -> MachineCreation
         if let distribution {
+            // A name that was asked for has to be one Linux takes. Without one, the Mac user's is made to fit.
+            let userName = parameters.user ?? CloudInitSeed.userName(from: NSUserName())
+            if let problem = CloudInitSeed.problem(withUserName: userName) {
+                return .failure("“\(userName)” can't be the user name. \(problem)")
+            }
             let request = LinuxQuickCreateRequest(
                 name: name,
                 distribution: distribution,
                 cpuCount: cpuCount,
                 memorySize: memorySize,
                 diskCapacity: diskCapacity,
-                userName: parameters.user ?? NSUserName(),
+                userName: userName,
                 fullName: NSFullUserName(),
                 password: parameters.password ?? "",
                 installsSSHKey: true,
-                rosetta: false
+                rosetta: false,
+                setupScripts: setupScripts
             )
             start = { self.create(request) }
         } else {
@@ -645,7 +697,9 @@ extension AppModel {
                 ? MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel) : nil,
             sharesClipboard: configuration.clipboard.isShared,
             usbDevices: machine.usbDevices.map { self.summary(of: $0) },
-            usbAutoConnect: configuration.usb.autoConnect.map { "\($0.name) (\($0.id))" }
+            usbAutoConnect: configuration.usb.autoConnect.map { "\($0.name) (\($0.id))" },
+            // The step a script ended at says nothing once it has come to its end.
+            setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) }
         )
         return ControlResponse(ok: true, machines: [summary])
     }

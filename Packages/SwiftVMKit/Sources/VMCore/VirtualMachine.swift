@@ -81,6 +81,14 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored private var isGuestClockStale = false
     /// Counts the times the guest's clock has gone stale, to tell whether it did again while it was being set.
     @ObservationIgnored private var clockStandstills = 0
+    /// The run of the guest that ``setupFailureRecordChanges`` counts for.
+    @ObservationIgnored private var setupFailureRecordRun: Int?
+    /// How often what is on record of the setup scripts' failure has changed in this run of the guest.
+    @ObservationIgnored private var setupFailureRecordChanges = 0
+    /// A script can fail, be put right and run again, and the next one can fail after it: each of those
+    /// is news. A guest that says one thing and then the other without end is heard this often in a
+    /// run, and no more.
+    private static let maximumSetupFailureRecordChanges = 16
     @ObservationIgnored private var isLookingAfterGuest = false
     @ObservationIgnored private var shouldLookAfterGuestAgain = false
 
@@ -113,6 +121,7 @@ public final class VirtualMachine: Identifiable {
             guard let self else { return }
             onGuestClipboardRequest?(self)
         }
+        agent.onSetupChange = { [weak self] status in self?.guestSetupDidChange(to: status) }
     }
 
     public convenience init(bundle: VMBundle) throws {
@@ -282,6 +291,43 @@ public final class VirtualMachine: Identifiable {
         }
         onGuestAgentChange?(self)
         Task { await lookAfterGuest() }
+    }
+
+    /// What the guest's setup script is called while it is still to run or running, and `nil` once it
+    /// is over: `Setting up KDE Plasma`.
+    public var setupTitle: String? {
+        guard state == .running, let setup = agent.setup, setup.isUnderWay else { return nil }
+        return setup.title
+    }
+
+    /// What that script is busy with: the step it says it is at, or failing that what it is called.
+    public var setupActivity: String? {
+        guard let setupTitle else { return nil }
+        return agent.setup?.step ?? setupTitle
+    }
+
+    /// The guest's setup scripts have got somewhere. That one failed is news once, also when it failed
+    /// while the app wasn't looking: what the user has been told is written down, so that a guest
+    /// that comes back up with a script that failed long ago has nothing new to tell. Run again, it is
+    /// at work again, and a failure after that is news once more.
+    private func guestSetupDidChange(to status: GuestSetupStatus) {
+        let hasFailed = status.state == .failed
+        guard hasFailed != configuration.installation.hasReportedSetupFailure else { return }
+        if setupFailureRecordRun != startCount {
+            setupFailureRecordRun = startCount
+            setupFailureRecordChanges = 0
+        }
+        guard setupFailureRecordChanges < Self.maximumSetupFailureRecordChanges else { return }
+        setupFailureRecordChanges += 1
+        if hasFailed {
+            let place = status.step.map { " at “\($0)”" } ?? ""
+            notice = VMErrorInfo(
+                title: status.name.map { "\($0) couldn't be set up in “\(name)”" } ?? "The setup script failed in “\(name)”",
+                message: "The setup script stopped with an error\(place). What it printed is in \(GuestIntegration.setupLogPath) in the virtual machine. To run it again, run this there:\n\n\(GuestIntegration.setupRetryCommand)",
+                copyableText: GuestIntegration.setupRetryCommand
+            )
+        }
+        try? updateConfiguration { $0.installation.hasReportedSetupFailure = hasFailed }
     }
 
     /// Does through the agent what the guest needs from the host right now: a clock that is right, its

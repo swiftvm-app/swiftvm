@@ -34,8 +34,8 @@ enum MachineListing {
         return Groups(running: shown.filter(\.state.isActive), notRunning: shown.filter { !$0.state.isActive })
     }
 
-    /// The line under a machine's name: what it is busy with, failing that where a running guest is
-    /// reached, and for one that isn't running what it is made of.
+    /// The line under a machine's name: what it is busy with, failing that what its guest is still
+    /// setting up, where a running guest is reached, and for one that isn't running what it is made of.
     ///
     /// - Parameters:
     ///   - address: The address the guest holds, if known.
@@ -50,6 +50,10 @@ enum MachineListing {
         case .starting, .restoring, .suspending, .stopping:
             return state.label + "…"
         case .running:
+            // A desktop that is being installed says more about the machine than where it is reached.
+            if let activity = machine.setupActivity {
+                return activity + "…"
+            }
             let whereabouts = [address, sshCommand].compactMap { $0 }
             return whereabouts.isEmpty ? state.label : whereabouts.joined(separator: " · ")
         case .paused:

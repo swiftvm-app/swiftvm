@@ -39,13 +39,16 @@ The first time you open SwiftVM, it opens **New Virtual Machine** for you.
 
 A Linux machine is the quickest start:
 
-1. Choose **New Virtual Machine** in the panel, or press `Cmd+N`, and pick
-   **Linux**.
-2. Keep **Quick Create** and pick a distribution.
+1. Choose **New Virtual Machine** in the panel, or press `Cmd+N`. Keep
+   **Linux** as the operating system, and **Simple**.
+2. Pick a distribution. For a desktop, choose **Add…** next to **Setup
+   Scripts**, click one, and set a password. Without a script you get a server.
 3. Choose **Create**. SwiftVM downloads the image, sets up your account and SSH
-   key, and starts the machine.
+   key, and starts the machine. A desktop installs itself in about ten minutes
+   and the machine restarts into it.
 
-For macOS, pick **macOS** instead and enter a password for the account. The
+For macOS, pick **macOS** as the operating system and enter a password for the
+account. The
 download is large, and installing takes a few minutes. See
 [macOS guests](../features/macos-guests.md).
 

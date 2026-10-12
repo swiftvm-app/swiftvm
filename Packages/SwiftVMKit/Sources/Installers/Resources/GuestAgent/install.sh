@@ -26,6 +26,11 @@ command -v systemctl >/dev/null 2>&1 || fail "this system doesn't use systemd, w
 if [ "${1:-}" = "--remove" ]; then
     systemctl disable --now swiftvm-agent.service swiftvm-sshd-vsock.socket >/dev/null 2>&1 || true
     rm -f "$units/swiftvm-agent.service" "$units/swiftvm-sshd-vsock.socket" "$units/swiftvm-sshd-vsock@.service"
+    # What ran this machine's setup scripts lives in the same place, and goes with it. The note that
+    # they have run stays, in /var/lib/swiftvm: a copy of this machine goes through its first-boot
+    # setup once more, and that note is what keeps the scripts from running a second time.
+    systemctl disable swiftvm-setup.service >/dev/null 2>&1 || true
+    rm -f "$units/swiftvm-setup.service"
     rm -rf "$directory"
     systemctl daemon-reload
     echo "The SwiftVM guest tools are removed."

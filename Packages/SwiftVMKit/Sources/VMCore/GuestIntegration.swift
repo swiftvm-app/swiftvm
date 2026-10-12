@@ -31,6 +31,11 @@ public enum GuestIntegration {
         }
     }
 
+    /// Where a Linux guest writes down everything its setup script prints.
+    public static let setupLogPath = "/var/log/swiftvm-setup.log"
+    /// What a person runs in a Linux guest to have a setup script that failed run again.
+    public static let setupRetryCommand = "sudo systemctl start swiftvm-setup"
+
     /// virtio-fs tag of the Rosetta share.
     public static let rosettaTag = "rosetta"
     public static let rosettaMountPoint = "/media/rosetta"

@@ -65,6 +65,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Have a machine take that USB device by itself whenever both are there, or stop, as
         /// ``ControlRequest/isOn`` says.
         case usbAuto = "usb-auto"
+        /// The setup scripts a new Linux machine can be made with, the app's and the user's, or with
+        /// ``ControlRequest/system`` only those written for that system.
+        case scripts
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -116,6 +119,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var password: String?
         /// macOS: absolute path of a restore image (IPSW) to install instead of downloading the latest.
         public var restoreImagePath: String?
+        /// Linux: the setup scripts to run on the first start, in this order. Each is a name from the
+        /// list of `scripts`, or the absolute path of a file: what starts with a `/`.
+        public var scripts: [String]?
         public var start: Bool
 
         /// The `distribution` value that installs macOS.
@@ -124,7 +130,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public init(
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
-            start: Bool = true
+            scripts: [String]? = nil, start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -134,6 +140,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.user = user
             self.password = password
             self.restoreImagePath = restoreImagePath
+            self.scripts = scripts
             self.start = start
         }
     }
@@ -165,12 +172,14 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     /// For the `usb-` commands that deal with one device: its number in the list, its `vendor:product`,
     /// its serial number or its name.
     public var usbDevice: String?
+    /// For `scripts`: the Linux image to list them for, by its catalog identifier.
+    public var system: String?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
-        password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil
+        password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -187,6 +196,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.password = password
         self.isOn = isOn
         self.usbDevice = usbDevice
+        self.system = system
     }
 }
 
@@ -287,6 +297,24 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     /// The devices the machine takes by itself whenever they are there, each as its name and
     /// `vendor:product`.
     public var usbAutoConnect: [String]?
+    /// How the machine's setup script is doing, as the guest tools report it. `nil` for a machine
+    /// without one, and while the guest isn't up to say.
+    public var setup: Setup?
+
+    public struct Setup: Codable, Sendable, Equatable {
+        /// What the script sets up.
+        public var name: String?
+        /// `pending`, `running`, `finished` or `failed`.
+        public var state: String
+        /// The step the script is at, or failed at.
+        public var step: String?
+
+        public init(name: String?, state: String, step: String?) {
+            self.name = name
+            self.state = state
+            self.step = step
+        }
+    }
 
     public struct GuestTools: Codable, Sendable, Equatable {
         /// The version of the agent that is connected. `nil` while none is.
@@ -303,7 +331,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     public init(
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
         snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil,
-        usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil
+        usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil, setup: Setup? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -315,6 +343,37 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.sharesClipboard = sharesClipboard
         self.usbDevices = usbDevices
         self.usbAutoConnect = usbAutoConnect
+        self.setup = setup
+    }
+}
+
+/// A setup script: something a new Linux machine can be set up with, such as a desktop.
+public struct SetupScriptSummary: Codable, Sendable, Equatable {
+    /// What the script is asked for by.
+    public var id: String
+    public var name: String
+    public var summary: String?
+    /// The kind of thing it sets up, such as `desktop`.
+    public var category: String?
+    /// The distributions it is written for. Empty means any.
+    public var systems: [String]
+    public var minimumMemoryGigabytes: Int?
+    public var minimumDiskGigabytes: Int?
+    /// Whether the app brings it. Otherwise it is from the user's folder of scripts.
+    public var isBuiltIn: Bool
+
+    public init(
+        id: String, name: String, summary: String? = nil, category: String? = nil, systems: [String] = [],
+        minimumMemoryGigabytes: Int? = nil, minimumDiskGigabytes: Int? = nil, isBuiltIn: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.summary = summary
+        self.category = category
+        self.systems = systems
+        self.minimumMemoryGigabytes = minimumMemoryGigabytes
+        self.minimumDiskGigabytes = minimumDiskGigabytes
+        self.isBuiltIn = isBuiltIn
     }
 }
 
@@ -368,10 +427,12 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     /// Something for the person at the terminal to read once the command has done its part, such as
     /// what is left for them to do.
     public var note: String?
+    /// The setup scripts there are to make a machine with, for `scripts`.
+    public var setupScripts: [SetupScriptSummary]?
 
     public init(
         ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil,
-        usbDevices: [USBDeviceSummary]? = nil
+        usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil
     ) {
         self.ok = ok
         self.error = error
@@ -379,6 +440,7 @@ public struct ControlResponse: Codable, Sendable, Equatable {
         self.snapshots = snapshots
         self.note = note
         self.usbDevices = usbDevices
+        self.setupScripts = setupScripts
     }
 
     public static func failure(_ message: String) -> ControlResponse {

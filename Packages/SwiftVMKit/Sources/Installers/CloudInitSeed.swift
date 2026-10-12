@@ -26,6 +26,9 @@ public struct CloudInitSeed: Sendable, Hashable {
     /// The script that installs the guest agent (``LinuxGuestAgent/installer()``), to run on the first
     /// boot. `nil` leaves the guest without one.
     public var guestAgentInstaller: String?
+    /// Scripts to set the system up with once it is up for the first time, in the order they run: a
+    /// desktop, for example.
+    public var setupScripts: [SetupScript]
 
     public init(
         hostName: String,
@@ -39,7 +42,8 @@ public struct CloudInitSeed: Sendable, Hashable {
         sharedFoldersTag: String? = GuestIntegration.sharedFoldersTag,
         rosettaTag: String? = nil,
         kernelMessagesOnSerialConsole: Bool = true,
-        guestAgentInstaller: String? = try? LinuxGuestAgent.installer()
+        guestAgentInstaller: String? = try? LinuxGuestAgent.installer(),
+        setupScripts: [SetupScript] = []
     ) {
         self.hostName = hostName
         self.instanceID = instanceID
@@ -53,6 +57,7 @@ public struct CloudInitSeed: Sendable, Hashable {
         self.rosettaTag = rosettaTag
         self.kernelMessagesOnSerialConsole = kernelMessagesOnSerialConsole
         self.guestAgentInstaller = guestAgentInstaller
+        self.setupScripts = setupScripts
     }
 
     // MARK: Documents
@@ -130,6 +135,17 @@ public struct CloudInitSeed: Sendable, Hashable {
             // The boot menu is only written anew when asked, and read at the next boot.
             commands.append(Self.bootMenuUpdateCommand)
         }
+        if !setupScripts.isEmpty, let setupFiles = try? LinuxGuestSetup.files(for: setupScripts, userName: userName) {
+            for file in setupFiles {
+                files.append("  - path: \(yaml(file.path))")
+                files.append("    encoding: b64")
+                files.append("    content: \(yaml(Data(file.contents.utf8).base64EncodedString()))")
+                files.append("    permissions: \(yaml(file.permissions))")
+            }
+            // Ahead of the guest agent, so that the first thing the agent has to tell is that a setup
+            // is to come. The scripts themselves only run once all of this is over.
+            commands.append(LinuxGuestSetup.scheduleCommand)
+        }
         if let guestAgentInstaller {
             // Base64 carries the script through YAML untouched, whatever is in it.
             files.append("  - path: \(yaml(LinuxGuestAgent.installerPath))")
@@ -176,6 +192,10 @@ public struct CloudInitSeed: Sendable, Hashable {
 
     /// Writes the seed ISO (volume label `cidata`) at `url`.
     public func writeImage(to url: URL) throws {
+        if !setupScripts.isEmpty {
+            // Without them the machine would come up without what was asked for, and say nothing.
+            _ = try LinuxGuestSetup.files(for: setupScripts, userName: userName)
+        }
         var files: [String: Data] = [
             Self.metaDataFileName: Data(metaData.utf8),
             Self.userDataFileName: Data(userData.utf8),
@@ -205,6 +225,9 @@ public struct CloudInitSeed: Sendable, Hashable {
     /// The copy runs its first-boot setup again, and with it the installer of the guest agent that the
     /// seed carries. That is replaced by this build's, so that the copy of a machine made long ago doesn't
     /// put an agent of that day over the one on its disk.
+    ///
+    /// A setup script in the seed stays there. It isn't run a second time: what runs it finds on the
+    /// copied disk that it has been at work there before.
     public static func reissue(
         at url: URL, hostName: String, macAddress: String?, instanceID: String = UUID().uuidString.lowercased(),
         guestAgentInstaller: String? = try? LinuxGuestAgent.installer()
@@ -242,6 +265,31 @@ public struct CloudInitSeed: Sendable, Hashable {
         else { return userData }
         lines[index] = content + yaml(Data(installer.utf8).base64EncodedString())
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: Account
+
+    /// What is wrong with `userName` as the name of the account to create, or `nil` if it will do.
+    public static func problem(withUserName userName: String) -> String? {
+        guard let first = userName.first else { return "Enter a user name." }
+        let isValid = first.isASCII && first.isLowercase
+            && userName.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-" || $0 == "_") }
+            && userName.count <= 32
+        if !isValid {
+            return "Use lowercase letters, digits, “-” and “_”, starting with a letter."
+        }
+        if userName == "root" {
+            return "Choose a user name other than root."
+        }
+        return nil
+    }
+
+    /// A name for the account that is as close to `name` as the rules allow, for when nobody is asked:
+    /// `Jane.Doe`, as a Mac may call its user, becomes `janedoe`.
+    public static func userName(from name: String) -> String {
+        let kept = name.lowercased().filter { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-" || $0 == "_") }
+        let candidate = String(kept.drop { !$0.isLowercase }.prefix(32))
+        return problem(withUserName: candidate) == nil ? candidate : "user"
     }
 
     // MARK: Helpers

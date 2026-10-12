@@ -83,6 +83,11 @@ struct MachineView: View {
                 .overlay { progressOverlay(machine.state == .restoring ? "Resuming…" : "Starting…") }
         case .running, .stopping:
             display
+                .overlay(alignment: .bottom) {
+                    if let title = machine.setupTitle {
+                        setupBanner(title: title, activity: machine.setupActivity)
+                    }
+                }
         case .suspending:
             display
                 .overlay { progressOverlay("Suspending…") }
@@ -123,6 +128,33 @@ struct MachineView: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 22))
         .transition(.opacity)
         // One announcement, "Starting…", rather than a nameless progress indicator and a text.
+        .accessibilityElement(children: .combine)
+    }
+
+    /// What the guest's setup script is doing, at the foot of the display. It runs for minutes, and
+    /// what is on the screen meanwhile stays there to be read and used.
+    private func setupBanner(title: String, activity: String?) -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title + "…")
+                    .font(.headline)
+                if let activity, activity != title {
+                    Text(activity)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .capsule)
+        .padding(.bottom, 20)
+        .transition(.opacity)
+        // What is under it belongs to the guest.
+        .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
     }
 

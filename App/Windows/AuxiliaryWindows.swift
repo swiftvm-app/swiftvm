@@ -83,7 +83,7 @@ struct NewMachineWindow: View {
         } isTargeted: { isTargeted in
             withAnimation(.easeOut(duration: 0.15)) { isDropTargeted = isTargeted }
         }
-        // The next time the window opens it starts with the choice of system again.
+        // The next time the window opens it is for no file in particular again.
         .onDisappear { request = NewMachineRequest() }
     }
 

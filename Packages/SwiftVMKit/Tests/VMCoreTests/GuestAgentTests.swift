@@ -627,6 +627,128 @@ private final class AgentProvider: VMBackendProvider {
         await machine.forceStop()
     }
 
+    @Test func passesOnHowTheGuestsSetupIsDoing() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        await machine.start()
+        #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+        // A guest without a setup script says nothing about one.
+        #expect(machine.agent.setup == nil)
+
+        #expect(machine.setupTitle == nil && machine.setupActivity == nil)
+
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .pending, name: "KDE Plasma")))
+        #expect(await eventually { machine.agent.setup?.state == .pending })
+        // Until the script names a step, what it is called has to do.
+        #expect(machine.setupTitle == "Setting up KDE Plasma")
+        #expect(machine.setupActivity == "Setting up KDE Plasma")
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .running, name: "KDE Plasma", step: "Installing KDE Plasma")))
+        #expect(await eventually { machine.agent.setup?.step == "Installing KDE Plasma" })
+        #expect(machine.agent.setup?.name == "KDE Plasma")
+        #expect(machine.setupTitle == "Setting up KDE Plasma")
+        #expect(machine.setupActivity == "Installing KDE Plasma")
+        #expect(machine.message == nil)
+        // A script of the user's own may have no name to go by.
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .running)))
+        #expect(await eventually { machine.setupActivity == "Setting up" })
+
+        // The guest restarts into its desktop: what was known of its setup goes with the agent, and
+        // comes back with it.
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .finished, name: "KDE Plasma")))
+        #expect(await eventually { machine.agent.setup?.state == .finished })
+        // What is over is no longer in the way of where the machine is reached.
+        #expect(machine.setupTitle == nil && machine.setupActivity == nil)
+        backend.agents[0].hangUp()
+        #expect(await eventually { backend.agents.count == 2 && machine.agent.isConnected })
+        #expect(machine.agent.setup == nil)
+        backend.agents[1].send(.setup(GuestSetupStatus(state: .finished, name: "KDE Plasma")))
+        #expect(await eventually { machine.agent.setup?.state == .finished })
+        // Nothing of this is worth a message.
+        #expect(machine.message == nil)
+
+        await machine.forceStop()
+        #expect(machine.agent.setup == nil)
+    }
+
+    @Test func saysSoOnceWhenTheSetupFails() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        await machine.start()
+        #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .running, name: "KDE Plasma", step: "Installing KDE Plasma")))
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .failed, name: "KDE Plasma", step: "Installing KDE Plasma")))
+        #expect(await eventually { machine.notice != nil })
+        #expect(machine.notice?.title == "KDE Plasma couldn't be set up in “Box”")
+        #expect(machine.notice?.message.contains("at “Installing KDE Plasma”") == true)
+        #expect(machine.notice?.message.contains(GuestIntegration.setupLogPath) == true)
+        #expect(machine.notice?.copyableText == GuestIntegration.setupRetryCommand)
+        // It is something to tell, not an error of the machine's: commands that follow don't fail over it.
+        #expect(machine.lastError == nil)
+        // That the user has been told is on record, with the machine.
+        #expect(try machine.bundle.loadConfiguration().installation.hasReportedSetupFailure)
+        machine.dismissMessage()
+
+        // Run again by hand it is at work again, and the next failure is news again. With several
+        // scripts that is the ordinary way: one is put right, and the one after it fails.
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .running, name: "Docker (2 of 3)")))
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .failed, name: "Docker (2 of 3)", step: "Installing Docker")))
+        #expect(await eventually { machine.notice?.title == "Docker (2 of 3) couldn't be set up in “Box”" })
+        #expect(machine.configuration.installation.hasReportedSetupFailure)
+        machine.dismissMessage()
+
+        // The next time it starts, a script that failed long ago is no news.
+        await machine.forceStop()
+        await machine.start()
+        #expect(await eventually { backend.agents.count == 2 && machine.agent.isConnected })
+        backend.agents[1].send(.setup(GuestSetupStatus(state: .failed, name: "KDE Plasma", step: "Installing KDE Plasma")))
+        #expect(await eventually { machine.agent.setup?.state == .failed })
+        #expect(machine.message == nil)
+
+        // Tried again by hand, it is at work again, and that it failed once more is news once more.
+        backend.agents[1].send(.setup(GuestSetupStatus(state: .running, name: "KDE Plasma")))
+        #expect(await eventually { !machine.configuration.installation.hasReportedSetupFailure })
+        backend.agents[1].send(.setup(GuestSetupStatus(state: .failed)))
+        #expect(await eventually { machine.notice != nil })
+        // A script that has no name to go by is called what it is.
+        #expect(machine.notice?.title == "The setup script failed in “Box”")
+        #expect(machine.notice?.message.hasPrefix("The setup script stopped with an error. What it printed") == true)
+        machine.dismissMessage()
+
+        // A guest that keeps saying one thing and then the other is heard a few times in a run, and
+        // then no more: what it reports is up to the guest, and how often the user is told isn't.
+        for round in 0..<20 {
+            backend.agents[1].send(.setup(GuestSetupStatus(state: .running, name: "Flap \(round)")))
+            backend.agents[1].send(.setup(GuestSetupStatus(state: .failed, name: "Flap \(round)")))
+        }
+        #expect(await eventually { machine.agent.setup?.name == "Flap 19" })
+        let lastHeard = try #require(machine.notice?.title)
+        #expect(lastHeard.hasPrefix("Flap ") && lastHeard != "Flap 19 couldn't be set up in “Box”")
+        machine.dismissMessage()
+        backend.agents[1].send(.setup(GuestSetupStatus(state: .running, name: "Once more")))
+        backend.agents[1].send(.setup(GuestSetupStatus(state: .failed, name: "Once more", step: "Again")))
+        #expect(await eventually { machine.agent.setup?.step == "Again" })
+        #expect(machine.message == nil)
+        await machine.forceStop()
+    }
+
+    @Test func aSetupThatFailedWhileNobodyLookedIsStillNews() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        await machine.start()
+        #expect(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+        // The script was over before the app first reached the agent: its first word is that it failed.
+        backend.agents[0].send(.setup(GuestSetupStatus(state: .failed, name: "Docker", step: "Installing Docker")))
+        #expect(await eventually { machine.notice != nil })
+        #expect(machine.notice?.title == "Docker couldn't be set up in “Box”")
+        #expect(machine.configuration.installation.hasReportedSetupFailure)
+
+        // A machine that was made before any of this has no such record.
+        let older = try JSONDecoder().decode(InstallationConfiguration.self, from: Data(#"{"attachesSeedImage":true}"#.utf8))
+        #expect(!older.hasReportedSetupFailure)
+        await machine.forceStop()
+    }
+
     @Test func aNoticeIsNotAnError() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try makeMachine()

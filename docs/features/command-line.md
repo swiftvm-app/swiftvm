@@ -34,6 +34,11 @@ swiftvm info web-server      # one machine in detail
 `<system>` is `macos`, or a Linux image: `ubuntu-26.04`, `ubuntu-24.04`, or
 `debian-13`.
 
+`swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
+SwiftVM's [templates](setup-scripts.md#templates), and
+[your own](setup-scripts.md#your-own-scripts). With a Linux image, as in
+`swiftvm scripts debian-13`, it lists those for that image.
+
 | `create` option | What it sets |
 | --- | --- |
 | `--name <name>` | The machine's name |
@@ -43,6 +48,9 @@ swiftvm info web-server      # one machine in detail
 | `--user <name>` | The account's name |
 | `--password <password>` | The account's password. Required for macOS |
 | `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |
+| `--script <name>` | Linux: run a [setup script](setup-scripts.md) on the first start, by its name in `swiftvm scripts`. A desktop needs `--password` |
+| `--script <file>` | The same with a file, by its path: `./mine.sh` |
+| `--script … --script …` | Several, which run in that order |
 | `--no-start` | Don't start the machine when it is ready |
 
 ## Power
@@ -104,6 +112,7 @@ machine is running. While one is being created it refuses too, unless you add
 
 ```bash
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
+swiftvm create debian-13 --name "Desk" --script xfce --script docker --password 'a password'
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80
 swiftvm snapshot web-server "Before upgrade"

@@ -21,6 +21,7 @@ in git history as
 | D10 | The command line drives the running app | One owner of the machines |
 | D11 | The app lives in the menu bar | No main window |
 | D12 | Swift packages and scripts, no Xcode project | `swift build` is the build |
+| D13 | A desktop is installed by a script in the guest | One file, the same kind for ours and for users' |
 
 ## D1. The Virtualization framework runs macOS and Linux guests
 
@@ -118,3 +119,29 @@ The app is a Swift package, `swift build` compiles it, and a script makes an
 app of the result and signs it. The command-line tool and the guest agent are
 built from their own package, because `swiftvm` and `SwiftVM` would be one
 file in a shared build folder.
+
+## D13. A desktop is installed by a script in the guest
+
+Few distributions offer an ARM64 desktop image, and each installer disc wants
+its own kind of unattended answers. A cloud image plus a script that installs
+the desktop reuses everything Quick Create already does, works the same for
+every distribution, and leaves the choice of desktop open.
+
+The script is one file with a comment header: easy to write, to read, and to
+pass on, and a list of scripts can be made from the headers alone. The app
+calls all of them setup scripts, the desktops too: a desktop is a kind of
+script, not a setting of its own, so that what users write stands next to
+what the app brings. Users keep theirs in `~/.config/swiftvm/setup-scripts`,
+where a script with the name of a built-in one takes its place. A machine
+takes several scripts rather than one that does everything, so that a desktop
+and Docker stay two files that each do one thing. They run in a
+systemd unit of their own after first-boot setup, so that a setup cut short by
+a power-off carries on at the next start, and its restart can't cut
+first-boot setup off. Progress reaches the app through the guest agent, as everything
+else does (D7).
+
+Turned down: unattended installer discs, which need one format per
+distribution. Running the script as a step of first-boot setup, which isn't
+run again after an interruption. A manifest next to the script, which is two
+files to keep in step. Ready-made desktop images, which someone would have to
+build and host for every release.

@@ -456,11 +456,18 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
     /// The guest has been given this Mac's time zone. That happens once: whoever sets another one in
     /// the guest afterwards keeps it.
     public var hasHostTimeZone: Bool
+    /// The user has been told that the guest's setup script failed. That is news once: until the
+    /// script is seen at work or finished again, a guest that says so again is not.
+    public var hasReportedSetupFailure: Bool
 
-    public init(attachesSeedImage: Bool = false, isProvisioned: Bool = false, hasHostTimeZone: Bool = false) {
+    public init(
+        attachesSeedImage: Bool = false, isProvisioned: Bool = false, hasHostTimeZone: Bool = false,
+        hasReportedSetupFailure: Bool = false
+    ) {
         self.attachesSeedImage = attachesSeedImage
         self.isProvisioned = isProvisioned
         self.hasHostTimeZone = hasHostTimeZone
+        self.hasReportedSetupFailure = hasReportedSetupFailure
     }
 
     public init(from decoder: any Decoder) throws {
@@ -468,6 +475,7 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
         attachesSeedImage = try c.decode(.attachesSeedImage, default: false)
         isProvisioned = try c.decode(.isProvisioned, default: false)
         hasHostTimeZone = try c.decode(.hasHostTimeZone, default: false)
+        hasReportedSetupFailure = try c.decode(.hasReportedSetupFailure, default: false)
     }
 }
 

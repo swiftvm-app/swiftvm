@@ -46,6 +46,8 @@ struct LinuxQuickCreateRequest {
     var password: String
     var installsSSHKey: Bool
     var rosetta: Bool
+    /// What to set the system up with on its first start, such as a desktop.
+    var setupScripts: [SetupScript] = []
 }
 
 /// Everything needed to create an empty Linux machine that boots an installer ISO.
@@ -170,7 +172,8 @@ extension AppModel {
             password: request.password.isEmpty ? nil : request.password,
             authorizedKeys: keyPair.map { [$0.publicKey] } ?? [],
             macAddress: interface.macAddress,
-            rosettaTag: request.rosetta ? GuestIntegration.rosettaTag : nil
+            rosettaTag: request.rosetta ? GuestIntegration.rosettaTag : nil,
+            setupScripts: request.setupScripts
         )
 
         creation.update("Preparing disk…", fraction: 0)

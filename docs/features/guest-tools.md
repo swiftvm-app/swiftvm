@@ -11,6 +11,7 @@ guest has no network.
 | SwiftVM knows the guest's system, kernel, and address | Yes | Yes |
 | The clock is set the moment the guest resumes | Yes | Yes |
 | **Shut Down** works at once, without a question on the guest's screen | Yes | Yes |
+| SwiftVM shows what a [setup script](setup-scripts.md) is doing | Yes | No |
 | [Shared folders](sharing.md) are mounted | Yes | macOS mounts them by itself |
 | [Shared clipboard](sharing.md#clipboard) | Uses `spice-vdagent` instead | Yes |
 | The time zone follows your Mac's, once | No | Yes |
