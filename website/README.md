@@ -62,27 +62,31 @@ shared, is a capture of the hero at 1200 × 630.
 
 ## Deploying
 
-Cloudflare builds the site on every push to `main` and serves it as a Worker
-that is nothing but the files of `dist/`. `wrangler.jsonc` says so. To set it
-up:
+The site only changes when someone runs **Deploy Website**, under **Actions**
+on GitHub. A push to `main` leaves it as it is, so the pages of `docs/` can
+describe what isn't released yet.
 
-1. In the Cloudflare dashboard, go to **Workers & Pages**, choose
-   **Create application**, and import this repository.
-2. Fill in the settings and choose **Deploy**:
+The workflow builds the branch or tag it is run from and gives `dist/` to
+Cloudflare, which serves it as a Worker that is nothing but those files.
+`wrangler.jsonc` says so. To set it up:
 
-   | Setting | Value |
+1. In the Cloudflare dashboard, create an API token from the
+   **Edit Cloudflare Workers** template, for the account the site is in.
+2. Give the repository two secrets:
+
+   | Secret | Value |
    | --- | --- |
-   | Project name | `swiftvm`, the `name` in `wrangler.jsonc` |
-   | Build command | `npm run build` |
-   | Deploy command | `npx wrangler deploy` |
-   | Root directory | `website` |
+   | `CLOUDFLARE_API_TOKEN` | The token |
+   | `CLOUDFLARE_ACCOUNT_ID` | The ID of that account |
 
-3. In the Worker, open **Settings → Domains & Routes**, choose
+3. Run **Deploy Website**. The first run makes the Worker, under the `name` in
+   `wrangler.jsonc`.
+4. In the Worker, open **Settings → Domains & Routes**, choose
    **Add → Custom Domain**, and enter `swiftvm.app`.
 
-- Leave **Build watch paths** as they are. Limited to `website/`, a change to
-  `docs/` wouldn't build the site.
-- `.node-version` tells Cloudflare which Node.js to build with.
+- Don't connect the Worker to this repository under **Settings → Builds**.
+  Connected, Cloudflare deploys every push to `main` by itself.
+- `.node-version` tells the workflow which Node.js to build with.
 - `src/static/_headers` sets the headers the site's files are sent with.
 
 Any other host of static files works the same way: run `npm run build` in

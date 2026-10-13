@@ -1,6 +1,7 @@
 // How Cloudflare serves the site: as a Worker that is nothing but the files of dist/.
 {
-    // The name the Worker has in the Cloudflare dashboard. A build fails if the two differ.
+    // The name the Worker has in the Cloudflare dashboard. Under another name the site would be
+    // deployed as a second Worker, and swiftvm.app would go on serving the first.
     "name": "swiftvm",
     "compatibility_date": "2026-10-11",
     "assets": {

@@ -33,6 +33,9 @@ Both workflows are started by hand, under **Actions** on GitHub.
    the next betas should count toward. It publishes the release, updates the
    Homebrew tap, and writes the new `BETA_VERSION` to `main`.
 
+Neither touches the website. **Deploy Website** puts the pages of `docs/`
+online, and is started by hand too.
+
 ## Workflows
 
 | Workflow | What it does |
@@ -43,8 +46,10 @@ Both workflows are started by hand, under **Actions** on GitHub.
 | Update Homebrew Tap | Writes the cask to `swiftvm-app/homebrew-tap`. Runs after a release, or by hand |
 | Republish Beta Appcast | Puts a beta back into the beta appcast |
 | Build Release | The build that both releases share |
+| Deploy Website | Builds [the website](../../website/README.md) from the branch or tag it is run from and puts it online. Only by hand |
 
-They run on GitHub's `xcode-27` image, which has the macOS 27 SDK.
+The ones that build the app run on GitHub's `xcode-27` image, which has the
+macOS 27 SDK.
 
 ## What a release build does
 
@@ -83,7 +88,7 @@ The app updates itself with [Sparkle](https://sparkle-project.org).
 
 ## Secrets
 
-The release workflows read these from the repository's secrets.
+The workflows read these from the repository's secrets.
 
 | Secret | What it is |
 | --- | --- |
@@ -97,3 +102,5 @@ The release workflows read these from the repository's secrets.
 | `SPARKLE_PRIVATE_KEY` | The update key, from `swift scripts/generate-sparkle-key.swift` |
 | `HOMEBREW_TAP_TOKEN` | A token that can push to `swiftvm-app/homebrew-tap` |
 | `GH_RELEASE_PAT` | Optional. A token that can push to `main`, if `main` is protected |
+| `CLOUDFLARE_API_TOKEN` | For the website: a Cloudflare API token from the **Edit Cloudflare Workers** template |
+| `CLOUDFLARE_ACCOUNT_ID` | For the website: the ID of the Cloudflare account the site is in |
