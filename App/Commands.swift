@@ -28,6 +28,7 @@ struct MachineCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Virtual Machine…") { AppModel.shared.windows.showNewMachine() }
                 .keyboardShortcut("n")
+            Button("Templates…") { AppModel.shared.windows.showTemplates() }
         }
 
         CommandMenu("Virtual Machine") {
@@ -96,6 +97,12 @@ struct MachineCommands: Commands {
                 AppModel.shared.duplicateReportingErrors(machine)
             }
             .keyboardShortcut("d")
+            .disabled(state != .stopped)
+
+            Button("Save as Template") {
+                guard let machine else { return }
+                AppModel.shared.saveTemplateReportingErrors(of: machine)
+            }
             .disabled(state != .stopped)
 
             Button("Settings…") { actions?.showSettings() }

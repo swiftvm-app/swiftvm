@@ -12,7 +12,7 @@ Choose **Settings…** in the panel, or press `Cmd+,`.
 | Network | The address range of the shared network, and this Mac's address on it. See [Networking](../features/networking.md) |
 | Command Line | Install or uninstall the [`swiftvm`](../features/command-line.md) command |
 | Updates | Check for updates, and whether to install them automatically |
-| Storage | Where new virtual machines and downloaded images are kept. **Change** picks another folder for either, on another disk if you like |
+| Storage | Where new virtual machines, templates, and downloaded images are kept. **Change** picks another folder for each, on another disk if you like |
 
 ## Updates
 
@@ -32,11 +32,14 @@ Builds you make yourself don't update.
 
 - **New Virtual Machines** is the folder machines are created in, unless you
   pick another one for a machine in the **New Virtual Machine** form.
+- **Templates** is where [templates](../features/templates.md) are kept.
 - **Downloaded Images** is where Linux images and macOS restore images are
   kept, to be used again for the next machine.
 
 Changing a folder moves nothing. Machines stay where they are, and you move
 one with **Move…** in [its settings](../features/virtual-machines.md#where-machines-are-kept).
+Templates in the old folder stay there and are no longer listed: move them to
+the new one yourself to keep using them.
 Images that were downloaded before stay in the old folder: move them to the
 new one yourself to keep using them, unless a machine still has one of them
 plugged in as an installer disc.
@@ -77,6 +80,8 @@ devices change while it runs.
 | --- | --- |
 | `~/Library/Application Support/SwiftVM/Machines/` | One `<name>.swiftvm` package per machine, unless you [keep them elsewhere](#storage) |
 | `~/Library/Application Support/SwiftVM/library.json` | The list of your machines and where each one is |
+| `~/Library/Application Support/SwiftVM/Templates/` | One `<name>.swiftvmtemplate` package per [template](../features/templates.md), unless you [keep them elsewhere](#storage) |
+| `~/Library/Application Support/SwiftVM/templates.json` | Where templates are kept, once you have chosen another folder for them |
 | `~/Library/Application Support/SwiftVM/ssh_config` | The SSH configuration SwiftVM generates |
 | `~/Library/Application Support/SwiftVM/known_hosts` | The guests' SSH host keys |
 | `~/Library/Caches/SwiftVM/Downloads/` | Downloaded Linux images and macOS restore images, unless you [keep them elsewhere](#storage) |

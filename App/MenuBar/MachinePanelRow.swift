@@ -102,6 +102,10 @@ struct MachinePanelRow: View {
                 model.windows.showSnapshots(of: machine)
                 dismiss()
             },
+            onSaveTemplate: {
+                model.saveTemplateReportingErrors(of: machine)
+                dismiss()
+            },
             onDelete: { isAskingToDelete = true }
         )
     }

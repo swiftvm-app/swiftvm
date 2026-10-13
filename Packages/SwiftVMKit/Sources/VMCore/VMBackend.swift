@@ -265,6 +265,9 @@ public enum VMActivity: Sendable, Hashable {
     case resizingDisk
     /// Its bundle is on its way to another folder, which takes a while when that is on another disk.
     case moving
+    /// Its disks and firmware are being copied into a template, which takes a while when the templates
+    /// are kept on another disk.
+    case savingTemplate
 
     public var label: String {
         switch self {
@@ -273,6 +276,7 @@ public enum VMActivity: Sendable, Hashable {
         case .duplicating: "Duplicating"
         case .resizingDisk: "Resizing Disk"
         case .moving: "Moving"
+        case .savingTemplate: "Saving Template"
         }
     }
 }

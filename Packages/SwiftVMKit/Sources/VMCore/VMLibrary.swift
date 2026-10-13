@@ -233,8 +233,9 @@ public final class VMLibrary {
     /// is in the way, in words for whoever chose the folder.
     public func prepareFolder(_ folder: URL) throws {
         let shown = (folder.path as NSString).abbreviatingWithTildeInPath
-        guard !folder.pathComponents.contains(where: { ($0 as NSString).pathExtension == VMBundle.pathExtension }) else {
-            throw VMError.invalidConfiguration("“\(shown)” is inside a virtual machine. Choose a folder outside of it.")
+        let packages = [VMBundle.pathExtension, VMTemplate.pathExtension]
+        guard !folder.pathComponents.contains(where: { packages.contains(($0 as NSString).pathExtension) }) else {
+            throw VMError.invalidConfiguration("“\(shown)” is inside a virtual machine or a template. Choose a folder outside of it.")
         }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -675,7 +676,7 @@ public final class VMLibrary {
 }
 
 /// Says across threads that a copy is to stop.
-private final class CancellationFlag: @unchecked Sendable {
+final class CancellationFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false
 

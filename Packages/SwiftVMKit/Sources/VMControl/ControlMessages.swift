@@ -43,6 +43,14 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case deleteSnapshot = "delete-snapshot"
         /// Give a snapshot the name in ``ControlRequest/name``.
         case renameSnapshot = "rename-snapshot"
+        /// The templates there are to make a machine from.
+        case templates
+        /// Save a machine as a template, under the name in ``ControlRequest/name``: as it is now, for
+        /// which it has to be shut down, or as it was at ``ControlRequest/snapshot``.
+        case saveTemplate = "save-template"
+        case deleteTemplate = "delete-template"
+        /// Give a template the name in ``ControlRequest/name``.
+        case renameTemplate = "rename-template"
         /// Forward a port on this Mac to a port in the machine.
         case forward
         case unforward
@@ -121,7 +129,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     }
 
     public struct CreateParameters: Codable, Sendable, Equatable {
-        /// What to install: `macos`, or a Linux catalog identifier such as `ubuntu-26.04`.
+        /// What to install: `macos`, or a Linux catalog identifier such as `ubuntu-26.04`. Empty for a
+        /// machine that is made from a ``template``.
         public var distribution: String
         public var name: String?
         public var cpuCount: Int?
@@ -140,6 +149,10 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var rosetta: Bool?
         /// Whether this Mac's SSH key lets into the account. `nil` is yes.
         public var installsSSHKey: Bool?
+        /// Name or UUID of the template to make the machine from, instead of installing a system. It
+        /// brings its system, its account and whatever was set up in it, so of the above only the name,
+        /// the processors, the memory, the disk size and the folder are for such a machine.
+        public var template: String?
         public var start: Bool
 
         /// The `distribution` value that installs macOS.
@@ -149,7 +162,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
             scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, installsSSHKey: Bool? = nil,
-            start: Bool = true
+            template: String? = nil, start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -163,6 +176,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.location = location
             self.rosetta = rosetta
             self.installsSSHKey = installsSSHKey
+            self.template = template
             self.start = start
         }
     }
@@ -173,10 +187,13 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var create: CreateParameters?
     public var share: ShareParameters?
     public var drive: DriveParameters?
-    /// The name for a copy of a machine or for a new snapshot, or the new name of an existing snapshot.
+    /// The name for a copy of a machine, for a new snapshot or for a new template, or the new name of an
+    /// existing snapshot or template.
     public var name: String?
     /// Name or UUID of the snapshot the command applies to.
     public var snapshot: String?
+    /// Name or UUID of the template the command applies to.
+    public var template: String?
     /// The disk size to grow to, in GB.
     public var diskGigabytes: Int?
     public var forward: ForwardParameters?
@@ -208,7 +225,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
-        timeout: Double? = nil, location: String? = nil
+        timeout: Double? = nil, location: String? = nil, template: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -229,6 +246,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.job = job
         self.timeout = timeout
         self.location = location
+        self.template = template
     }
 }
 
@@ -475,6 +493,32 @@ public struct SnapshotSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// One template: a machine as it was saved, to make new machines from.
+public struct TemplateSummary: Codable, Sendable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var createdAt: Date
+    public var system: String
+    public var cpuCount: Int
+    public var memorySize: UInt64
+    public var diskAllocated: UInt64
+    public var diskCapacity: UInt64
+
+    public init(
+        id: UUID, name: String, createdAt: Date, system: String, cpuCount: Int, memorySize: UInt64,
+        diskAllocated: UInt64, diskCapacity: UInt64
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.system = system
+        self.cpuCount = cpuCount
+        self.memorySize = memorySize
+        self.diskAllocated = diskAllocated
+        self.diskCapacity = diskCapacity
+    }
+}
+
 public struct ControlResponse: Codable, Sendable, Equatable {
     public var ok: Bool
     public var error: String?
@@ -489,10 +533,12 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     public var note: String?
     /// The setup scripts there are to make a machine with, for `scripts`.
     public var setupScripts: [SetupScriptSummary]?
+    /// The templates, for the commands that deal with them.
+    public var templates: [TemplateSummary]?
 
     public init(
         ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil,
-        usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil
+        usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil, templates: [TemplateSummary]? = nil
     ) {
         self.ok = ok
         self.error = error
@@ -501,6 +547,7 @@ public struct ControlResponse: Codable, Sendable, Equatable {
         self.note = note
         self.usbDevices = usbDevices
         self.setupScripts = setupScripts
+        self.templates = templates
     }
 
     public static func failure(_ message: String) -> ControlResponse {

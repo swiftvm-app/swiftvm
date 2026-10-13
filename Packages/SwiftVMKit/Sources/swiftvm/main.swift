@@ -21,6 +21,11 @@ Usage: swiftvm <command> [arguments]
                                     By its name in `swiftvm scripts`, or a file by its path (./mine.sh).
                                     Give it again for more scripts, which run in that order.
                                     A desktop needs a password
+  create --template <template> [options]
+                                    Create a machine from a template, with everything that was in the
+                                    template's machine when it was saved
+      --name <name>  --cpus <n>  --memory <GB>  --location <folder>  --no-start
+      --disk <GB>                   Grow the disk beyond the template's
   scripts [<system>]                List the setup scripts for --script, or those for one Linux image
   start <machine>                   Start, or resume a suspended machine
   stop <machine>                    Shut down and wait
@@ -47,6 +52,13 @@ Usage: swiftvm <command> [arguments]
   revert <machine> <snapshot>       Go back to a snapshot, discarding what happened since
   delete-snapshot <machine> <snapshot>
   rename-snapshot <machine> <snapshot> <new name>
+  templates                         List templates
+  save-template <machine> [name] [--snapshot <snapshot>]
+                                    Save a machine that is shut down as a template, to create machines
+                                    from. With --snapshot, save it as it was at a snapshot that was
+                                    taken while it was shut down
+  rename-template <template> <new name>
+  delete-template <template>        Move a template to the Trash. Machines made from it stay as they are
   plug <machine> | unplug <machine> Plug the machine's network cable in, or pull it
   install-tools <machine> [--disc] [--password <password>]
                                     Install the guest tools in a running machine over SSH. macOS wants
@@ -102,7 +114,7 @@ Usage: swiftvm <command> [arguments]
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
-<machine> is a name, SSH alias or UUID.
+<machine> is a name, SSH alias or UUID. <template> is a name or UUID.
 
 exec, cp, screenshot and ui need the guest tools in the machine: swiftvm install-tools.
 """
@@ -163,6 +175,31 @@ func printSnapshots(_ snapshots: [SnapshotSummary]) {
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
     let rows = [["NAME", "TAKEN", "RESUMES", "ID"]] + snapshots.map { snapshot in
         [snapshot.name, formatter.string(from: snapshot.createdAt), snapshot.includesMemory ? "yes" : "no", snapshot.id.uuidString]
+    }
+    let widths = (0..<rows[0].count).map { column in rows.map { $0[column].count }.max() ?? 0 }
+    for row in rows {
+        let line = zip(row, widths).map { cell, width in cell.padding(toLength: width, withPad: " ", startingAt: 0) }
+        print(line.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
+    }
+}
+
+func printTemplates(_ templates: [TemplateSummary]) {
+    guard !templates.isEmpty else {
+        print("No templates.")
+        return
+    }
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    let rows = [["NAME", "SYSTEM", "CPU", "MEMORY", "DISK", "SAVED", "ID"]] + templates.map { template in
+        [
+            template.name,
+            template.system,
+            String(template.cpuCount),
+            formatBytes(template.memorySize),
+            "\(formatBytes(template.diskAllocated)) of \(formatBytes(template.diskCapacity))",
+            formatter.string(from: template.createdAt),
+            template.id.uuidString,
+        ]
     }
     let widths = (0..<rows[0].count).map { column in rows.map { $0[column].count }.max() ?? 0 }
     for row in rows {
@@ -313,11 +350,14 @@ case "list", "ls":
     printTable(send(ControlRequest(command: .list)).machines)
 
 case "create":
-    guard let distribution = arguments.first, !distribution.hasPrefix("--") else {
-        fail("Missing system: macos, or a Linux image such as ubuntu-26.04.")
+    // What the machine is made from: a system to install, which comes first, or a template.
+    let system = arguments.first.flatMap { $0.hasPrefix("--") ? nil : $0 }
+    guard system != nil || arguments.contains("--template") else {
+        fail("Missing system: macos, or a Linux image such as ubuntu-26.04. Or a template, with --template <template>.")
     }
-    var parameters = ControlRequest.CreateParameters(distribution: distribution)
-    var index = 1
+    var parameters = ControlRequest.CreateParameters(distribution: system ?? "")
+    var options: [String] = []
+    var index = system == nil ? 0 : 1
     func value(for option: String) -> String {
         index += 1
         guard index < arguments.count else { fail("\(option) needs a value.") }
@@ -329,7 +369,9 @@ case "create":
     }
     while index < arguments.count {
         let option = arguments[index]
+        options.append(option)
         switch option {
+        case "--template": parameters.template = value(for: option)
         case "--name": parameters.name = value(for: option)
         case "--cpus": parameters.cpuCount = number(for: option)
         case "--memory": parameters.memoryGigabytes = number(for: option)
@@ -349,6 +391,14 @@ case "create":
         default: fail("Unknown option \(option).")
         }
         index += 1
+    }
+    if parameters.template != nil {
+        guard system == nil else { fail("Give a system to install or a template, not both.") }
+        // A template brings its system, its account and whatever was set up in it.
+        let allowed: Set = ["--template", "--name", "--cpus", "--memory", "--disk", "--location", "--no-start"]
+        if let option = options.first(where: { !allowed.contains($0) }) {
+            fail("\(option) isn't for a machine made from a template, which keeps the template's system and account.")
+        }
     }
     printTable(send(ControlRequest(command: .create, create: parameters)).machines)
 
@@ -563,6 +613,43 @@ case "rename-snapshot":
     let request = ControlRequest(command: .renameSnapshot, machine: machine, name: arguments[2], snapshot: arguments[1])
     printSnapshots(send(request).snapshots ?? [])
 
+case "templates":
+    guard arguments.isEmpty else { fail("Usage: swiftvm templates") }
+    let response = send(ControlRequest(command: .templates))
+    printTemplates(response.templates ?? [])
+    if let note = response.note {
+        print("\n" + note)
+    }
+
+case "save-template":
+    let machine = requireMachine()
+    var rest = Array(arguments.dropFirst())
+    var snapshot: String?
+    if let index = rest.firstIndex(of: "--snapshot") {
+        guard index + 1 < rest.count else { fail("--snapshot needs a value.") }
+        snapshot = rest[index + 1]
+        rest.removeSubrange(index...(index + 1))
+    }
+    if let option = rest.first(where: { $0.hasPrefix("--") }) {
+        fail("Unknown option \(option).")
+    }
+    // A name can be several words, as a snapshot's can.
+    let name = rest.isEmpty ? nil : rest.joined(separator: " ")
+    let request = ControlRequest(command: .saveTemplate, machine: machine, name: name, snapshot: snapshot)
+    printTemplates(send(request).templates ?? [])
+
+case "delete-template":
+    guard !arguments.isEmpty else { fail("Missing template name.") }
+    let request = ControlRequest(command: .deleteTemplate, template: arguments.joined(separator: " "))
+    printTemplates(send(request).templates ?? [])
+
+case "rename-template":
+    guard arguments.count == 2 else {
+        fail("Usage: swiftvm rename-template <template> <new name>. Put a name with spaces in quotes.")
+    }
+    let request = ControlRequest(command: .renameTemplate, name: arguments[1], template: arguments[0])
+    printTemplates(send(request).templates ?? [])
+
 case "console":
     let machine = requireMachine()
     var idleTimeout: Double?
@@ -624,7 +711,10 @@ case "ssh":
 
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
-    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .move]
+    let others: [ControlRequest.Command] = [
+        .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .move,
+        .templates, .saveTemplate, .deleteTemplate, .renameTemplate,
+    ]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }

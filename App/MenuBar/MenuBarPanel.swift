@@ -99,6 +99,11 @@ struct MenuBarPanel: View {
                 .pickerStyle(.inline)
 
                 Divider()
+                Button("Templates…") {
+                    model.windows.showTemplates()
+                    dismiss()
+                }
+                Divider()
                 if UpdateService.shared.isAvailable {
                     Button("Check for Updates…") {
                         UpdateService.shared.checkForUpdates()

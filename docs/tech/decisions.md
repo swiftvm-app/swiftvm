@@ -23,6 +23,7 @@ in git history as
 | D12 | Swift packages and scripts, no Xcode project | `swift build` is the build |
 | D13 | A desktop is installed by a script in the guest | One file, the same kind for ours and for users' |
 | D14 | `swiftvm` works in a guest through its agent | Commands, screen, and input without a network or private API |
+| D15 | A template is a copy of its own, apart from the machines | It never changes, and outlives its machine |
 
 ## D1. The Virtualization framework runs macOS and Linux guests
 
@@ -179,3 +180,26 @@ desktop for a screenshot, which on Wayland is a different request for every
 desktop, most of them behind a question on the screen. A separate program for
 the screen and the keyboard, which would be a second thing to install and to
 keep in step.
+
+## D15. A template is a copy of its own, apart from the machines
+
+Making machines from one that is set up needs a state that stays put. A
+template is a copy of a shut-down machine's disk, firmware, and settings in a
+package of its own, in a folder for templates. It never runs, so it never
+changes, and it is still there when the machine it came from is deleted. On
+APFS the copy is a clone, as a snapshot and a duplicate are (D5).
+
+A machine is made from a template the way a duplicate is made from a machine,
+by the same code: copy the files, give the copy its own identity, add it to
+the library.
+
+Only a machine that is shut down makes a template. Saved memory expects the
+machine it was saved in, and two guests resumed from one memory would wake up
+as the same machine on the same network.
+
+Turned down: making machines straight from a snapshot, which lives in its
+machine's package, goes with it when the machine is deleted, and may hold
+memory. Marking a machine as a template, which leaves a machine in the list
+that mustn't start, and changes the template the moment it does. Templates
+that share a disk layer with the machines made from them, for the reason
+snapshots aren't layers (D5).

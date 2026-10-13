@@ -52,6 +52,28 @@ extension AppModel {
             let skipped = listing.skipped.map { "Not a setup script: \($0.fileName). \($0.reason)" }
             let note = (["Your own scripts go in \(folder)."] + skipped).joined(separator: "\n")
             return ControlResponse(ok: true, note: note, setupScripts: scripts)
+        case .templates:
+            // One may have been put in the folder by hand since it was last read.
+            templates.load()
+            return templatesResponse()
+        case .deleteTemplate, .renameTemplate:
+            guard let identifier = request.template else { return .failure("Missing template name.") }
+            let newName = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard request.command != .renameTemplate || !newName.isEmpty else {
+                return .failure("Missing the template's new name.")
+            }
+            templates.load()
+            do {
+                let template = try findTemplate(identifier)
+                if request.command == .renameTemplate {
+                    try templates.rename(template, to: newName)
+                } else {
+                    try templates.remove(template, movingToTrash: true)
+                }
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return templatesResponse()
         case .quit:
             // Quitting from the command line never puts up the dialog that asks what to do with machines.
             guard activeMachines.isEmpty else {
@@ -64,6 +86,9 @@ extension AppModel {
             }
             if let moving = machinesBeingMoved.first {
                 return .failure("“\(moving.name)” is being moved to another folder. Wait until it is there, or call the move off in the machine's settings.")
+            }
+            if let saving = machinesBeingSavedAsTemplates.first {
+                return .failure("“\(saving.name)” is being saved as a template. Wait until that is done.")
             }
             guard !isWorkingOnMachineFiles else {
                 return .failure("A virtual machine is busy with a snapshot, a copy or a resize. Try again in a moment.")
@@ -399,7 +424,23 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
-        case .list, .info, .console, .vsock, .job, .create, .quit, .usbList, .scripts:
+        case .saveTemplate:
+            var snapshot: VMSnapshot?
+            if let identifier = request.snapshot {
+                switch findSnapshot(identifier, of: machine) {
+                case .success(let found): snapshot = found
+                case .failure(let problem): return .failure(problem.message)
+                }
+            }
+            do {
+                try await saveTemplate(of: machine, at: snapshot, named: request.name)
+            } catch is CancellationError {
+                return .failure("Saving “\(machine.name)” as a template was called off.")
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return templatesResponse()
+        case .list, .info, .console, .vsock, .job, .create, .quit, .usbList, .scripts, .templates, .deleteTemplate, .renameTemplate:
             break
         }
 
@@ -537,6 +578,9 @@ extension AppModel {
     // MARK: Creating
 
     private func createMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
+        if let template = parameters.template {
+            return await createMachine(fromTemplate: template, parameters)
+        }
         let isMac = parameters.distribution == ControlRequest.CreateParameters.macOS
         let distribution = DistributionCatalog.quickCreate.first { $0.id == parameters.distribution }
         guard isMac || distribution != nil else {
@@ -585,16 +629,11 @@ extension AppModel {
         if let distribution, let problem = setupScripts.problem(for: distribution, memorySize: memorySize, diskCapacity: diskCapacity) {
             return .failure(problem)
         }
-        var location: URL?
-        if let path = parameters.location {
-            guard path.hasPrefix("/") else { return .failure("The folder to keep the machine in has to be given from the root.") }
-            let folder = URL(fileURLWithPath: path, isDirectory: true)
-            do {
-                try library.prepareFolder(folder)
-            } catch {
-                return .failure(error.localizedDescription)
-            }
-            location = folder
+        let location: URL?
+        do {
+            location = try creationFolder(at: parameters.location)
+        } catch {
+            return .failure(error.localizedDescription)
         }
         let installsSSHKey = parameters.installsSSHKey ?? true
         let usesRosetta = parameters.rosetta ?? false
@@ -673,7 +712,73 @@ extension AppModel {
             )
             start = { self.create(request) }
         }
+        return await finishCreating(named: name, starting: parameters.start, start)
+    }
 
+    /// Makes a machine from a template, which brings its system, its account and whatever was set up
+    /// in it. Its name, its hardware and where it is kept are the new machine's own.
+    private func createMachine(fromTemplate identifier: String, _ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
+        guard parameters.user == nil, parameters.password == nil, parameters.restoreImagePath == nil,
+              parameters.scripts == nil, parameters.rosetta == nil, parameters.installsSSHKey == nil
+        else {
+            return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.")
+        }
+        templates.load()
+        let template: VMTemplate
+        do {
+            template = try findTemplate(identifier)
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let name = parameters.name ?? nameForMachine(from: template)
+        if parameters.name != nil, isNameTaken(name) {
+            return .failure("A virtual machine named “\(name)” already exists.")
+        }
+        // Sizes are in GB. One typed in bytes would overflow further down.
+        if let memory = parameters.memoryGigabytes, !(1...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
+            return .failure("\(memory) GB of memory is more than this Mac has. The size is in GB.")
+        }
+        var diskCapacity: UInt64?
+        if let disk = parameters.diskGigabytes {
+            guard (1...HostResources.maximumDiskGigabytes).contains(disk) else {
+                return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
+            }
+            let capacity = UInt64(disk) * HostResources.gibibyte
+            let current = template.configuration.systemDisk?.capacity ?? 0
+            guard capacity >= current else {
+                return .failure("The template's disk is \(Formatting.bytes(current)). A disk can grow, but it can't shrink.")
+            }
+            diskCapacity = capacity > current ? capacity : nil
+        }
+        let location: URL?
+        do {
+            location = try creationFolder(at: parameters.location)
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let request = TemplateCreateRequest(
+            name: name, template: template, cpuCount: parameters.cpuCount,
+            memorySize: parameters.memoryGigabytes.map { UInt64($0) * HostResources.gibibyte },
+            diskCapacity: diskCapacity, location: location
+        )
+        return await finishCreating(named: name, starting: parameters.start) { self.create(request) }
+    }
+
+    /// The folder a machine is to be created in, made sure that it can be kept there. `nil` is the folder
+    /// for new machines.
+    private func creationFolder(at path: String?) throws -> URL? {
+        guard let path else { return nil }
+        guard path.hasPrefix("/") else {
+            throw VMError.invalidConfiguration("The folder to keep the machine in has to be given from the root.")
+        }
+        let folder = URL(fileURLWithPath: path, isDirectory: true)
+        try library.prepareFolder(folder)
+        return folder
+    }
+
+    /// Has `start` create the machine called `name`, waits until it is in the library, starts it if
+    /// that was asked for, and answers for all of it.
+    private func finishCreating(named name: String, starting startsMachine: Bool, _ start: () -> MachineCreation) async -> ControlResponse {
         // A quit may have been agreed to while the restore image was being read.
         guard !isQuittingUnattended else { return .failure("\(AppIdentity.current.name) is quitting.") }
         let result: Result<VirtualMachine, any Error> = await withCheckedContinuation { continuation in
@@ -682,7 +787,7 @@ extension AppModel {
         }
         switch result {
         case .success(let machine):
-            if parameters.start {
+            if startsMachine {
                 guard !isQuittingUnattended else {
                     return .failure("“\(machine.name)” was created but not started, because \(AppIdentity.current.name) is quitting.")
                 }
@@ -735,6 +840,37 @@ extension AppModel {
             return .failure(.init(message: "More than one snapshot is named “\(identifier)”. Use its ID from `swiftvm snapshots`."))
         }
         return .success(snapshot)
+    }
+
+    /// Finds a template by UUID or by name (case-insensitive).
+    private func findTemplate(_ identifier: String) throws -> VMTemplate {
+        if let id = UUID(uuidString: identifier), let template = templates.templates.first(where: { $0.id == id }) {
+            return template
+        }
+        let matches = templates.templates.filter { $0.name.lowercased() == identifier.lowercased() }
+        guard let template = matches.first else {
+            throw VMError.invalidConfiguration(["No template named “\(identifier)”.", missingTemplatesFolderNote].compactMap { $0 }.joined(separator: " "))
+        }
+        guard matches.count == 1 else {
+            throw VMError.invalidConfiguration("More than one template is named “\(identifier)”. Use its ID from `swiftvm templates`.")
+        }
+        return template
+    }
+
+    /// What to say when the folder that was chosen for templates isn't there, and none of them is listed.
+    private var missingTemplatesFolderNote: String? {
+        guard templates.isDirectoryMissing else { return nil }
+        return "The folder for templates, \(templates.directory.abbreviatedPath), isn't there. If it is on an external disk, connect the disk."
+    }
+
+    private func templatesResponse() -> ControlResponse {
+        ControlResponse(ok: true, note: missingTemplatesFolderNote, templates: templates.templates.map { template in
+            TemplateSummary(
+                id: template.id, name: template.name, createdAt: template.createdAt, system: template.configuration.os.summary,
+                cpuCount: template.configuration.cpuCount, memorySize: template.configuration.memorySize,
+                diskAllocated: templates.allocatedSize(of: template), diskCapacity: template.configuration.totalDiskCapacity
+            )
+        })
     }
 
     /// Finds the one USB device among `devices` that `text` names: by its number, its `vendor:product`,

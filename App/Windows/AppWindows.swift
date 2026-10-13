@@ -6,6 +6,7 @@ enum WindowID {
     static let newMachine = "new-machine"
     static let machineSettings = "machine-settings"
     static let snapshots = "snapshots"
+    static let templates = "templates"
     static let settings = "settings"
 }
 
@@ -54,6 +55,10 @@ final class AppWindows {
 
     func showSnapshots(of machine: VirtualMachine) {
         show(activatingApp: true) { $0(id: WindowID.snapshots, value: machine.id) }
+    }
+
+    func showTemplates() {
+        show(activatingApp: true) { $0(id: WindowID.templates) }
     }
 
     func showAppSettings() {
