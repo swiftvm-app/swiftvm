@@ -77,7 +77,9 @@ extension AppModel {
                 guard let line = try await ScreenText.find(MacGuestTools.listedName, in: picture, within: window) else {
                     throw AccessError.failed("System Settings in “\(machine.name)” doesn't show the guest tools on its list. If something lies over the window, or the screen is locked, see to that and try again.")
                 }
-                let place = MacGuestTools.switchPlace(onLine: line, of: window, scale: state.scale)
+                guard let place = MacGuestTools.switchPlace(onLine: line, of: window, scale: state.scale) else {
+                    throw AccessError.failed("The guest tools in “\(machine.name)” gave a place on the screen that couldn't be used.")
+                }
                 _ = try await machine.carryOut(.pointer(.init(action: .click, x: place.x, y: place.y)))
                 state = try await waitForPermission(on: machine, for: .seconds(4)) { $0.isAllowed || $0.sheet != nil }
             }
@@ -149,16 +151,22 @@ nonisolated enum MacGuestTools {
     static let switchInset = 49.0
 
     /// Where to click to turn the switch of a line: at the line's height, at the end of the list.
-    /// Everything is in the pixels of a screenshot.
-    static func switchPlace(onLine line: CGRect, of window: CGRect, scale: Double) -> (x: Int, y: Int) {
-        (Int((window.maxX - switchInset * scale).rounded()), Int(line.midY.rounded()))
+    /// Everything is in the pixels of a screenshot. `nil` if the guest's geometry can't be used.
+    static func switchPlace(onLine line: CGRect, of window: CGRect, scale: Double) -> (x: Int, y: Int)? {
+        // The scale and the window are the guest's word. Neither may make a conversion trap on this Mac.
+        guard scale.isFinite, scale > 0, window.width.isFinite, window.height.isFinite,
+              window.width > 0, window.height > 0, window.contains(line),
+              let x = Int(exactly: (window.maxX - switchInset * scale).rounded()),
+              let y = Int(exactly: line.midY.rounded()), window.contains(CGPoint(x: x, y: y))
+        else { return nil }
+        return (x, y)
     }
 }
 
 /// Reading what is written on a picture of a screen.
 nonisolated enum ScreenText {
-    /// Where `text` is written in `picture`, a PNG, inside `area`: the frame of the first line that
-    /// says it, in the picture's pixels from its top left corner. `nil` if no line does.
+    /// Where `text` is written in `picture`, a PNG, inside `area`: the frame of the only line that
+    /// says it, in the picture's pixels from its top left corner. `nil` if none or several do.
     static func find(_ text: String, in picture: Data, within area: CGRect) async throws -> CGRect? {
         try await Task.detached(priority: .userInitiated) {
             guard let source = CGImageSourceCreateWithData(picture as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -176,17 +184,26 @@ nonisolated enum ScreenText {
                 x: area.minX / whole.width, y: 1 - area.maxY / whole.height, width: area.width / whole.width, height: area.height / whole.height
             )
             try VNImageRequestHandler(cgImage: image).perform([request])
-            let wanted = letters(of: text)
-            for line in request.results ?? [] {
-                guard let read = line.topCandidates(1).first, letters(of: read.string).contains(wanted) else { continue }
-                let box = line.boundingBox
-                return CGRect(
-                    x: area.minX + box.minX * area.width, y: area.minY + (1 - box.maxY) * area.height,
-                    width: box.width * area.width, height: box.height * area.height
-                )
-            }
-            return nil
+            let lines = request.results ?? []
+            guard let index = matchingLine(text, among: lines.map({ $0.topCandidates(1).first?.string ?? "" })) else { return nil }
+            let box = lines[index].boundingBox
+            return CGRect(
+                x: area.minX + box.minX * area.width, y: area.minY + (1 - box.maxY) * area.height,
+                width: box.width * area.width, height: box.height * area.height
+            )
         }.value
+    }
+
+    /// A similar name may be another program, and two matches leave no way to tell which is ours.
+    static func matchingLine(_ text: String, among lines: [String]) -> Int? {
+        let wanted = letters(of: text)
+        guard !wanted.isEmpty else { return nil }
+        var found: Int?
+        for (index, line) in lines.enumerated() where letters(of: line) == wanted {
+            guard found == nil else { return nil }
+            found = index
+        }
+        return found
     }
 
     /// The letters and digits of a text, which is what reading a picture gets right: a hyphen comes

@@ -79,7 +79,7 @@ import Testing
 
         var received = Data()
         var frames: [JobFrame] = []
-        while let frame = try JobFrame.read(from: near) {
+        while let frame = try JobFrame.read(from: near, timeout: 5) {
             if frame.kind == .output {
                 #expect(frame.payload.count <= JobFrame.maximumPayloadLength)
                 received.append(frame.payload)
@@ -109,6 +109,23 @@ import Testing
         }
         _ = ByteRelay.writeAll(ArraySlice([JobFrame.Kind.output.rawValue, 0x7F, 0xFF, 0xFF, 0xFF]), to: sender)
         #expect(throws: JobFrame.Malformed.self) { try JobFrame.read(from: other) }
+    }
+
+    @Test(arguments: [
+        Data(), Data([1]), Data([1, 0, 0, 0, 3]), Data([1, 0, 0, 0, 3, 7]), Data([200, 0, 0, 0, 0, 1]),
+    ])
+    func aFrameThatStopsArrivingTimesOut(prefix: Data) {
+        let (near, far) = makeLine()
+        defer {
+            close(near)
+            close(far)
+        }
+        _ = ByteRelay.writeAll(ArraySlice(prefix), to: far)
+        // A broken timeout must fail the test, not hold the test process for good.
+        let watchdog = DispatchWorkItem { shutdown(far, SHUT_RDWR) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
+        defer { watchdog.cancel() }
+        #expect(throws: JobFrame.TimedOut.self) { try JobFrame.read(from: near, timeout: 0.1) }
     }
 
     /// What a thread that plays the agent's end hands back to the test.

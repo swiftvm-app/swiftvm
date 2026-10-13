@@ -418,7 +418,8 @@ public final class VirtualMachine: Identifiable {
     }
 
     /// Has the guest's agent do `job` to its end, and returns what it put out. For a job that takes
-    /// nothing in and is over in a moment: one that says nothing for `patience` is called off.
+    /// nothing in and is over in a moment: one that doesn't finish its next frame within `patience`
+    /// is called off.
     public func collect(_ job: GuestJob, patience: TimeInterval = 30) async throws -> Data {
         let connection = try await openJob(job)
         let descriptor = connection.fileDescriptor
@@ -431,10 +432,7 @@ public final class VirtualMachine: Identifiable {
                 }
                 var collected = Data()
                 while true {
-                    var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-                    let ready = poll(&waiting, 1, Int32(patience * 1000))
-                    if ready < 0, errno == EINTR { continue }
-                    guard ready > 0, let frame = try? JobFrame.read(from: descriptor) else {
+                    guard let frame = try? JobFrame.read(from: descriptor, timeout: patience) else {
                         continuation.resume(returning: .failure(.noAnswer(name: name)))
                         return
                     }

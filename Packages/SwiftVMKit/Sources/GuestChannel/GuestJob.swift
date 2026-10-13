@@ -357,25 +357,37 @@ public struct JobFrame: Sendable, Hashable {
         return true
     }
 
-    /// Reads the next frame, waiting for as long as it takes. Returns `nil` when the other side has
-    /// hung up between two frames, and throws when it did so inside one or sent something that isn't a
-    /// frame. Frames of a kind this build doesn't know are passed over.
-    public static func read(from descriptor: Int32) throws -> JobFrame? {
+    public struct TimedOut: Error {}
+
+    /// Reads the next frame. Returns `nil` when the other side has hung up between two frames, and
+    /// throws when it did so inside one or sent something that isn't a frame. Frames of a kind this
+    /// build doesn't know are passed over. When given, `timeout` covers the whole frame and any passed
+    /// over before it, not just the wait for its first byte.
+    public static func read(from descriptor: Int32, timeout: TimeInterval? = nil) throws -> JobFrame? {
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
-            guard let header = try readExactly(5, from: descriptor, allowingEnd: true) else { return nil }
+            guard let header = try readExactly(5, from: descriptor, allowingEnd: true, deadline: deadline) else { return nil }
             let length = header.dropFirst().reduce(0) { $0 << 8 | Int($1) }
             guard length <= longestAcceptedPayload else { throw Malformed() }
-            guard let payload = try readExactly(length, from: descriptor, allowingEnd: false) else { throw Malformed() }
+            guard let payload = try readExactly(length, from: descriptor, allowingEnd: false, deadline: deadline) else { throw Malformed() }
             if let kind = Kind(rawValue: header[header.startIndex]) {
                 return JobFrame(kind, payload)
             }
         }
     }
 
-    private static func readExactly(_ count: Int, from descriptor: Int32, allowingEnd: Bool) throws -> Data? {
+    private static func readExactly(_ count: Int, from descriptor: Int32, allowingEnd: Bool, deadline: Date?) throws -> Data? {
         var data = Data(count: count)
         var offset = 0
         while offset < count {
+            if let deadline {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else { throw TimedOut() }
+                var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&waiting, 1, Int32(min(remaining * 1000, 60_000).rounded(.up)))
+                if ready < 0, errno != EINTR { throw Malformed() }
+                guard ready > 0 else { continue }
+            }
             let received = data.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress! + offset, count - offset) }
             if received > 0 {
                 offset += received
