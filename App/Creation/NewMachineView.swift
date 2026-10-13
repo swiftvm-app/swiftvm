@@ -49,6 +49,9 @@ struct NewMachineView: View {
     /// The kind of system that was picked here last, which the window opens on the next time.
     @AppStorage(Self.familyKey) private var preferredFamily = GuestFamily.linux
     @State private var family: GuestFamily
+    @AppStorage("newMachineMode") private var preferredMode = NewMachineMode.simple
+    /// A dropped installer opens Advanced without changing the saved preference.
+    @State private var requestedMode: NewMachineMode?
     /// The machine is made from a template, instead of a system that is installed.
     @State private var isFromTemplate = false
     /// The file the form was opened for.
@@ -57,6 +60,12 @@ struct NewMachineView: View {
     init(request: NewMachineRequest = NewMachineRequest(), onReady: @escaping (VirtualMachine, Bool) -> Void) {
         self.onReady = onReady
         source = request.source
+        _preferredMode = AppStorage(wrappedValue: UserDefaults.standard.string(forKey: "newLinuxMachineMode")
+            .flatMap(NewMachineMode.init(rawValue:)) ?? .simple, "newMachineMode")
+        switch request.source {
+        case .unspecified: _requestedMode = State(initialValue: nil)
+        case .installerDisc, .restoreImage: _requestedMode = State(initialValue: .advanced)
+        }
         switch request.source {
         case .unspecified:
             // What is remembered may be from a build that could make what this one can't.
@@ -70,14 +79,14 @@ struct NewMachineView: View {
     var body: some View {
         VStack(spacing: 0) {
             if isFromTemplate {
-                TemplateSourceForm(source: sourceBinding, onReady: onReady)
+                TemplateSourceForm(source: sourceBinding, mode: modeBinding, onReady: onReady)
             } else {
                 switch family {
                 case .macOS:
-                    MacMachineForm(source: sourceBinding, initialImage: initialImage, onReady: onReady)
+                    MacMachineForm(source: sourceBinding, mode: modeBinding, initialImage: initialImage, onReady: onReady)
                 case .linux, .windows:
                     // Windows can't be picked yet.
-                    LinuxMachineForm(source: sourceBinding, initialDisc: initialDisc, onReady: onReady)
+                    LinuxMachineForm(source: sourceBinding, mode: modeBinding, initialDisc: initialDisc, onReady: onReady)
                 }
             }
         }
@@ -100,6 +109,15 @@ struct NewMachineView: View {
         })
     }
 
+    private var mode: NewMachineMode { requestedMode ?? preferredMode }
+
+    private var modeBinding: Binding<NewMachineMode> {
+        Binding(get: { mode }, set: { newValue in
+            requestedMode = nil
+            preferredMode = newValue
+        })
+    }
+
     private var initialDisc: URL? {
         if case .installerDisc(let url) = source { return url }
         return nil
@@ -111,25 +129,37 @@ struct NewMachineView: View {
     }
 }
 
-// MARK: - What both forms share
+// MARK: - What the forms share
 
-/// The first row of a form: what the machine is made from, a kind of system to install or a template.
-/// Picking another one puts that one's form in the place of this one.
-///
-/// A template is on offer whether or not there is one: its form says how one is made.
+/// A normal form row, shared by every source, including the empty template form.
 struct NewMachineSourcePicker: View {
     @Binding var selection: NewMachineSource
 
     var body: some View {
-        Picker("Create From", selection: $selection) {
+        Picker("Type", selection: $selection) {
             ForEach(NewMachineView.families, id: \.self) { family in
                 Text(family.displayName).tag(NewMachineSource.system(family))
             }
             Text("Template").tag(NewMachineSource.template)
-            Divider()
-            Text("\(GuestFamily.windows.displayName) (coming soon)")
-                .tag(NewMachineSource.system(.windows))
-                .disabled(true)
+        }
+        .pickerStyle(.menu)
+    }
+}
+
+/// Expands extra settings below the essentials without moving or replacing them.
+struct NewMachineAdvancedToggle: View {
+    @Binding var selection: NewMachineMode
+    let summary: String
+
+    var body: some View {
+        Section {
+            Toggle("Advanced", isOn: Binding(
+                get: { selection == .advanced },
+                set: { selection = $0 ? .advanced : .simple }
+            ))
+            .toggleStyle(.checkbox)
+        } footer: {
+            Text(summary)
         }
     }
 }
@@ -241,15 +271,6 @@ struct FormButtons: View {
 // MARK: - Linux
 
 private struct LinuxMachineForm: View {
-    /// How much of the machine the form asks about.
-    enum Mode: String, CaseIterable, Identifiable {
-        /// A distribution, setup scripts and a password. Everything else is decided.
-        case simple = "Simple"
-        case advanced = "Advanced"
-
-        var id: Self { self }
-    }
-
     enum Method: String, CaseIterable, Identifiable {
         case quickCreate = "Quick Create"
         case installer = "Installer Disc"
@@ -258,15 +279,12 @@ private struct LinuxMachineForm: View {
     }
 
     @Binding var source: NewMachineSource
+    @Binding var mode: NewMachineMode
     let onReady: (VirtualMachine, Bool) -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    /// The side of the form that was used last.
-    @AppStorage("newLinuxMachineMode") private var preferredMode = Mode.simple
-    /// The form was opened for an installer disc, which only Advanced has a place for.
-    @State private var isOpenedForDisc: Bool
     @State private var method: Method
     @State private var distributionID = DistributionCatalog.quickCreate.first?.id ?? ""
     /// What a Quick Create machine is set up with on its first start: the setup scripts that were
@@ -279,10 +297,10 @@ private struct LinuxMachineForm: View {
     @State private var localISO: URL?
 
     /// - Parameter initialDisc: An installer disc image to start with, instead of Quick Create.
-    init(source: Binding<NewMachineSource>, initialDisc: URL? = nil, onReady: @escaping (VirtualMachine, Bool) -> Void) {
+    init(source: Binding<NewMachineSource>, mode: Binding<NewMachineMode>, initialDisc: URL? = nil, onReady: @escaping (VirtualMachine, Bool) -> Void) {
         _source = source
+        _mode = mode
         self.onReady = onReady
-        _isOpenedForDisc = State(initialValue: initialDisc != nil)
         _method = State(initialValue: initialDisc == nil ? .quickCreate : .installer)
         _installerURL = State(initialValue: initialDisc)
         _localISO = State(initialValue: initialDisc)
@@ -292,7 +310,7 @@ private struct LinuxMachineForm: View {
     @State private var cpuCount = HostResources.recommendedCPUCount(for: .linux)
     @State private var memoryGigabytes = Double(HostResources.recommendedMemorySize(for: .linux) / HostResources.gibibyte)
     @State private var diskGigabytes = Int(HostResources.recommendedDiskCapacity(for: .linux) / HostResources.gibibyte)
-    // Simple has no field to correct a name in that Linux won't take, such as a Mac's "Jane.Doe".
+    // Start with an account name that Linux accepts.
     @State private var userName = CloudInitSeed.userName(from: NSUserName())
     @State private var password = ""
     @State private var installsSSHKey = true
@@ -301,34 +319,27 @@ private struct LinuxMachineForm: View {
     /// The folder to keep the machine in, if one was chosen.
     @State private var location: URL?
 
-    /// The sizes Simple picks from. Advanced takes any size.
+    /// Sizes used when setup scripts need a larger disk.
     private static let diskSizes = [16, 32, 64, 128, 256, 512, 1024]
     private static let diskRange = 8...HostResources.maximumDiskGigabytes
     private static let maximumMemoryGigabytes = Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte)
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("How much to set up", selection: modeBinding) {
-                ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .padding(.top, 14)
-
             Form {
-                switch mode {
-                case .simple: simpleSections
-                case .advanced: advancedSections
+                basicSections
+                NewMachineAdvancedToggle(selection: $mode, summary: hardwareSummary)
+                if mode == .advanced {
+                    advancedSections
                 }
             }
             .formStyle(.grouped)
             .scrollBounceBehavior(.basedOnSize)
 
             Divider()
-            FormButtons(problem: nameProblem, canCreate: canCreate, create: create)
+            FormButtons(problem: nameProblem ?? diskProblem, canCreate: canCreate, create: create)
         }
-        .frame(height: (mode == .simple ? 410 : 708) + scriptRowsHeight)
+        .frame(height: mode.formHeight)
         .sheet(isPresented: $isAddingScripts) {
             if let distribution = selectedDistribution {
                 SetupScriptChooser(distribution: distribution, scripts: $scripts)
@@ -352,128 +363,76 @@ private struct LinuxMachineForm: View {
             suggestName()
         }
         .onChange(of: method) { suggestName() }
-        .onChange(of: mode) {
-            // Simple has no field for the name. One that was emptied in Advanced is suggested anew.
-            if mode == .simple, trimmedName.isEmpty {
-                hasEditedName = false
-            }
-            suggestName()
-        }
         .onChange(of: installerURL) { suggestName() }
     }
 
-    // MARK: Simple and Advanced
+    // MARK: Essentials and advanced settings
 
-    private var mode: Mode {
-        isOpenedForDisc ? .advanced : preferredMode
-    }
-
-    private var modeBinding: Binding<Mode> {
-        Binding(get: { mode }, set: { newValue in
-            isOpenedForDisc = false
-            preferredMode = newValue
-        })
-    }
-
-    /// Whether the machine is made from a ready-made image. Simple knows no other way.
+    /// Collapsing Advanced never changes the installation method.
     private var isQuickCreate: Bool {
-        mode == .simple || method == .quickCreate
+        method == .quickCreate
     }
 
     @ViewBuilder
-    private var simpleSections: some View {
-        Section {
-            NewMachineSourcePicker(selection: $source)
-            distributionPicker
-            scriptRows
-            SecureField("Password", text: $password, prompt: Text(isPasswordRequired ? "Required" : "Optional"))
-        } footer: {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(simpleSummary)
-                if let missingScriptsNote {
-                    Text(missingScriptsNote).foregroundStyle(.orange)
-                }
-                if let problem = setupProblem {
-                    Text(problem).foregroundStyle(.red)
-                } else {
-                    Text(setupNote ?? "A server with nothing added. Setup scripts add a desktop or other software. You sign in over SSH with your key, or on the console with the password.")
-                }
-            }
-        }
-    }
-
-    /// What Simple decides without asking, for the user to see before it is created.
-    private var simpleSummary: String {
-        let disk = chosenDiskGigabytes >= 1024 ? "\(chosenDiskGigabytes / 1024) TB" : "\(chosenDiskGigabytes) GB"
-        return "Creates “\(trimmedName)” with \(chosenCPUCount) processors, \(chosenMemoryGigabytes) GB of memory, a \(disk) disk and the user “\(chosenUserName)”. Advanced changes any of it."
-    }
-
-    // MARK: What the machine is made with
-
-    // In Simple, SwiftVM decides whatever the form doesn't ask. What was set in Advanced and can't
-    // be seen in Simple isn't used there: it would be made with settings nobody is looking at.
-
-    private var chosenCPUCount: Int {
-        mode == .simple ? HostResources.recommendedCPUCount(for: .linux) : cpuCount
-    }
-
-    private var chosenMemoryGigabytes: Int {
-        guard mode == .simple else { return Int(memoryGigabytes) }
-        let recommended = Int(HostResources.recommendedMemorySize(for: .linux) / HostResources.gibibyte)
-        return min(max(recommended, selectedScripts.minimumMemoryGigabytes ?? 0), Int(Self.maximumMemoryGigabytes))
-    }
-
-    private var chosenDiskGigabytes: Int {
-        guard mode == .simple else { return diskGigabytes }
-        let needed = max(Int(HostResources.recommendedDiskCapacity(for: .linux) / HostResources.gibibyte), selectedScripts.minimumDiskGigabytes ?? 0)
-        return Self.diskSizes.first { $0 >= needed } ?? needed
-    }
-
-    private var chosenUserName: String {
-        mode == .simple ? CloudInitSeed.userName(from: NSUserName()) : userName.trimmingCharacters(in: .whitespaces)
-    }
-
-    private var chosenInstallsSSHKey: Bool {
-        mode == .simple || installsSSHKey
-    }
-
-    private var chosenLocation: URL? {
-        mode == .simple ? nil : location
-    }
-
-    private var diskProblem: String? {
-        mode == .simple ? nil : DiskSizeRow.problem(with: diskGigabytes, in: Self.diskRange)
-    }
-
-    @ViewBuilder
-    private var advancedSections: some View {
+    private var basicSections: some View {
         Section {
             NewMachineSourcePicker(selection: $source)
             Picker("Setup", selection: $method) {
                 ForEach(Method.allCases) { Text($0.rawValue).tag($0) }
             }
-            .pickerStyle(.segmented)
-
-            switch method {
-            case .quickCreate:
+            .pickerStyle(.menu)
+            if isQuickCreate {
                 distributionPicker
                 scriptRows
-            case .installer:
+            } else {
                 installerPicker
             }
             TextField("Name", text: nameBinding)
         } footer: {
-            if method == .installer {
+            if !isQuickCreate {
                 Text("Starts the installer from a disc image. Use this for other distributions.")
             } else if let problem = setupProblem {
                 Text(problem).foregroundStyle(.red)
             } else if let missingScriptsNote {
                 Text(missingScriptsNote).foregroundStyle(.orange)
             } else {
-                Text(setupNote ?? "Downloads a ready-made server image and sets it up on first start. No installer to click through. Setup scripts add a desktop or other software.")
+                Text(setupNote ?? "Downloads a ready-made server. Add setup scripts for a desktop or other software.")
             }
         }
 
+        if isQuickCreate {
+            Section {
+                SecureField("Password", text: $password, prompt: Text(isPasswordRequired ? "Required" : "Optional"))
+            } header: {
+                Text("Account")
+            } footer: {
+                if let problem = accountProblem {
+                    Text(problem).foregroundStyle(.red)
+                } else {
+                    Text("Sign in as “\(chosenUserName)” over SSH or on the console. Expand Advanced to change the account.")
+                }
+            }
+        }
+    }
+
+    private var hardwareSummary: String {
+        "\(chosenCPUCount) processors · \(chosenMemoryGigabytes) GB memory · \(chosenDiskGigabytes) GB disk"
+    }
+
+    // Collapsing Advanced only hides the controls. Creation still uses the entered settings.
+    private var chosenCPUCount: Int { cpuCount }
+    private var chosenMemoryGigabytes: Int { Int(memoryGigabytes) }
+    private var chosenDiskGigabytes: Int { diskGigabytes }
+    private var chosenUserName: String { userName.trimmingCharacters(in: .whitespaces) }
+    private var chosenInstallsSSHKey: Bool { installsSSHKey }
+    private var chosenLocation: URL? { location }
+
+    private var diskProblem: String? {
+        DiskSizeRow.problem(with: diskGigabytes, in: Self.diskRange)
+    }
+
+    @ViewBuilder
+    private var advancedSections: some View {
         Section {
             Stepper(value: $cpuCount, in: 1...HostResources.cpuCount) {
                 LabeledContent("Processors", value: "\(cpuCount)")
@@ -501,13 +460,12 @@ private struct LinuxMachineForm: View {
         if method == .quickCreate {
             Section {
                 TextField("User Name", text: $userName)
-                SecureField("Password", text: $password, prompt: Text(isPasswordRequired ? "Required" : "Optional"))
                 Toggle("Sign in over SSH with my key", isOn: $installsSSHKey)
                 if VZLinuxRosettaDirectoryShare.availability == .installed {
                     Toggle("Run x86-64 programs with Rosetta", isOn: $usesRosetta)
                 }
             } header: {
-                Text("Account")
+                Text("Account Options")
             } footer: {
                 if let problem = accountProblem {
                     Text(problem).foregroundStyle(.red)
@@ -567,12 +525,6 @@ private struct LinuxMachineForm: View {
         }
     }
 
-    /// The room the rows of added scripts take, up to where the form scrolls instead of growing:
-    /// Advanced is tall as it is.
-    private var scriptRowsHeight: CGFloat {
-        isQuickCreate ? CGFloat(min(scripts.count, mode == .simple ? 4 : 2)) * 57 : 0
-    }
-
     /// What the machine is set up with on its first start, in the order it runs.
     private var selectedScripts: [SetupScript] {
         isQuickCreate ? scripts : []
@@ -599,6 +551,7 @@ private struct LinuxMachineForm: View {
 
     /// Why the machine can't be set up with what is chosen, if it can't.
     private var setupProblem: String? {
+        guard diskProblem == nil else { return nil }
         guard let distribution = selectedDistribution else { return nil }
         return selectedScripts.problem(
             for: distribution, memorySize: UInt64(chosenMemoryGigabytes) * HostResources.gibibyte,
@@ -710,7 +663,7 @@ private struct LinuxMachineForm: View {
 
     private var accountProblem: String? {
         let user = chosenUserName
-        if user.isEmpty { return nil }
+        if user.isEmpty { return "Enter a user name." }
         if let problem = CloudInitSeed.problem(withUserName: user) {
             return problem
         }
@@ -757,7 +710,7 @@ private struct LinuxMachineForm: View {
     private func create() {
         let memorySize = UInt64(chosenMemoryGigabytes) * HostResources.gibibyte
         let diskCapacity = UInt64(chosenDiskGigabytes) * HostResources.gibibyte
-        let starts = mode == .simple || startsWhenReady
+        let starts = startsWhenReady
         let ready: (VirtualMachine) -> Void = { machine in onReady(machine, starts) }
 
         if isQuickCreate {
@@ -772,7 +725,7 @@ private struct LinuxMachineForm: View {
                 fullName: NSFullUserName(),
                 password: password,
                 installsSSHKey: chosenInstallsSSHKey,
-                rosetta: mode == .advanced && usesRosetta,
+                rosetta: usesRosetta,
                 setupScripts: selectedScripts,
                 location: chosenLocation
             ), onReady: ready)
@@ -1333,6 +1286,7 @@ private struct MacMachineForm: View {
     }
 
     @Binding var source: NewMachineSource
+    @Binding var mode: NewMachineMode
     /// A restore image to start with, instead of the latest macOS.
     var initialImage: URL?
     let onReady: (VirtualMachine, Bool) -> Void
@@ -1349,16 +1303,7 @@ private struct MacMachineForm: View {
     @State private var usesLocalImage = false
     @State private var name = ""
     @State private var hasEditedName = false
-    @State private var cpuCount = HostResources.recommendedCPUCount(for: .macOS)
-    @State private var memoryGigabytes = Double(HostResources.recommendedMemorySize(for: .macOS) / HostResources.gibibyte)
-    @State private var diskGigabytes = Int(HostResources.recommendedDiskCapacity(for: .macOS) / HostResources.gibibyte)
-    @State private var fullName = NSFullUserName()
-    @State private var userName = NSUserName()
-    @State private var password = ""
-    @State private var logsInAutomatically = true
-    @State private var installsSSHKey = true
-    /// The folder to keep the machine in, if one was chosen.
-    @State private var location: URL?
+    @State private var settings = MacMachineSettings()
 
     /// macOS and what it installs with it don't fit on less.
     private static let diskRange = 64...HostResources.maximumDiskGigabytes
@@ -1366,88 +1311,21 @@ private struct MacMachineForm: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section {
-                    NewMachineSourcePicker(selection: $source)
-                    Picker("Version", selection: versionBinding) {
-                        Text(latestTitle).tag(false)
-                        if let localImage {
-                            Text("\(localImage.productName) (\(localImage.url.lastPathComponent))").tag(true)
-                        }
-                    }
-                    LabeledContent("") {
-                        HStack {
-                            if case .unavailable = latest {
-                                Button("Try Again") { lookupAttempt += 1 }
-                            }
-                            Button("Choose Restore Image…") { chooseImage() }
-                        }
-                    }
-                    TextField("Name", text: nameBinding)
-                } footer: {
-                    if let problem = sourceProblem {
-                        Text(problem).foregroundStyle(.red)
-                    } else {
-                        Text(sourceNote)
-                    }
-                }
-
-                Section {
-                    Stepper(value: $cpuCount, in: minimumCPUCount...max(HostResources.cpuCount, minimumCPUCount)) {
-                        LabeledContent("Processors", value: "\(cpuCount)")
-                    }
-                    LabeledContent("Memory") {
-                        HStack {
-                            // A slider needs room to move; on a small Mac the minimum is all there is.
-                            if maximumMemoryGigabytes > minimumMemoryGigabytes {
-                                Slider(value: $memoryGigabytes, in: minimumMemoryGigabytes...maximumMemoryGigabytes, step: 1)
-                                    .accessibilityLabel("Memory")
-                                    .accessibilityValue("\(Int(memoryGigabytes)) GB")
-                            }
-                            Text("\(Int(memoryGigabytes)) GB")
-                                .monospacedDigit()
-                                .frame(width: 56, alignment: .trailing)
-                        }
-                    }
-                    DiskSizeRow(gigabytes: $diskGigabytes, range: Self.diskRange)
-                    LocationRow(location: $location)
-                } header: {
-                    Text("Hardware")
-                } footer: {
-                    if let diskProblem {
-                        Text(diskProblem).foregroundStyle(.red)
-                    }
-                }
-
-                if setsUpAccount {
-                    Section {
-                        TextField("Full Name", text: $fullName)
-                        TextField("Account Name", text: $userName)
-                        SecureField("Password", text: $password, prompt: Text("Required"))
-                        Toggle("Log in automatically", isOn: $logsInAutomatically)
-                        Toggle("Sign in over SSH with my key", isOn: $installsSSHKey)
-                    } header: {
-                        Text("Account")
-                    } footer: {
-                        if let problem = accountProblem {
-                            Text(problem).foregroundStyle(.red)
-                        } else {
-                            Text("macOS creates this account the first time it starts, so there is no setup assistant to click through. The virtual machine starts as soon as it is installed.")
-                        }
-                    }
-                } else {
-                    Section("Account") {
-                        Text("Versions before macOS \(GuestProvisioning.minimumMacOSMajorVersion) can't be set up automatically. Create the account in the setup assistant when the virtual machine first starts.")
-                            .foregroundStyle(.secondary)
-                    }
+                sourceSection
+                accountSection
+                NewMachineAdvancedToggle(selection: $mode, summary: hardwareSummary)
+                if mode == .advanced {
+                    hardwareSection
+                    accountOptionsSection
                 }
             }
             .formStyle(.grouped)
             .scrollBounceBehavior(.basedOnSize)
 
             Divider()
-            FormButtons(problem: nameProblem, canCreate: canCreate, create: create)
+            FormButtons(problem: nameProblem ?? diskProblem, canCreate: canCreate, create: create)
         }
-        .frame(height: 702)
+        .frame(height: mode.formHeight)
         .task(id: lookupAttempt) { await lookUpLatest() }
         .task {
             if let initialImage {
@@ -1458,9 +1336,106 @@ private struct MacMachineForm: View {
         .onChange(of: selectedImage) {
             suggestName()
             // A newer system can ask for more than the defaults.
-            cpuCount = max(cpuCount, minimumCPUCount)
-            memoryGigabytes = min(max(memoryGigabytes, minimumMemoryGigabytes), maximumMemoryGigabytes)
+            settings.cpuCount = max(settings.cpuCount, minimumCPUCount)
+            settings.memoryGigabytes = min(max(settings.memoryGigabytes, minimumMemoryGigabytes), maximumMemoryGigabytes)
         }
+    }
+
+    private var sourceSection: some View {
+        Section {
+            NewMachineSourcePicker(selection: $source)
+            Picker("Version", selection: versionBinding) {
+                Text(latestTitle).tag(false)
+                if let localImage {
+                    Text("\(localImage.productName) (\(localImage.url.lastPathComponent))").tag(true)
+                }
+            }
+            LabeledContent("") {
+                HStack {
+                    if case .unavailable = latest {
+                        Button("Try Again") { lookupAttempt += 1 }
+                    }
+                    Button("Choose Restore Image…") { chooseImage() }
+                }
+            }
+            TextField("Name", text: nameBinding)
+        } footer: {
+            if let problem = sourceProblem {
+                Text(problem).foregroundStyle(.red)
+            } else {
+                Text(sourceNote)
+            }
+        }
+    }
+
+    private var hardwareSection: some View {
+        Section {
+            Stepper(value: $settings.cpuCount, in: minimumCPUCount...max(HostResources.cpuCount, minimumCPUCount)) {
+                LabeledContent("Processors", value: "\(settings.cpuCount)")
+            }
+            LabeledContent("Memory") {
+                HStack {
+                    // A slider needs room to move; on a small Mac the minimum is all there is.
+                    if maximumMemoryGigabytes > minimumMemoryGigabytes {
+                        Slider(value: $settings.memoryGigabytes, in: minimumMemoryGigabytes...maximumMemoryGigabytes, step: 1)
+                            .accessibilityLabel("Memory")
+                            .accessibilityValue("\(Int(settings.memoryGigabytes)) GB")
+                    }
+                    Text("\(Int(settings.memoryGigabytes)) GB")
+                        .monospacedDigit()
+                        .frame(width: 56, alignment: .trailing)
+                }
+            }
+            DiskSizeRow(gigabytes: $settings.diskGigabytes, range: Self.diskRange)
+            LocationRow(location: $settings.location)
+        } header: {
+            Text("Hardware")
+        } footer: {
+            if let diskProblem {
+                Text(diskProblem).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var accountSection: some View {
+        Section {
+            if setsUpAccount {
+                SecureField("Password", text: $settings.password, prompt: Text("Required"))
+            } else {
+                Text("Versions before macOS \(GuestProvisioning.minimumMacOSMajorVersion) can't be set up automatically. Create the account in the setup assistant when the virtual machine first starts.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Account")
+        } footer: {
+            if setsUpAccount {
+                if let problem = accountProblem {
+                    Text(problem).foregroundStyle(.red)
+                } else {
+                    Text("macOS creates the account “\(settings.account.userName)” on first start. The virtual machine starts when installation finishes. Expand Advanced to change the account.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var accountOptionsSection: some View {
+        if setsUpAccount {
+            Section("Account Options") {
+                TextField("Full Name", text: $settings.fullName)
+                TextField("Account Name", text: $settings.userName)
+                Toggle("Log in automatically", isOn: $settings.logsInAutomatically)
+                Toggle("Sign in over SSH with my key", isOn: $settings.installsSSHKey)
+            }
+        }
+    }
+
+    private var request: MacInstallRequest {
+        settings.request(name: trimmedName, image: selectedImage)
+    }
+
+    private var hardwareSummary: String {
+        "\(settings.cpuCount) processors · \(Int(settings.memoryGigabytes)) GB memory · \(settings.diskGigabytes) GB disk"
     }
 
     // MARK: Restore image
@@ -1594,26 +1569,13 @@ private struct MacMachineForm: View {
         return model.isNameTaken(trimmedName) ? "That name is already in use." : nil
     }
 
-    private var account: GuestProvisioning {
-        let user = userName.trimmingCharacters(in: .whitespaces)
-        let full = fullName.trimmingCharacters(in: .whitespaces)
-        return GuestProvisioning(
-            fullName: full.isEmpty ? user : full,
-            userName: user,
-            password: password,
-            logsInAutomatically: logsInAutomatically,
-            enablesRemoteLogin: installsSSHKey
-        )
-    }
-
     /// What is wrong with the account, once the user has started filling it in.
     private var accountProblem: String? {
-        let account = account
-        if account.userName.isEmpty { return nil }
+        let account = settings.account
         if let problem = GuestProvisioning.problem(withUserName: account.userName) {
             return problem
         }
-        if password.isEmpty { return nil }
+        if settings.password.isEmpty { return nil }
         do {
             try account.validateForMacOS()
             return nil
@@ -1623,13 +1585,13 @@ private struct MacMachineForm: View {
     }
 
     private var diskProblem: String? {
-        DiskSizeRow.problem(with: diskGigabytes, in: Self.diskRange)
+        DiskSizeRow.problem(with: settings.diskGigabytes, in: Self.diskRange)
     }
 
     private var canCreate: Bool {
         guard !trimmedName.isEmpty, nameProblem == nil, diskProblem == nil, selectedImage?.requirements != nil else { return false }
         guard setsUpAccount else { return true }
-        return !account.userName.isEmpty && !password.isEmpty && accountProblem == nil
+        return !settings.account.userName.isEmpty && !settings.password.isEmpty && accountProblem == nil
     }
 
     /// Fills in a name based on the chosen version until the user types their own.
@@ -1648,17 +1610,8 @@ private struct MacMachineForm: View {
     // MARK: Create
 
     private func create() {
-        guard let image = selectedImage else { return }
-        model.create(MacInstallRequest(
-            name: trimmedName,
-            image: image,
-            cpuCount: cpuCount,
-            memorySize: UInt64(memoryGigabytes) * HostResources.gibibyte,
-            diskCapacity: UInt64(diskGigabytes) * HostResources.gibibyte,
-            account: setsUpAccount ? account : nil,
-            installsSSHKey: installsSSHKey,
-            location: location
-        ), onReady: { machine in
+        guard canCreate else { return }
+        model.create(request, onReady: { machine in
             // The account is set up on the first start, which has to happen while the app still knows it.
             onReady(machine, true)
         })

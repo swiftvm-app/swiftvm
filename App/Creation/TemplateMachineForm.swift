@@ -5,6 +5,7 @@ import VMCore
 /// template, and then the form for that one. With no template saved yet, it says how one is made.
 struct TemplateSourceForm: View {
     @Binding var source: NewMachineSource
+    @Binding var mode: NewMachineMode
     let onReady: (VirtualMachine, Bool) -> Void
 
     @Environment(AppModel.self) private var model
@@ -14,31 +15,34 @@ struct TemplateSourceForm: View {
     var body: some View {
         Group {
             if let template {
-                TemplateMachineForm(template: template, source: $source, selection: selection(from: template), onReady: onReady)
+                TemplateMachineForm(template: template, source: $source, mode: $mode, selection: selection(from: template), onReady: onReady)
                     // Another template starts the form over with what that one has.
                     .id(template.id)
             } else {
                 VStack(spacing: 0) {
                     Form {
-                        Section {
-                            NewMachineSourcePicker(selection: $source)
-                        } footer: {
-                            Text(model.templates.isDirectoryMissing
+                        Section { NewMachineSourcePicker(selection: $source) }
+                        ContentUnavailableView(
+                            model.templates.isDirectoryMissing ? "Templates Folder Unavailable" : "No Templates Yet",
+                            systemImage: "square.stack.3d.up",
+                            description: Text(model.templates.isDirectoryMissing
                                 ? "The folder for templates, \(model.templates.directory.abbreviatedPath), isn't there. If it is on an external disk, connect the disk."
-                                : "There are no templates yet. Set a virtual machine up the way new ones should start out, shut it down, and choose Save as Template in its menu. It is then here to create machines from.")
-                        }
+                                : "Set up a virtual machine, shut it down, and choose Save as Template in its menu. Your saved templates will appear here.")
+                        )
                     }
                     .formStyle(.grouped)
-                    .scrollBounceBehavior(.basedOnSize)
-                    .fixedSize(horizontal: false, vertical: true)
 
                     Divider()
                     FormButtons(problem: nil, canCreate: false, create: {})
                 }
             }
         }
+        .frame(height: mode.formHeight)
         // One may have been saved, or put in the folder by hand, since the folder was last read.
         .onAppear { model.templates.load() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.templates.load()
+        }
     }
 
     /// The template that was picked, for as long as it is there, and otherwise the first there is.
@@ -56,9 +60,9 @@ struct TemplateSourceForm: View {
 /// a sheet in the Templates window.
 struct TemplateMachineForm: View {
     let template: VMTemplate
-    /// What the machine is made from, where something else can be picked instead. `nil` in the Templates
-    /// window, where the template was picked from the list.
+    /// Omitted in the Templates window, where the source has already been chosen.
     var source: Binding<NewMachineSource>?
+    var mode: Binding<NewMachineMode>?
     /// Which template it is, where another one can be picked. `nil` in the Templates window.
     var selection: Binding<UUID>?
     /// Called when the new machine is in the library; the flag says whether to start it right away.
@@ -68,27 +72,30 @@ struct TemplateMachineForm: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
-    @State private var cpuCount: Int
-    @State private var memoryGigabytes: Double
-    @State private var diskGigabytes: Int
-    @State private var startsWhenReady = true
-    /// The folder to keep the machine in, if one was chosen.
-    @State private var location: URL?
+    @State private var settings: TemplateMachineSettings
+    @State private var sheetMode = NewMachineMode.simple
 
     init(
-        template: VMTemplate, source: Binding<NewMachineSource>? = nil, selection: Binding<UUID>? = nil,
+        template: VMTemplate, source: Binding<NewMachineSource>? = nil, mode: Binding<NewMachineMode>? = nil, selection: Binding<UUID>? = nil,
         onReady: @escaping (VirtualMachine, Bool) -> Void
     ) {
         self.template = template
         self.source = source
+        self.mode = mode
         self.selection = selection
         self.onReady = onReady
-        _cpuCount = State(initialValue: template.configuration.cpuCount)
-        _memoryGigabytes = State(initialValue: Double(Self.memoryGigabytes(of: template)))
-        _diskGigabytes = State(initialValue: Self.diskGigabytes(of: template))
+        _settings = State(initialValue: TemplateMachineSettings(template: template))
     }
 
+    private var modeBinding: Binding<NewMachineMode> { mode ?? $sheetMode }
+    private var effectiveMode: NewMachineMode { modeBinding.wrappedValue }
+
     var body: some View {
+        form
+            .onAppear { name = model.nameForMachine(from: template) }
+    }
+
+    private var form: some View {
         VStack(spacing: 0) {
             Form {
                 Section {
@@ -109,62 +116,61 @@ struct TemplateMachineForm: View {
                     Text("Makes a virtual machine with everything that was in “\(template.name)” when it was saved, on \(template.createdAt.formatted(date: .abbreviated, time: .omitted)). It gets a name, an address and an SSH name of its own.")
                 }
 
-                Section {
-                    Stepper(value: $cpuCount, in: 1...maximumCPUCount) {
-                        LabeledContent("Processors", value: "\(cpuCount)")
-                    }
-                    LabeledContent("Memory") {
-                        HStack {
-                            Slider(value: $memoryGigabytes, in: 1...maximumMemoryGigabytes, step: 1)
-                                .accessibilityLabel("Memory")
-                                .accessibilityValue("\(Int(memoryGigabytes)) GB")
-                            Text("\(Int(memoryGigabytes)) GB")
-                                .monospacedDigit()
-                                .frame(width: 56, alignment: .trailing)
+                NewMachineAdvancedToggle(selection: modeBinding, summary: hardwareSummary)
+                if effectiveMode == .advanced {
+                    Section {
+                        Stepper(value: $settings.cpuCount, in: 1...maximumCPUCount) {
+                            LabeledContent("Processors", value: "\(settings.cpuCount)")
+                        }
+                        LabeledContent("Memory") {
+                            HStack {
+                                Slider(value: $settings.memoryGigabytes, in: 1...maximumMemoryGigabytes, step: 1)
+                                    .accessibilityLabel("Memory")
+                                    .accessibilityValue("\(Int(settings.memoryGigabytes)) GB")
+                                Text("\(Int(settings.memoryGigabytes)) GB")
+                                    .monospacedDigit()
+                                    .frame(width: 56, alignment: .trailing)
+                            }
+                        }
+                        if template.configuration.systemDisk != nil {
+                            DiskSizeRow(gigabytes: $settings.diskGigabytes, range: diskRange)
+                        }
+                        LocationRow(location: $settings.location)
+                    } header: {
+                        Text("Hardware")
+                    } footer: {
+                        if let diskProblem {
+                            Text(diskProblem).foregroundStyle(.red)
+                        } else if growsDisk {
+                            Text("The template's disk is \(templateDiskGigabytes) GB. \(GuestIntegration.diskGrowthNote(for: template.configuration))")
                         }
                     }
-                    if template.configuration.systemDisk != nil {
-                        DiskSizeRow(gigabytes: $diskGigabytes, range: diskRange)
-                    }
-                    LocationRow(location: $location)
-                } header: {
-                    Text("Hardware")
-                } footer: {
-                    if let diskProblem {
-                        Text(diskProblem).foregroundStyle(.red)
-                    } else if growsDisk {
-                        Text("The template's disk is \(templateDiskGigabytes) GB. \(GuestIntegration.diskGrowthNote(for: template.configuration))")
-                    }
-                }
 
-                Section {
-                    Toggle("Start when ready", isOn: $startsWhenReady)
+                    Section {
+                        Toggle("Start when ready", isOn: $settings.startsWhenReady)
+                    }
                 }
             }
             .formStyle(.grouped)
             .scrollBounceBehavior(.basedOnSize)
-            // As tall as its rows: the form has the same ones for every template.
-            .fixedSize(horizontal: false, vertical: true)
 
             Divider()
-            FormButtons(problem: nameProblem, canCreate: canCreate, takesDroppedFiles: source != nil, create: create)
+            FormButtons(problem: nameProblem ?? diskProblem, canCreate: canCreate, takesDroppedFiles: source != nil, create: create)
         }
-        .onAppear { name = model.nameForMachine(from: template) }
+        .frame(height: effectiveMode.formHeight)
+    }
+
+    private var hardwareSummary: String {
+        let memory = Int(settings.memoryGigabytes) == TemplateMachineSettings.memoryGigabytes(of: template)
+            ? template.configuration.memorySize : UInt64(settings.memoryGigabytes) * HostResources.gibibyte
+        // Avoid converting an invalid typed disk size; validation is shown beside Create.
+        return "\(settings.cpuCount) processors · \(Formatting.bytes(memory)) memory · \(settings.diskGigabytes) GB system disk"
     }
 
     // MARK: Limits
 
-    /// The template's memory in whole gigabytes, which is what the slider counts in.
-    private static func memoryGigabytes(of template: VMTemplate) -> Int {
-        max(Int(template.configuration.memorySize / HostResources.gibibyte), 1)
-    }
-
-    private static func diskGigabytes(of template: VMTemplate) -> Int {
-        Int(((template.configuration.systemDisk?.capacity ?? 0) + HostResources.gibibyte - 1) / HostResources.gibibyte)
-    }
-
     private var templateDiskGigabytes: Int {
-        Self.diskGigabytes(of: template)
+        TemplateMachineSettings.diskGigabytes(of: template)
     }
 
     // A template may come from a Mac with more of either than this one has. What it has is on offer.
@@ -174,7 +180,7 @@ struct TemplateMachineForm: View {
     }
 
     private var maximumMemoryGigabytes: Double {
-        max(Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte), Double(Self.memoryGigabytes(of: template)), 2)
+        max(Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte), Double(TemplateMachineSettings.memoryGigabytes(of: template)), 2)
     }
 
     /// A disk can grow, but it can't shrink: the template's size is the least there is.
@@ -183,7 +189,7 @@ struct TemplateMachineForm: View {
     }
 
     private var growsDisk: Bool {
-        diskGigabytes > templateDiskGigabytes
+        settings.diskGigabytes > templateDiskGigabytes
     }
 
     // MARK: Validation
@@ -199,10 +205,10 @@ struct TemplateMachineForm: View {
 
     private var diskProblem: String? {
         guard template.configuration.systemDisk != nil else { return nil }
-        if diskGigabytes < templateDiskGigabytes {
+        if settings.diskGigabytes < templateDiskGigabytes {
             return "The template's disk is \(templateDiskGigabytes) GB. A disk can grow, but it can't shrink."
         }
-        return diskRange.contains(diskGigabytes) ? nil : "A disk can have \(diskRange.upperBound) GB at most."
+        return diskRange.contains(settings.diskGigabytes) ? nil : "A disk can have \(diskRange.upperBound) GB at most."
     }
 
     private var canCreate: Bool {
@@ -212,17 +218,10 @@ struct TemplateMachineForm: View {
     // MARK: Create
 
     private func create() {
-        let starts = startsWhenReady
-        model.create(TemplateCreateRequest(
-            name: trimmedName,
-            template: template,
-            cpuCount: cpuCount,
-            // Memory that wasn't touched stays what the template has, to the byte.
-            memorySize: Int(memoryGigabytes) == Self.memoryGigabytes(of: template)
-                ? nil : UInt64(memoryGigabytes) * HostResources.gibibyte,
-            diskCapacity: growsDisk ? UInt64(diskGigabytes) * HostResources.gibibyte : nil,
-            location: location
-        ), onReady: { machine in onReady(machine, starts) })
+        guard canCreate else { return }
+        let starts = settings.startsWhenReady
+        model.create(settings.request(name: trimmedName, template: template),
+            onReady: { machine in onReady(machine, starts) })
         dismiss()
     }
 }

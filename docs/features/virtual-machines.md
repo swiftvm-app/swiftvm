@@ -22,11 +22,16 @@ SwiftVM is in the Dock only while one of its windows is open.
 
 ## Creating
 
-Choose **New Virtual Machine** and pick what to make the machine from under
-**Create From**, at the top of the form: an operating system, or a template.
-The window opens on the system you made last. You can also drop an installer
-disc (ISO), a macOS restore image (IPSW), or an existing virtual machine on
-the window.
+Choose **New Virtual Machine** and pick **macOS**, **Linux**, or **Template**
+from the **Type** dropdown. The form shows the essential fields first.
+Select the **Advanced** checkbox to expand hardware, location, and account
+options below them. The existing fields keep their order, and clearing the
+checkbox hides the extra controls without changing their values.
+
+The window remembers whether Advanced was expanded and opens on the system
+you made last. You can also drop an installer disc (ISO), a macOS restore
+image (IPSW), or an existing virtual machine on the window. An ISO or IPSW
+opens with that file selected and Advanced expanded.
 
 - [Linux guests](linux-guests.md): from a ready-made image, or from an
   installer disc.
@@ -111,7 +116,7 @@ external disk.
 
 | To | Do this |
 | --- | --- |
-| Create a machine somewhere else | **Location → Choose…** in the **New Virtual Machine** form (**Advanced** for Linux), or `swiftvm create … --location <folder>` |
+| Create a machine somewhere else | **Advanced → Hardware → Location → Choose…** in the **New Virtual Machine** form, or `swiftvm create … --location <folder>` |
 | Move a machine | **Location → Move…** in the machine's settings, or `swiftvm move <machine> <folder>` |
 | Change where new machines go | **Settings → Storage → New Virtual Machines → Change** |
 

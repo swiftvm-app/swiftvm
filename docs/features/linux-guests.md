@@ -6,17 +6,16 @@ ready-made image, and **Installer Disc**, from an ISO.
 Guests must be built for ARM64 (also called aarch64). [Rosetta](#rosetta) runs
 x86-64 programs inside them.
 
-## Simple and Advanced
+## Creating
 
-The **New Virtual Machine** window asks as much as you want it to.
+Choose **Linux** in the **Type** dropdown. Pick **Quick Create** or
+**Installer Disc** under **Setup**, then choose the image and name. Quick
+Create also offers setup scripts and a password.
 
-| | What it asks |
-| --- | --- |
-| **Simple** | A distribution, [setup scripts](#desktops-and-setup-scripts), and a password. SwiftVM decides the rest and shows what it decided |
-| **Advanced** | Everything: Quick Create or an installer disc, the name, hardware, [where the machine is kept](virtual-machines.md#where-machines-are-kept), and the account |
-
-The window opens on the one you used last. What you pick on one side is still
-picked when you switch to the other.
+Select **Advanced** to expand hardware, location, account, and startup
+settings below the essential fields. Clearing the checkbox keeps the chosen
+values and hides only the extra controls. macOS and templates use the same
+structure.
 
 ## Quick Create
 
@@ -73,7 +72,7 @@ list.
 ## Installer Disc
 
 Use an installer disc for other distributions, or for a distribution's own
-desktop edition. It is under **Advanced**. Pick one of the offered downloads,
+desktop edition. Choose **Installer Disc** under **Setup**. Pick an offered download,
 choose **Choose ISO File…**, or drop an ISO on the **New Virtual Machine**
 window. The machine starts from the disc, and you install as you would on a
 real computer.

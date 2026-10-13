@@ -39,9 +39,15 @@ memory, which only that machine can resume, so it can't become a template.
 
 ## Creating a machine from one
 
-In the **New Virtual Machine** window, choose **Template** under **Create
-From**, and then the template. Or choose **New Machine…** next to it in the
+In the **New Virtual Machine** window, choose **Template** in the **Type**
+dropdown, and then the template. Or choose **New Machine…** next to it in the
 **Templates** window.
+
+Both forms show the template and machine name first, followed by a hardware
+summary. Select **Advanced** to expand processors, memory, disk size,
+location, and whether to start when ready. Clearing the checkbox hides the
+extra controls without changing their values. Until you edit them, the new
+machine keeps the template's hardware exactly.
 
 ```bash
 swiftvm create --template "Web Base" --name "Web 2"

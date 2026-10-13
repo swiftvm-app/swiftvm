@@ -5,7 +5,16 @@ no setup assistant to click through.
 
 ## Creating
 
-Choose **New Virtual Machine**, and **macOS** as the operating system.
+Choose **New Virtual Machine**, then **macOS** in the **Type** dropdown.
+Choose a version, name, and password. SwiftVM starts with recommended hardware
+and an account based on your Mac's user name.
+
+Select **Advanced** to expand hardware, location, and account options below
+the essential fields. Clearing the checkbox hides those controls without
+changing the settings. Linux and templates use the same structure.
+
+The virtual machine starts after installation to finish setup. Older
+versions still use the guest's setup assistant.
 
 | Setting | What it is |
 | --- | --- |
