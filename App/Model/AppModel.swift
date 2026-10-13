@@ -69,6 +69,8 @@ final class AppModel {
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
     @ObservationIgnored var lastDuplication: Task<Void, Never>?
+    /// A machine being prepared keeps its SSH alias until its task finishes, even if its row is dismissed.
+    @ObservationIgnored var reservedAliases: Set<String> = []
     /// The moves to another folder that are under way, by machine, for calling one off.
     @ObservationIgnored var moves: [UUID: Task<Void, any Error>] = [:]
     /// The templates that are being saved, by the machine each is saved from, for calling one off.
@@ -550,16 +552,24 @@ final class AppModel {
 
     // MARK: Machines
 
-    /// The SSH aliases that are spoken for: those of the machines, also of the ones whose disk isn't
-    /// connected, which come back with theirs.
+    /// The SSH aliases that are spoken for: those of the machines, also of the ones being prepared and
+    /// the ones whose disk isn't connected, which come back with theirs.
     private func takenAliases(besides machine: VirtualMachine? = nil) -> Set<String> {
         Set(library.machines.filter { $0.id != machine?.id }.map(\.configuration.ssh.alias))
             .union(library.unavailableMachines.compactMap(\.sshAlias))
+            .union(reservedAliases)
     }
 
     /// An SSH alias derived from `name` that no other machine uses.
     func uniqueAlias(for name: String) -> String {
         SSHAlias.unique(SSHAlias.slug(from: name), avoiding: takenAliases())
+    }
+
+    /// Keeps an alias for a machine that isn't in the library yet, until its caller releases it.
+    func reserveAlias(for name: String) -> String {
+        let alias = uniqueAlias(for: name)
+        reservedAliases.insert(alias)
+        return alias
     }
 
     /// Gives a machine another SSH name: what `ssh` and `swiftvm` reach it by. Whatever is typed is made

@@ -41,7 +41,9 @@ extension AppModel {
         }
         return try await machine.whileStopped(.duplicating) {
             let copyName = name.isEmpty ? nameForCopy(of: machine) : name
-            let configuration = machine.configuration.duplicated(name: copyName, sshAlias: uniqueAlias(for: copyName))
+            let alias = reserveAlias(for: copyName)
+            defer { reservedAliases.remove(alias) }
+            let configuration = machine.configuration.duplicated(name: copyName, sshAlias: alias)
             // Next to the original, wherever that is: on its disk the copy shares the original's space,
             // and on another one it would be written out in full.
             return try await makeCopy(of: machine.bundle, configuration: configuration, in: machine.bundle.url.deletingLastPathComponent())

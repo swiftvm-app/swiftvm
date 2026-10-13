@@ -86,6 +86,29 @@ private func exists(_ url: URL) -> Bool {
         #expect(throws: (any Error).self) { try library.setMachinesDirectory(first.bundle.url.appending(path: "inside")) }
     }
 
+    @Test func machinesCannotBeKeptInsideATemplate() async throws {
+        let scratch = Scratch()
+        defer { scratch.remove() }
+        let library = scratch.makeLibrary()
+        let machine = try scratch.addMachine(to: library, in: library.machinesDirectory)
+        let original = machine.bundle.url
+        let templates = VMTemplateLibrary(rootDirectory: scratch.root)
+        let template = try await templates.save(machine)
+        let package = try #require(templates.bundle(of: template))
+        let inside = package.url.appending(path: "inside")
+
+        for folder in [package.url, inside] {
+            #expect(throws: VMError.self) { try library.prepareFolder(folder) }
+            #expect(throws: VMError.self) { try library.setMachinesDirectory(folder) }
+            await #expect(throws: VMError.self) { try await library.move(machine, to: folder) }
+        }
+        #expect(library.machinesDirectory == library.defaultMachinesDirectory)
+        #expect(machine.bundle.url == original)
+        #expect(!exists(inside))
+        try templates.remove(template, movingToTrash: false)
+        #expect(try Data(contentsOf: machine.bundle.url.appending(path: "disk.img")) == Data("disk".utf8))
+    }
+
     @Test func aMachineMovesToAnotherFolder() async throws {
         let scratch = Scratch()
         defer { scratch.remove() }

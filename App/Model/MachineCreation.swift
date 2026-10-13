@@ -179,7 +179,8 @@ extension AppModel {
         let imageURL = try await download(image, named: request.distribution.name, creation: creation)
         try Task.checkCancellation()
 
-        let alias = uniqueAlias(for: request.name)
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
         let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
         let disk = DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
         let interface = NetworkInterfaceConfiguration()
@@ -286,7 +287,8 @@ extension AppModel {
         }
         try Task.checkCancellation()
 
-        let alias = uniqueAlias(for: request.name)
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
         let account = image.supportsProvisioning ? request.account : nil
         try account?.validateForMacOS()
         let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try keyManager.preferredKeyPair() : nil
@@ -330,8 +332,10 @@ extension AppModel {
         guard let source = templates.bundle(of: template), FileManager.default.fileExists(atPath: source.url.path) else {
             throw VMError.invalidConfiguration("The template “\(template.name)” isn't there any more.")
         }
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
         let configuration = template.machineConfiguration(
-            name: request.name, sshAlias: uniqueAlias(for: request.name), cpuCount: request.cpuCount,
+            name: request.name, sshAlias: alias, cpuCount: request.cpuCount,
             memorySize: request.memorySize, diskCapacity: request.diskCapacity
         )
         // On the disk the template is on this is over at once. To another one its disks are copied.
