@@ -78,13 +78,8 @@ nothing but those files. `wrangler.jsonc` says so. To set it up:
 
 1. In the Cloudflare dashboard, create an API token from the
    **Edit Cloudflare Workers** template, for the account the site is in.
-2. Give the repository two secrets:
-
-   | Secret | Value |
-   | --- | --- |
-   | `CLOUDFLARE_API_TOKEN` | The token |
-   | `CLOUDFLARE_ACCOUNT_ID` | The ID of that account |
-
+2. Give the repository the token as a secret, `CLOUDFLARE_API_TOKEN`, and
+   write the account's ID into `wrangler.jsonc` as `account_id`.
 3. Run **Deploy Website**. The first run makes the Worker, under the `name` in
    `wrangler.jsonc`.
 4. In the Worker, open **Settings → Domains & Routes**, choose

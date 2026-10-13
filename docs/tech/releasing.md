@@ -105,4 +105,3 @@ The workflows read these from the repository's secrets.
 | `HOMEBREW_TAP_TOKEN` | A token that can push to `swiftvm-app/homebrew-tap` |
 | `GH_RELEASE_PAT` | Optional. A token that can push to `main`, if `main` is protected |
 | `CLOUDFLARE_API_TOKEN` | For the website: a Cloudflare API token from the **Edit Cloudflare Workers** template |
-| `CLOUDFLARE_ACCOUNT_ID` | For the website: the ID of the Cloudflare account the site is in |

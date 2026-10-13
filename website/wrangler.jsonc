@@ -3,6 +3,9 @@
     // The name the Worker has in the Cloudflare dashboard. Under another name the site would be
     // deployed as a second Worker, and swiftvm.app would go on serving the first.
     "name": "swiftvm",
+    // The Cloudflare account the Worker is in. It is no secret: it is in the address of every page of
+    // the dashboard. What lets a deployment in is the token, and that is one of the repository's secrets.
+    "account_id": "a85d510ce9fde179b044045fd31e6167",
     "compatibility_date": "2026-10-11",
     "assets": {
         "directory": "./dist/",
