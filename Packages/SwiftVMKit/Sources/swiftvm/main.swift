@@ -12,6 +12,10 @@ Usage: swiftvm <command> [arguments]
       <system> is macos, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
       --user <name>  --password <password>  --no-start
+      --location <folder>           Keep the machine in this folder, on an external disk for one, instead
+                                    of the folder for new machines
+      --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
+      --rosetta                     Linux: run x86-64 programs with Rosetta
       --ipsw <file>                 macOS: install this restore image instead of downloading the latest
       --script <name>|<file>        Linux: run a setup script on the first start, a desktop for one.
                                     By its name in `swiftvm scripts`, or a file by its path (./mine.sh).
@@ -28,6 +32,8 @@ Usage: swiftvm <command> [arguments]
   open <machine>                    Show the machine's window
   delete <machine>                  Move a stopped machine to the Trash
   clone <machine> [name]            Copy a machine that is shut down
+  move <machine> <folder>           Move a machine that is shut down into another folder, which may be on
+                                    another disk. Waits until it is there
   share <machine> <folder> [--read-only]   Share a folder with the machine
   unshare <machine> <folder>        Stop sharing a folder
   attach <machine> <image> [--read-only]   Plug in a disc or disk image as a USB drive
@@ -330,6 +336,9 @@ case "create":
         case "--disk": parameters.diskGigabytes = number(for: option)
         case "--user": parameters.user = value(for: option)
         case "--password": parameters.password = value(for: option)
+        case "--location": parameters.location = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
+        case "--no-ssh-key": parameters.installsSSHKey = false
+        case "--rosetta": parameters.rosetta = true
         case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--script":
             // A name is one from the list. What has a slash in it is a file: ./mine.sh, ~/scripts/mine.sh.
@@ -498,6 +507,15 @@ case "resize":
     rejectUnknownOptions(arguments.dropFirst(2), allowed: [])
     printTable(send(ControlRequest(command: .resize, machine: machine, diskGigabytes: gigabytes)).machines)
 
+case "move":
+    let machine = requireMachine()
+    guard arguments.count == 2 else { fail("Usage: swiftvm move <machine> <folder>. Put a folder with spaces in quotes.") }
+    // The app is told where the folder is from the root, as it isn't in this folder.
+    let folder = URL(fileURLWithPath: arguments[1]).standardizedFileURL.path
+    if let machine = send(ControlRequest(command: .move, machine: machine, location: folder)).machines.first {
+        printDetails(of: machine)
+    }
+
 case "clone", "duplicate":
     let machine = requireMachine()
     // The name can be given the way `create` takes it or the way `snapshot` does.
@@ -606,7 +624,7 @@ case "ssh":
 
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
-    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job]
+    let others: [ControlRequest.Command] = [.create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .move]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }

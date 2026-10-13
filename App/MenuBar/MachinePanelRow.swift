@@ -185,6 +185,55 @@ struct MachinePanelRow: View {
     }
 }
 
+/// A machine that is in the library and can't be opened: most often one on a disk that isn't connected.
+/// It is listed so that it is known to be somewhere, and is a machine again when its disk is back.
+struct UnavailablePanelRow: View {
+    let machine: UnavailableMachine
+
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: machine.symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, height: 30)
+                .background(.primary.opacity(0.08), in: .rect(cornerRadius: 7.5, style: .continuous))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(machine.name)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(machine.statusLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            Menu {
+                Button("Remove from List", systemImage: "minus.circle") { model.library.forget(machine) }
+            } label: {
+                Label("More Actions", systemImage: "ellipsis")
+                    .labelStyle(PanelSymbolLabelStyle())
+            }
+            .panelSymbolMenu()
+            .help("More actions")
+            .accessibilityLabel("More actions for \(machine.name)")
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .help("\(machine.explanation)\n\(machine.url.abbreviatedPath)")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(machine.name), \(machine.statusLine)")
+    }
+}
+
 /// A machine that is still being created, with its progress.
 struct CreationPanelRow: View {
     let creation: MachineCreation

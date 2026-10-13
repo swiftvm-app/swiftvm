@@ -13,7 +13,8 @@ final class AppModel {
     static let shared = AppModel()
 
     let library: VMLibrary
-    let downloader = ImageDownloader()
+    /// Downloads Linux images and macOS restore images, into a folder the user can change.
+    private(set) var downloader: ImageDownloader
     let sshWriter: SSHConfigWriter
     let keyManager = SSHKeyManager()
     /// Relays the ports that machines forward from this Mac.
@@ -61,6 +62,8 @@ final class AppModel {
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
     @ObservationIgnored var lastDuplication: Task<Void, Never>?
+    /// The moves to another folder that are under way, by machine, for calling one off.
+    @ObservationIgnored var moves: [UUID: Task<Void, any Error>] = [:]
     /// Set once the app has agreed to quit for the command-line tool, where there is nobody to ask what
     /// to do with machines. See ``quitUnattended()``.
     @ObservationIgnored private(set) var isQuittingUnattended = false
@@ -69,8 +72,15 @@ final class AppModel {
     /// shut down. See ``closeDown()``.
     @ObservationIgnored private(set) var isClosingDown = false
 
+    /// Where the folder for downloads is kept when it isn't the default one.
+    private static let downloadsDirectoryKey = "downloadsDirectory"
+
     private init() {
         library = VMLibrary(rootDirectory: ControlPaths.applicationSupport)
+        downloader = ImageDownloader(
+            cacheDirectory: UserDefaults.standard.string(forKey: Self.downloadsDirectoryKey)
+                .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? ImageDownloader.defaultCacheDirectory
+        )
         sshWriter = SSHConfigWriter(generatedConfigURL: library.rootDirectory.appending(path: "ssh_config"))
         isSSHIncludeInstalled = sshWriter.isIncludeInstalled
 
@@ -107,11 +117,50 @@ final class AppModel {
         // Whatever was being created when the app last quit can't be finished.
         library.removeStagedBundles()
         library.load()
+        watchVolumes()
         // If the host has joined a network that collides with ours, move before any machine starts.
         networkManager?.relocateDefaultSubnetIfNeeded()
         startControlServer()
         startAddressMonitor()
         startUSBDevices()
+    }
+
+    /// Looks at the library again whenever a disk is connected, taken away or renamed: machines that are
+    /// kept on it come and go with it.
+    private func watchVolumes() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification, NSWorkspace.didRenameVolumeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.library.load() }
+            }
+        }
+    }
+
+    // MARK: Storage
+
+    /// Has new machines created in `folder` from now on, or in the default folder again with `nil`.
+    func setMachinesDirectory(_ folder: URL?) throws {
+        try library.setMachinesDirectory(folder)
+    }
+
+    /// Keeps downloads in `folder` from now on, or in the default folder again with `nil`. What was
+    /// downloaded before stays where it is: machines may have an installer disc from there plugged in.
+    func setDownloadsDirectory(_ folder: URL?) throws {
+        if let folder {
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            } catch {
+                throw VMError.invalidConfiguration("Downloads can't be kept in “\((folder.path as NSString).abbreviatingWithTildeInPath)”: \(error.localizedDescription)")
+            }
+            UserDefaults.standard.set(folder.standardizedFileURL.path, forKey: Self.downloadsDirectoryKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.downloadsDirectoryKey)
+        }
+        downloader.cacheDirectory = folder?.standardizedFileURL ?? ImageDownloader.defaultCacheDirectory
+    }
+
+    var isUsingDefaultDownloadsDirectory: Bool {
+        downloader.cacheDirectory.standardizedFileURL.path == ImageDownloader.defaultCacheDirectory.standardizedFileURL.path
     }
 
     /// Asks macOS which USB devices it has given the app, in a copy that is signed to be given any.
@@ -243,7 +292,9 @@ final class AppModel {
         let used = Set(library.machines.flatMap { machine in
             machine.configuration.networkInterfaces.compactMap { $0.ipv4Address.flatMap(IPv4Address.init) }
         })
-        return networkManager.defaultSubnet.firstAvailableAddress(excluding: used)
+        // A machine whose disk isn't connected comes back with the address it had.
+        let away = library.unavailableMachines.flatMap { $0.ipv4Addresses.compactMap(IPv4Address.init) }
+        return networkManager.defaultSubnet.firstAvailableAddress(excluding: used.union(away))
     }
 
     /// The address the guest is reachable at from the host, if known.
@@ -484,16 +535,45 @@ final class AppModel {
 
     // MARK: Machines
 
-    /// An SSH alias derived from `name` that no other machine uses.
-    func uniqueAlias(for name: String) -> String {
-        let taken = Set(library.machines.map(\.configuration.ssh.alias))
-        return SSHAlias.unique(SSHAlias.slug(from: name), avoiding: taken)
+    /// The SSH aliases that are spoken for: those of the machines, also of the ones whose disk isn't
+    /// connected, which come back with theirs.
+    private func takenAliases(besides machine: VirtualMachine? = nil) -> Set<String> {
+        Set(library.machines.filter { $0.id != machine?.id }.map(\.configuration.ssh.alias))
+            .union(library.unavailableMachines.compactMap(\.sshAlias))
     }
 
-    /// Whether a machine or an in-progress creation already uses `name`.
+    /// An SSH alias derived from `name` that no other machine uses.
+    func uniqueAlias(for name: String) -> String {
+        SSHAlias.unique(SSHAlias.slug(from: name), avoiding: takenAliases())
+    }
+
+    /// Gives a machine another SSH name: what `ssh` and `swiftvm` reach it by. Whatever is typed is made
+    /// into a name that SSH takes, as a machine's name is when it is created.
+    ///
+    /// - Returns: The name the machine has now.
+    @discardableResult
+    func setSSHAlias(_ text: String, for machine: VirtualMachine) throws -> String {
+        let alias = SSHAlias.slug(from: text)
+        let previous = machine.configuration.ssh.alias
+        guard alias != previous else { return previous }
+        guard !takenAliases(besides: machine).contains(alias) else {
+            throw VMError.invalidConfiguration("Another virtual machine is reached as “\(alias)” already.")
+        }
+        try machine.updateConfiguration { $0.ssh.alias = alias }
+        // A host key is kept under the name. The old name's is of no use any more, and one that an
+        // earlier machine left under the new name would turn this machine away.
+        for name in [previous, alias] where !name.isEmpty {
+            sshWriter.forgetHostKey(for: name)
+        }
+        return alias
+    }
+
+    /// Whether a machine or an in-progress creation already uses `name`. A machine whose disk isn't
+    /// connected keeps its name too.
     func isNameTaken(_ name: String) -> Bool {
         let lowered = name.lowercased()
         return library.machines.contains { $0.name.lowercased() == lowered }
+            || library.unavailableMachines.contains { $0.name.lowercased() == lowered }
             || creations.contains { $0.name.lowercased() == lowered }
     }
 
@@ -567,13 +647,19 @@ final class AppModel {
         library.machines.filter(\.state.isActive)
     }
 
-    /// Whether a snapshot, a copy or a resize is under way on any machine.
+    /// Whether a snapshot, a copy, a resize or a move is under way on any machine.
     var isWorkingOnMachineFiles: Bool {
         library.machines.contains { $0.activity != nil }
     }
 
-    /// Returns once no machine's files are being worked on. That work is short, and stopping the app in
-    /// the middle of it could leave a machine half saved.
+    /// The machines that are on their way to another disk, which unlike the rest of the work on a
+    /// machine's files can take a long time.
+    var machinesBeingMoved: [VirtualMachine] {
+        library.machines.filter { moves[$0.id] != nil }
+    }
+
+    /// Returns once no machine's files are being worked on. That work is short, or was called off
+    /// if it wasn't, and stopping the app in the middle of it could leave a machine half saved.
     func waitForWorkOnMachineFiles() async {
         while isWorkingOnMachineFiles {
             try? await Task.sleep(for: .milliseconds(50))

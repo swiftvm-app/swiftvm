@@ -120,6 +120,26 @@ Not yet supported: Windows guests, and Intel Macs.
   doesn't ask the app first. `swiftvm quit` refuses then, instead of waiting
   for a quit that never comes.
 
+## Storage
+
+- `FileManager` copies a file to another disk by writing all of it, also the
+  empty space of a sparse disk image: 300 MB for an image that held 16 MB.
+  Machines move with `copyfile` and `COPYFILE_DATA_SPARSE`, which leaves the
+  space empty.
+- `copyfile` copying a folder carries on past a file it couldn't copy and
+  reports success, unless its callback tells it to stop.
+- A path says nothing about why a package isn't there. A bookmark names the
+  disk it was on, and whether that disk is connected is the difference between
+  a machine that is away and one that was deleted.
+- A bookmark follows a package into the Trash. One it finds there counts as
+  deleted.
+- A copy that `copyfile` has finished may still be on its way to the disk. It
+  is flushed before the original is removed: an external disk can be pulled
+  out a moment later.
+- macOS keeps an app from external and network disks until the user allows
+  it, and a package it can't look at seems not to be there. Only a package
+  that is known to be missing from a connected disk is forgotten.
+
 ## The app
 
 - An app without a Dock icon is not given the front for asking politely.

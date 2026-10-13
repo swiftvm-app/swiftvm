@@ -21,7 +21,7 @@ public final class SerialConsole: @unchecked Sendable {
         public let output: FileHandle
     }
 
-    private let logURL: URL?
+    private var logURL: URL?
     private let lock = NSLock()
     private var listeners: [UUID: @Sendable (Event) -> Void] = [:]
     private var recent = Data()
@@ -44,6 +44,11 @@ public final class SerialConsole: @unchecked Sendable {
 
     deinit {
         fromGuest?.readabilityHandler = nil
+    }
+
+    /// Writes the log somewhere else from the next start on, for a machine whose bundle has moved.
+    func setLogURL(_ url: URL?) {
+        lock.withLock { logURL = url }
     }
 
     // MARK: The guest's end

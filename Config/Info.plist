@@ -42,6 +42,10 @@
 	<string>Copyright © 2026 SwiftVM contributors. Licensed under Apache-2.0.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SwiftVM passes microphone audio to virtual machines that have the microphone turned on.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>SwiftVM keeps virtual machines and downloaded images on the disks you choose for them.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>SwiftVM keeps virtual machines and downloaded images on the disks you choose for them.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

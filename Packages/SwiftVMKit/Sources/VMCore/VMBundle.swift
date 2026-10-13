@@ -84,6 +84,107 @@ public struct VMBundle: Sendable, Hashable {
         return copy
     }
 
+    // MARK: Moving to another disk
+
+    /// Bytes everything in the bundle occupies on the host: its disks, its snapshots and the rest.
+    public var totalAllocatedSize: UInt64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+        guard let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
+        var total: UInt64 = 0
+        for case let file as URL in files {
+            let values = try? file.resourceValues(forKeys: Set(keys))
+            total += UInt64(max(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0, 0))
+        }
+        return total
+    }
+
+    /// Copies the whole bundle to `destination`, where nothing may be yet, for a machine that is going to
+    /// another disk. What was copied is removed again if the copy doesn't finish.
+    ///
+    /// A disk image is mostly empty space that takes up none. `FileManager` writes all of that out on a
+    /// disk it can't clone to, so this copies with `copyfile`, which leaves the empty space empty.
+    ///
+    /// The copy is on its disk for good when this returns, not on its way there: whoever asked may be
+    /// about to remove the original, and an external disk can be pulled out a moment later.
+    ///
+    /// - Parameters:
+    ///   - cloning: Share blocks with the original where the disk can, which then takes no time.
+    ///   - progress: Called on the copying thread with how far the copy has come, from 0 to 1.
+    ///   - isCancelled: Asked while copying. Once it says yes the copy stops with a `CancellationError`.
+    @discardableResult
+    public func copy(
+        to destination: URL, cloning: Bool = true, progress: (@Sendable (Double) -> Void)? = nil,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) throws -> VMBundle {
+        let copy = VMBundle(url: destination)
+        guard !FileManager.default.fileExists(atPath: copy.url.path) else {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: copy.url.path])
+        }
+        let tracker = CopyTracker(total: totalAllocatedSize, progress: progress, isCancelled: isCancelled)
+        let state = copyfile_state_alloc()
+        defer { copyfile_state_free(state) }
+        let callback: copyfile_callback_t = { what, stage, state, _, _, context in
+            guard let context else { return COPYFILE_CONTINUE }
+            let tracker = Unmanaged<CopyTracker>.fromOpaque(context).takeUnretainedValue()
+            if stage == COPYFILE_ERR {
+                // Left to itself, a copy of a folder carries on past a file it couldn't copy and
+                // reports success.
+                tracker.fail(with: errno)
+                return COPYFILE_QUIT
+            }
+            if tracker.isCancelled() {
+                tracker.fail(with: ECANCELED)
+                return COPYFILE_QUIT
+            }
+            if what == COPYFILE_COPY_DATA, stage == COPYFILE_PROGRESS {
+                var copied: off_t = 0
+                copyfile_state_get(state, UInt32(COPYFILE_STATE_COPIED), &copied)
+                tracker.report(bytesOfCurrentFile: UInt64(max(copied, 0)))
+            } else if what == COPYFILE_RECURSE_FILE, stage == COPYFILE_FINISH {
+                tracker.finishFile()
+            }
+            return COPYFILE_CONTINUE
+        }
+        copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CB), unsafeBitCast(callback, to: UnsafeRawPointer.self))
+        copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CTX), Unmanaged.passUnretained(tracker).toOpaque())
+
+        var flags = COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_DATA_SPARSE
+        if cloning {
+            flags |= COPYFILE_CLONE
+        }
+        let result = withExtendedLifetime(tracker) { copyfile(url.path, copy.url.path, state, copyfile_flags_t(flags)) }
+        let code = tracker.failure ?? (result == 0 ? nil : errno)
+        if let code {
+            try? FileManager.default.removeItem(at: copy.url)
+            if code == ECANCELED {
+                throw CancellationError()
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        do {
+            try copy.flushToDisk()
+        } catch {
+            try? FileManager.default.removeItem(at: copy.url)
+            throw error
+        }
+        progress?(1)
+        return copy
+    }
+
+    /// Has every file of the bundle written out to its disk, rather than waiting in memory to be.
+    private func flushToDisk() throws {
+        guard let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) else { return }
+        for case let file as URL in files where (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+            let descriptor = open(file.path, O_RDONLY)
+            guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            defer { close(descriptor) }
+            // Asks the disk itself. A file system that doesn't know how is asked the ordinary way.
+            if fcntl(descriptor, F_FULLFSYNC) != 0, fsync(descriptor) != 0 {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+    }
+
     // MARK: State on disk
 
     public var hasSavedState: Bool {
@@ -117,4 +218,45 @@ public struct VMBundle: Sendable, Hashable {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+}
+
+/// Keeps count for ``VMBundle/copy(to:cloning:progress:isCancelled:)``. Only the copying thread uses it.
+private final class CopyTracker {
+    /// What the bundle occupies, which is about what there is to copy: empty space is skipped.
+    private let total: UInt64
+    private let progress: (@Sendable (Double) -> Void)?
+    let isCancelled: @Sendable () -> Bool
+    private var finishedBytes: UInt64 = 0
+    private var currentBytes: UInt64 = 0
+    private var lastReported = 0.0
+    /// The first thing that went wrong, as an `errno`.
+    private(set) var failure: Int32?
+
+    init(total: UInt64, progress: (@Sendable (Double) -> Void)?, isCancelled: @escaping @Sendable () -> Bool) {
+        self.total = total
+        self.progress = progress
+        self.isCancelled = isCancelled
+    }
+
+    /// A file's count starts over with every file, and comes thousands of times for a large one. Whoever
+    /// listens only hears of every hundredth of the whole.
+    func report(bytesOfCurrentFile bytes: UInt64) {
+        currentBytes = bytes
+        guard let progress, total > 0 else { return }
+        let fraction = min(Double(finishedBytes + currentBytes) / Double(total), 1)
+        guard fraction - lastReported >= 0.01 else { return }
+        lastReported = fraction
+        progress(fraction)
+    }
+
+    func finishFile() {
+        finishedBytes += currentBytes
+        currentBytes = 0
+    }
+
+    func fail(with code: Int32) {
+        if failure == nil {
+            failure = code
+        }
+    }
 }

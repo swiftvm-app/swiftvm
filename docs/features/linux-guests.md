@@ -13,7 +13,7 @@ The **New Virtual Machine** window asks as much as you want it to.
 | | What it asks |
 | --- | --- |
 | **Simple** | A distribution, [setup scripts](#desktops-and-setup-scripts), and a password. SwiftVM decides the rest and shows what it decided |
-| **Advanced** | Everything: Quick Create or an installer disc, the name, hardware, and the account |
+| **Advanced** | Everything: Quick Create or an installer disc, the name, hardware, [where the machine is kept](virtual-machines.md#where-machines-are-kept), and the account |
 
 The window opens on the one you used last. What you pick on one side is still
 picked when you switch to the other.

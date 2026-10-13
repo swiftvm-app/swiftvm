@@ -27,6 +27,7 @@ swiftvm info web-server      # one machine in detail
 | `info <machine>` | Show one machine in detail |
 | `create <system> [options]` | Create a machine and wait until it is ready |
 | `clone <machine> [name]` | Copy a machine that is shut down |
+| `move <machine> <folder>` | Move a machine that is shut down to [another folder or disk](virtual-machines.md#where-machines-are-kept), and wait until it is there |
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
 | `open <machine>` | Show the machine's window |
 | `delete <machine>` | Move a stopped machine to the Trash |
@@ -47,6 +48,9 @@ SwiftVM's [templates](setup-scripts.md#templates), and
 | `--disk <GB>` | Disk size |
 | `--user <name>` | The account's name |
 | `--password <password>` | The account's password. Required for macOS |
+| `--location <folder>` | Keep the machine in this folder instead of the one for new machines |
+| `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs `--password`; macOS leaves Remote Login off |
+| `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta) |
 | `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |
 | `--script <name>` | Linux: run a [setup script](setup-scripts.md) on the first start, by its name in `swiftvm scripts`. A desktop needs `--password` |
 | `--script <file>` | The same with a file, by its path: `./mine.sh` |
@@ -131,6 +135,8 @@ machine is running. While one is being created it refuses too, unless you add
 ```bash
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
 swiftvm create debian-13 --name "Desk" --script xfce --script docker --password 'a password'
+swiftvm create ubuntu-26.04 --name "Big" --disk 200 --location /Volumes/External/Machines
+swiftvm move web-server /Volumes/External/Machines
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80
 swiftvm snapshot web-server "Before upgrade"

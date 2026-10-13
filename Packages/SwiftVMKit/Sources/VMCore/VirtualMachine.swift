@@ -7,7 +7,8 @@ import Observation
 @Observable
 public final class VirtualMachine: Identifiable {
     public nonisolated let id: UUID
-    public let bundle: VMBundle
+    /// Where the machine is on disk. It only changes when the machine is moved, which it is shut down for.
+    public private(set) var bundle: VMBundle
     /// The guest's serial console. It stays the same across restarts.
     public nonisolated let console: SerialConsole
     public private(set) var configuration: VMConfiguration
@@ -23,6 +24,8 @@ public final class VirtualMachine: Identifiable {
     public private(set) var snapshots: [VMSnapshot] = []
     /// Work in progress on the machine's files. Until it is over the machine can't be started or stopped.
     public private(set) var activity: VMActivity?
+    /// How far that work has come, from 0 to 1, for work that takes long enough to say.
+    public private(set) var activityProgress: Double?
     /// The line to the agent in the guest. It is only ever connected while the guest is up and has one.
     public let agent = GuestAgent()
     /// Whether the agent has mounted the shared folders, in a guest that doesn't mount them by itself.
@@ -418,6 +421,20 @@ public final class VirtualMachine: Identifiable {
         allocatedDiskSize = bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })
     }
 
+    /// The machine's bundle is somewhere else on disk from now on: it was moved there. The machine is
+    /// shut down, so nothing of it is open in the old place.
+    func relocate(to bundle: VMBundle) {
+        self.bundle = bundle
+        console.setLogURL(bundle.consoleLogURL)
+        refreshDiskUsage()
+    }
+
+    /// Says how far `activity` has come. Word that arrives after the work is over is dropped.
+    func reportProgress(_ fraction: Double, of activity: VMActivity) {
+        guard self.activity == activity else { return }
+        activityProgress = fraction
+    }
+
     // MARK: Lifecycle
 
     /// Boots the machine, or restores it if it was suspended.
@@ -786,7 +803,10 @@ public final class VirtualMachine: Identifiable {
     /// Runs `operation` on a machine that is shut down and keeps it that way until the operation is over.
     public func whileStopped<T>(_ activity: VMActivity, _ operation: () async throws -> T) async throws -> T {
         try begin(activity)
-        defer { self.activity = nil }
+        defer {
+            self.activity = nil
+            activityProgress = nil
+        }
         guard state == .stopped else { throw VMError.notStopped(name: name, state) }
         return try await operation()
     }
@@ -802,6 +822,7 @@ public final class VirtualMachine: Identifiable {
             throw VMError.invalidConfiguration("“\(name)” is busy starting up or shutting down. Try again in a moment.")
         }
         self.activity = activity
+        activityProgress = nil
     }
 
     // MARK: Backend events

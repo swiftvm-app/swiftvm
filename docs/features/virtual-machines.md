@@ -33,7 +33,11 @@ machine on the window.
 
 New machines get half of your Mac's cores (between 2 and 4), 8 GB of memory
 (4 GB on Macs with less than 16 GB), and a 64 GB disk for Linux or 128 GB for
-macOS. Disks only take up what the guest has written.
+macOS. Disks only take up what the guest has written. The form takes any disk
+size you type.
+
+**Location**, under **Hardware**, is the folder the machine is kept in. See
+[Where machines are kept](#where-machines-are-kept).
 
 ## Power
 
@@ -93,6 +97,41 @@ own, with a new name, address, and SSH name.
   the original until they differ.
 - Forwarded ports, writable disk images, and USB devices the original takes by
   itself stay with the original. Snapshots aren't copied.
+
+## Where machines are kept
+
+A machine is one package on disk, and you choose where: on your Mac, or on an
+external disk.
+
+| To | Do this |
+| --- | --- |
+| Create a machine somewhere else | **Location → Choose…** in the **New Virtual Machine** form (**Advanced** for Linux), or `swiftvm create … --location <folder>` |
+| Move a machine | **Location → Move…** in the machine's settings, or `swiftvm move <machine> <folder>` |
+| Change where new machines go | **Settings → Storage → New Virtual Machines → Change** |
+
+Moving needs the machine shut down.
+
+- On the same disk a move takes no time.
+- To another disk the machine is copied, and the original is removed once the
+  copy is complete and written to that disk. The panel shows how far it is.
+  **Cancel** in the machine's settings, or quitting SwiftVM, calls it off and
+  leaves the machine where it was.
+- The disk still only takes up what the guest has written.
+
+### External disks
+
+- A machine whose disk isn't connected stays in the panel, under **Not
+  Available**. It is back as soon as you connect the disk.
+- A [duplicate](#duplicating) is made next to the original, so it is instant
+  there too.
+- A package you move in the Finder is found again, as long as it stays on the
+  same disk. Moved to another disk by hand, open it from the Finder to add it
+  again.
+- **Remove from List**, in the **…** of a machine that isn't available, takes
+  it out of SwiftVM. Its files stay where they are.
+- Disks that aren't APFS work, but [duplicates and snapshots](disks.md#copies-and-snapshots)
+  are full copies there, and the disk of a Quick Create Linux machine takes up
+  its whole size.
 
 ## Deleting
 

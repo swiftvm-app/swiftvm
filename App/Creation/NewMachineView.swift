@@ -113,6 +113,77 @@ private struct OperatingSystemPicker: View {
     }
 }
 
+/// The row that says where the new machine is kept and lets another folder be chosen, one on an
+/// external disk for a start.
+private struct LocationRow: View {
+    /// The folder that was chosen. `nil` is the folder for new machines.
+    @Binding var location: URL?
+
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        LabeledContent("Location") {
+            HStack {
+                Text(folder.abbreviatedPath)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(folder.path)
+                Button("Choose…") {
+                    if let chosen = FolderPanel.choose(message: "Choose the folder to keep the new virtual machine in.", startingAt: folder) {
+                        location = chosen
+                    }
+                }
+            }
+        }
+    }
+
+    private var folder: URL {
+        location ?? model.library.machinesDirectory
+    }
+}
+
+/// The row that sets the size of the new machine's disk: any size, typed or stepped to.
+private struct DiskSizeRow: View {
+    @Binding var gigabytes: Int
+    /// The sizes a disk for this system can have.
+    let range: ClosedRange<Int>
+
+    /// What is in the field. A number that is being typed isn't one yet at every keystroke.
+    @State private var text = ""
+
+    var body: some View {
+        LabeledContent("Disk Size") {
+            HStack {
+                TextField("Disk Size", text: $text)
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 72)
+                    .accessibilityLabel("Disk size in gigabytes")
+                Text("GB")
+                    .foregroundStyle(.secondary)
+                Stepper("Disk Size", value: $gigabytes, in: range, step: 16)
+                    .labelsHidden()
+            }
+        }
+        .onAppear { text = String(gigabytes) }
+        .onChange(of: text) {
+            gigabytes = Int(text.trimmingCharacters(in: .whitespaces)) ?? 0
+        }
+        .onChange(of: gigabytes) {
+            // Stepped to, or raised for a setup script.
+            if Int(text.trimmingCharacters(in: .whitespaces)) ?? 0 != gigabytes {
+                text = String(gigabytes)
+            }
+        }
+    }
+
+    /// What is wrong with a size, for the form to say and to hold the machine back for.
+    static func problem(with gigabytes: Int, in range: ClosedRange<Int>) -> String? {
+        range.contains(gigabytes) ? nil : "The disk can be from \(range.lowerBound) GB to \(range.upperBound) GB."
+    }
+}
+
 /// The foot of a form: what is wrong with the name, or what else the window takes, and the buttons.
 private struct FormButtons: View {
     var problem: String?
@@ -204,8 +275,12 @@ private struct LinuxMachineForm: View {
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
     @State private var startsWhenReady = true
+    /// The folder to keep the machine in, if one was chosen.
+    @State private var location: URL?
 
+    /// The sizes Simple picks from. Advanced takes any size.
     private static let diskSizes = [16, 32, 64, 128, 256, 512, 1024]
+    private static let diskRange = 8...HostResources.maximumDiskGigabytes
     private static let maximumMemoryGigabytes = Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte)
 
     var body: some View {
@@ -230,7 +305,7 @@ private struct LinuxMachineForm: View {
             Divider()
             FormButtons(problem: nameProblem, canCreate: canCreate, create: create)
         }
-        .frame(height: (mode == .simple ? 410 : 664) + scriptRowsHeight)
+        .frame(height: (mode == .simple ? 410 : 708) + scriptRowsHeight)
         .sheet(isPresented: $isAddingScripts) {
             if let distribution = selectedDistribution {
                 SetupScriptChooser(distribution: distribution, scripts: $scripts)
@@ -339,6 +414,14 @@ private struct LinuxMachineForm: View {
         mode == .simple || installsSSHKey
     }
 
+    private var chosenLocation: URL? {
+        mode == .simple ? nil : location
+    }
+
+    private var diskProblem: String? {
+        mode == .simple ? nil : DiskSizeRow.problem(with: diskGigabytes, in: Self.diskRange)
+    }
+
     @ViewBuilder
     private var advancedSections: some View {
         Section {
@@ -368,7 +451,7 @@ private struct LinuxMachineForm: View {
             }
         }
 
-        Section("Hardware") {
+        Section {
             Stepper(value: $cpuCount, in: 1...HostResources.cpuCount) {
                 LabeledContent("Processors", value: "\(cpuCount)")
             }
@@ -382,10 +465,13 @@ private struct LinuxMachineForm: View {
                         .frame(width: 56, alignment: .trailing)
                 }
             }
-            Picker("Disk Size", selection: $diskGigabytes) {
-                ForEach(Self.diskSizes, id: \.self) { size in
-                    Text(size >= 1024 ? "\(size / 1024) TB" : "\(size) GB").tag(size)
-                }
+            DiskSizeRow(gigabytes: $diskGigabytes, range: Self.diskRange)
+            LocationRow(location: $location)
+        } header: {
+            Text("Hardware")
+        } footer: {
+            if let diskProblem {
+                Text(diskProblem).foregroundStyle(.red)
             }
         }
 
@@ -526,7 +612,7 @@ private struct LinuxMachineForm: View {
             memoryGigabytes = min(max(memoryGigabytes, Double(minimum)), Self.maximumMemoryGigabytes)
         }
         if let minimum = scripts.minimumDiskGigabytes, diskGigabytes < minimum {
-            diskGigabytes = Self.diskSizes.first { $0 >= minimum } ?? diskGigabytes
+            diskGigabytes = Self.diskSizes.first { $0 >= minimum } ?? minimum
         }
     }
 
@@ -612,7 +698,7 @@ private struct LinuxMachineForm: View {
     }
 
     private var canCreate: Bool {
-        guard !trimmedName.isEmpty, nameProblem == nil else { return false }
+        guard !trimmedName.isEmpty, nameProblem == nil, diskProblem == nil else { return false }
         guard isQuickCreate else { return installerURL != nil }
         return selectedDistribution != nil && !chosenUserName.isEmpty
             && accountProblem == nil && setupProblem == nil && !(isPasswordRequired && password.isEmpty)
@@ -664,7 +750,8 @@ private struct LinuxMachineForm: View {
                 password: password,
                 installsSSHKey: chosenInstallsSSHKey,
                 rosetta: mode == .advanced && usesRosetta,
-                setupScripts: selectedScripts
+                setupScripts: selectedScripts,
+                location: chosenLocation
             ), onReady: ready)
         } else {
             guard let installerURL else { return }
@@ -679,7 +766,8 @@ private struct LinuxMachineForm: View {
                 media: media,
                 cpuCount: cpuCount,
                 memorySize: memorySize,
-                diskCapacity: diskCapacity
+                diskCapacity: diskCapacity,
+                location: chosenLocation
             ), onReady: ready)
         }
         dismiss()
@@ -1246,8 +1334,11 @@ private struct MacMachineForm: View {
     @State private var password = ""
     @State private var logsInAutomatically = true
     @State private var installsSSHKey = true
+    /// The folder to keep the machine in, if one was chosen.
+    @State private var location: URL?
 
-    private static let diskSizes = [64, 128, 256, 512, 1024]
+    /// macOS and what it installs with it don't fit on less.
+    private static let diskRange = 64...HostResources.maximumDiskGigabytes
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1277,7 +1368,7 @@ private struct MacMachineForm: View {
                     }
                 }
 
-                Section("Hardware") {
+                Section {
                     Stepper(value: $cpuCount, in: minimumCPUCount...max(HostResources.cpuCount, minimumCPUCount)) {
                         LabeledContent("Processors", value: "\(cpuCount)")
                     }
@@ -1294,10 +1385,13 @@ private struct MacMachineForm: View {
                                 .frame(width: 56, alignment: .trailing)
                         }
                     }
-                    Picker("Disk Size", selection: $diskGigabytes) {
-                        ForEach(Self.diskSizes, id: \.self) { size in
-                            Text(size >= 1024 ? "\(size / 1024) TB" : "\(size) GB").tag(size)
-                        }
+                    DiskSizeRow(gigabytes: $diskGigabytes, range: Self.diskRange)
+                    LocationRow(location: $location)
+                } header: {
+                    Text("Hardware")
+                } footer: {
+                    if let diskProblem {
+                        Text(diskProblem).foregroundStyle(.red)
                     }
                 }
 
@@ -1330,7 +1424,7 @@ private struct MacMachineForm: View {
             Divider()
             FormButtons(problem: nameProblem, canCreate: canCreate, create: create)
         }
-        .frame(height: 658)
+        .frame(height: 702)
         .task(id: lookupAttempt) { await lookUpLatest() }
         .task {
             if let initialImage {
@@ -1505,8 +1599,12 @@ private struct MacMachineForm: View {
         }
     }
 
+    private var diskProblem: String? {
+        DiskSizeRow.problem(with: diskGigabytes, in: Self.diskRange)
+    }
+
     private var canCreate: Bool {
-        guard !trimmedName.isEmpty, nameProblem == nil, selectedImage?.requirements != nil else { return false }
+        guard !trimmedName.isEmpty, nameProblem == nil, diskProblem == nil, selectedImage?.requirements != nil else { return false }
         guard setsUpAccount else { return true }
         return !account.userName.isEmpty && !password.isEmpty && accountProblem == nil
     }
@@ -1535,7 +1633,8 @@ private struct MacMachineForm: View {
             memorySize: UInt64(memoryGigabytes) * HostResources.gibibyte,
             diskCapacity: UInt64(diskGigabytes) * HostResources.gibibyte,
             account: setsUpAccount ? account : nil,
-            installsSSHKey: installsSSHKey
+            installsSSHKey: installsSSHKey,
+            location: location
         ), onReady: { machine in
             // The account is set up on the first start, which has to happen while the app still knows it.
             onReady(machine, true)

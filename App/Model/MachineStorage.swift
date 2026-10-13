@@ -4,7 +4,7 @@ import Installers
 import VMCore
 import VZEngine
 
-/// Operations on a machine's disks: making a copy of the machine and growing its disk.
+/// Operations on a machine's disks: making a copy of the machine, moving it and growing its disk.
 extension AppModel {
     /// A name for a copy of `machine` that nothing else uses: `Name copy`, `Name copy 2`, …
     func nameForCopy(of machine: VirtualMachine) -> String {
@@ -44,10 +44,12 @@ extension AppModel {
             let alias = uniqueAlias(for: copyName)
             let configuration = machine.configuration.duplicated(name: copyName, sshAlias: alias)
             let source = machine.bundle
-            let destination = try library.makeStagingBundleURL()
+            // Next to the original, wherever that is: on its disk the copy shares the original's space,
+            // and on another one it would be written out in full.
+            let destination = try library.makeStagingBundleURL(in: source.url.deletingLastPathComponent())
 
             // On APFS this takes no time; on another file system it copies every byte of the disks.
-            let copy = try await Task.detached(priority: .userInitiated) {
+            let copying = Task.detached(priority: .userInitiated) {
                 let copy = try source.duplicate(to: destination, configuration: configuration)
                 do {
                     switch configuration.os.family {
@@ -72,13 +74,20 @@ extension AppModel {
                     throw error
                 }
                 return copy
-            }.value
+            }
+            let copy: VMBundle
+            do {
+                copy = try await copying.value
+            } catch {
+                library.discard(staged: VMBundle(url: destination))
+                throw error
+            }
 
             sshWriter.forgetHostKey(for: alias)
             do {
                 return try addToLibrary(staged: copy)
             } catch {
-                try? FileManager.default.removeItem(at: copy.url)
+                library.discard(staged: copy)
                 throw error
             }
         }
@@ -92,6 +101,41 @@ extension AppModel {
                 try await duplicate(machine)
             } catch {
                 machine.lastError = VMErrorInfo(title: "Couldn't duplicate “\(machine.name)”", message: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Moves a machine that is shut down into `folder`, which may be on another disk: then its files
+    /// are copied there, which takes a while, and can be called off with ``cancelMove(of:)``.
+    func move(_ machine: VirtualMachine, to folder: URL) async throws {
+        if moves[machine.id] != nil {
+            throw VMError.busy(name: machine.name, .moving)
+        }
+        // A task of its own, so that the move can be called off whoever is waiting for it.
+        let task = Task { try await library.move(machine, to: folder) }
+        moves[machine.id] = task
+        defer { moves[machine.id] = nil }
+        try await task.value
+    }
+
+    /// Calls off a move that is still copying. The machine stays where it was.
+    func cancelMove(of machine: VirtualMachine) {
+        moves[machine.id]?.cancel()
+    }
+
+    func cancelMoves() {
+        moves.values.forEach { $0.cancel() }
+    }
+
+    /// Moves a machine for a button in its settings. A failure is shown wherever the machine's errors are.
+    func moveReportingErrors(_ machine: VirtualMachine, to folder: URL) {
+        Task {
+            do {
+                try await move(machine, to: folder)
+            } catch is CancellationError {
+                // Called off by whoever started it.
+            } catch {
+                machine.lastError = VMErrorInfo(title: "Couldn't move “\(machine.name)”", message: error.localizedDescription)
             }
         }
     }

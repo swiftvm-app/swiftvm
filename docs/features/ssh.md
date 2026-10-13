@@ -3,6 +3,10 @@
 Every machine gets an SSH name made from its name: `Web Server` becomes
 `web-server`. Use it to connect from your Mac without looking up addresses.
 
+The SSH name stays when you rename the machine. To change it, set **SSH Name**
+under **Network and SSH** in the machine's settings. A Linux guest keeps the
+host name it was created with.
+
 ## Connecting
 
 ```bash
@@ -37,7 +41,8 @@ up to date.
 
 A guest installed from a disc may have no SSH server. Install one in the
 guest, add your public key to the account, and set **SSH User** under
-**Network and SSH** in the machine's settings.
+**Network and SSH** in the machine's settings. If the server listens on
+another port than 22, set **SSH Port** there too.
 
 ## Without a network
 

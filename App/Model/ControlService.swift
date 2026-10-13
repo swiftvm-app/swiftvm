@@ -4,6 +4,7 @@ import Installers
 import VMControl
 import VMCore
 import VZEngine
+import Virtualization
 
 /// Handles requests from the `swiftvm` command-line tool.
 extension AppModel {
@@ -60,6 +61,9 @@ extension AppModel {
             guard creating.isEmpty || request.cancelsCreations == true else {
                 let subject = creating.count == 1 ? "“\(creating[0].name)” is" : "\(creating.count) virtual machines are"
                 return .failure("\(subject) still being created. To quit anyway, use `swiftvm quit --cancel-creations`: a download carries on where it stopped the next time, an installation starts over.")
+            }
+            if let moving = machinesBeingMoved.first {
+                return .failure("“\(moving.name)” is being moved to another folder. Wait until it is there, or call the move off in the machine's settings.")
             }
             guard !isWorkingOnMachineFiles else {
                 return .failure("A virtual machine is busy with a snapshot, a copy or a resize. Try again in a moment.")
@@ -347,6 +351,16 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
+        case .move:
+            guard let location = request.location, location.hasPrefix("/") else { return .failure("Missing the folder to move to.") }
+            do {
+                try await move(machine, to: URL(fileURLWithPath: location, isDirectory: true))
+            } catch is CancellationError {
+                return .failure("Moving “\(machine.name)” was called off. It is where it was.")
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            return details(machine)
         case .snapshot:
             do {
                 try await machine.takeSnapshot(named: request.name)
@@ -571,6 +585,25 @@ extension AppModel {
         if let distribution, let problem = setupScripts.problem(for: distribution, memorySize: memorySize, diskCapacity: diskCapacity) {
             return .failure(problem)
         }
+        var location: URL?
+        if let path = parameters.location {
+            guard path.hasPrefix("/") else { return .failure("The folder to keep the machine in has to be given from the root.") }
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            do {
+                try library.prepareFolder(folder)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            location = folder
+        }
+        let installsSSHKey = parameters.installsSSHKey ?? true
+        let usesRosetta = parameters.rosetta ?? false
+        if usesRosetta {
+            guard !isMac else { return .failure("Rosetta is for Linux guests. A macOS guest runs x86-64 programs by itself.") }
+            guard VZLinuxRosettaDirectoryShare.availability == .installed else {
+                return .failure("Rosetta isn't installed on this Mac. Install it with: softwareupdate --install-rosetta")
+            }
+        }
 
         let start: () -> MachineCreation
         if let distribution {
@@ -578,6 +611,9 @@ extension AppModel {
             let userName = parameters.user ?? CloudInitSeed.userName(from: NSUserName())
             if let problem = CloudInitSeed.problem(withUserName: userName) {
                 return .failure("“\(userName)” can't be the user name. \(problem)")
+            }
+            if !installsSSHKey, (parameters.password ?? "").isEmpty {
+                return .failure("Without your SSH key the account needs a password, otherwise nobody can sign in. Add --password <password>.")
             }
             let request = LinuxQuickCreateRequest(
                 name: name,
@@ -588,9 +624,10 @@ extension AppModel {
                 userName: userName,
                 fullName: NSFullUserName(),
                 password: parameters.password ?? "",
-                installsSSHKey: true,
-                rosetta: false,
-                setupScripts: setupScripts
+                installsSSHKey: installsSSHKey,
+                rosetta: usesRosetta,
+                setupScripts: setupScripts,
+                location: location
             )
             start = { self.create(request) }
         } else {
@@ -612,7 +649,11 @@ extension AppModel {
                 guard let password = parameters.password, !password.isEmpty else {
                     return .failure("macOS needs a password for the account. Add --password <password>.")
                 }
-                let provisioning = GuestProvisioning(fullName: NSFullUserName(), userName: userName, password: password)
+                // Without the key nothing signs in over SSH by itself, so Remote Login stays off, as it
+                // does when the form is told the same.
+                let provisioning = GuestProvisioning(
+                    fullName: NSFullUserName(), userName: userName, password: password, enablesRemoteLogin: installsSSHKey
+                )
                 do {
                     try provisioning.validateForMacOS()
                 } catch {
@@ -627,7 +668,8 @@ extension AppModel {
                 memorySize: memorySize,
                 diskCapacity: diskCapacity,
                 account: account,
-                installsSSHKey: true
+                installsSSHKey: installsSSHKey,
+                location: location
             )
             start = { self.create(request) }
         }
@@ -814,7 +856,11 @@ extension AppModel {
     }
 
     private func notFound(_ identifier: String) -> ControlResponse {
-        .failure("No virtual machine named “\(identifier)”.")
+        let lowered = identifier.lowercased()
+        if let away = library.unavailableMachines.first(where: { $0.name.lowercased() == lowered || $0.sshAlias == lowered }) {
+            return .failure(away.explanation)
+        }
+        return .failure("No virtual machine named “\(identifier)”.")
     }
 }
 

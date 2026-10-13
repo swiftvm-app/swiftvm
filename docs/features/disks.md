@@ -2,8 +2,11 @@
 
 ## The disk
 
-Each machine has one disk. You pick its size when you create the machine, but
-it only takes up what the guest has written to it.
+Each machine has one disk. You pick its size when you create the machine, any
+size you type, but it only takes up what the guest has written to it.
+
+The disk is in the machine's package, wherever you
+[keep the machine](virtual-machines.md#where-machines-are-kept).
 
 ## Growing the disk
 
@@ -51,3 +54,7 @@ swiftvm eject web-server data.img
 [Duplicates](virtual-machines.md#duplicating) and
 [snapshots](snapshots.md) are instant because APFS shares the unchanged parts
 of the disk. On a volume with another file system they are full copies.
+
+A machine that [moves to another disk](virtual-machines.md#where-machines-are-kept)
+takes its snapshots along. They are copied in full then, since two disks can't
+share anything.

@@ -34,6 +34,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case resize
         /// Make a copy of a machine that is shut down.
         case clone
+        /// Move a machine that is shut down into the folder ``ControlRequest/location``, which may be on
+        /// another disk.
+        case move
         case snapshot
         case snapshots
         case revert
@@ -131,6 +134,12 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Linux: the setup scripts to run on the first start, in this order. Each is a name from the
         /// list of `scripts`, or the absolute path of a file: what starts with a `/`.
         public var scripts: [String]?
+        /// Absolute path of the folder to keep the machine in. `nil` is the folder for new machines.
+        public var location: String?
+        /// Linux: let the guest run x86-64 programs with Rosetta. `nil` is no.
+        public var rosetta: Bool?
+        /// Whether this Mac's SSH key lets into the account. `nil` is yes.
+        public var installsSSHKey: Bool?
         public var start: Bool
 
         /// The `distribution` value that installs macOS.
@@ -139,7 +148,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public init(
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
-            scripts: [String]? = nil, start: Bool = true
+            scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, installsSSHKey: Bool? = nil,
+            start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -150,6 +160,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.password = password
             self.restoreImagePath = restoreImagePath
             self.scripts = scripts
+            self.location = location
+            self.rosetta = rosetta
+            self.installsSSHKey = installsSSHKey
             self.start = start
         }
     }
@@ -187,13 +200,15 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var job: GuestJob?
     /// For `wait`: how many seconds to wait at most.
     public var timeout: Double?
+    /// For `move`: absolute path of the folder the machine is to be kept in.
+    public var location: String?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
-        timeout: Double? = nil
+        timeout: Double? = nil, location: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -213,6 +228,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.system = system
         self.job = job
         self.timeout = timeout
+        self.location = location
     }
 }
 
