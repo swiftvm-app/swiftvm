@@ -9,6 +9,8 @@ struct AppSettingsView: View {
     /// The link is being installed or removed, possibly with a password dialog on the screen.
     @State private var isChangingTool = false
     @State private var toolProblem: String?
+    /// Why a folder that was chosen for machines or downloads can't be used.
+    @State private var storageProblem: String?
 
     var body: some View {
         Form {
@@ -36,23 +38,7 @@ struct AppSettingsView: View {
                 updatesSection
             }
 
-            Section("Storage") {
-                LabeledContent("Virtual Machines") {
-                    Button((model.library.machinesDirectory.path as NSString).abbreviatingWithTildeInPath) {
-                        NSWorkspace.shared.open(model.library.machinesDirectory)
-                    }
-                    .buttonStyle(.link)
-                    .help("Show in Finder")
-                }
-                LabeledContent("Downloaded Images") {
-                    Button((model.downloader.cacheDirectory.path as NSString).abbreviatingWithTildeInPath) {
-                        try? FileManager.default.createDirectory(at: model.downloader.cacheDirectory, withIntermediateDirectories: true)
-                        NSWorkspace.shared.open(model.downloader.cacheDirectory)
-                    }
-                    .buttonStyle(.link)
-                    .help("Show in Finder")
-                }
-            }
+            storageSection
         }
         .formStyle(.grouped)
         .frame(width: 520)
@@ -61,6 +47,72 @@ struct AppSettingsView: View {
         // The link may have been changed from Terminal in the meantime.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             toolStatus = model.commandLineToolLink?.status ?? .notInstalled
+        }
+    }
+
+    // MARK: Storage
+
+    private var storageSection: some View {
+        Section {
+            folderRow(
+                "New Virtual Machines", folder: model.library.machinesDirectory,
+                isDefault: model.library.machinesDirectory.path == model.library.defaultMachinesDirectory.path,
+                message: "Choose the folder that new virtual machines are created in.",
+                change: model.setMachinesDirectory
+            )
+            folderRow(
+                "Downloaded Images", folder: model.downloader.cacheDirectory,
+                isDefault: model.isUsingDefaultDownloadsDirectory,
+                message: "Choose the folder that downloaded Linux images and macOS restore images are kept in.",
+                change: model.setDownloadsDirectory
+            )
+        } header: {
+            Text("Storage")
+        } footer: {
+            if let storageProblem {
+                Text(storageProblem).foregroundStyle(.red)
+            } else {
+                Text("Either folder can be on another disk. Virtual machines and downloads that are there already stay where they are. To move a virtual machine, use Move… in its settings.")
+            }
+        }
+    }
+
+    /// One of the two folders: where it is, which opens it in the Finder, and the way to another one.
+    ///
+    /// - Parameter change: Takes the folder that was chosen, or `nil` for the default one.
+    private func folderRow(
+        _ title: String, folder: URL, isDefault: Bool, message: String, change: @escaping (URL?) throws -> Void
+    ) -> some View {
+        LabeledContent(title) {
+            HStack {
+                Button(folder.abbreviatedPath) {
+                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(folder)
+                }
+                .buttonStyle(.link)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help("Show in Finder")
+                Menu("Change") {
+                    Button("Choose Folder…") {
+                        guard let chosen = FolderPanel.choose(message: message, startingAt: folder) else { return }
+                        apply(change, chosen)
+                    }
+                    Button("Use the Default Folder") { apply(change, nil) }
+                        .disabled(isDefault)
+                }
+                .fixedSize()
+                .accessibilityLabel("Change the folder for \(title)")
+            }
+        }
+    }
+
+    private func apply(_ change: (URL?) throws -> Void, _ folder: URL?) {
+        do {
+            try change(folder)
+            storageProblem = nil
+        } catch {
+            storageProblem = error.localizedDescription
         }
     }
 

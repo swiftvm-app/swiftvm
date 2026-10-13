@@ -263,6 +263,8 @@ public enum VMActivity: Sendable, Hashable {
     case reverting
     case duplicating
     case resizingDisk
+    /// Its bundle is on its way to another folder, which takes a while when that is on another disk.
+    case moving
 
     public var label: String {
         switch self {
@@ -270,6 +272,7 @@ public enum VMActivity: Sendable, Hashable {
         case .reverting: "Reverting"
         case .duplicating: "Duplicating"
         case .resizingDisk: "Resizing Disk"
+        case .moving: "Moving"
         }
     }
 }

@@ -48,6 +48,8 @@ struct LinuxQuickCreateRequest {
     var rosetta: Bool
     /// What to set the system up with on its first start, such as a desktop.
     var setupScripts: [SetupScript] = []
+    /// The folder to keep the machine in. `nil` is the folder for new machines.
+    var location: URL?
 }
 
 /// Everything needed to create an empty Linux machine that boots an installer ISO.
@@ -62,6 +64,8 @@ struct LinuxInstallerRequest {
     var cpuCount: Int
     var memorySize: UInt64
     var diskCapacity: UInt64
+    /// The folder to keep the machine in. `nil` is the folder for new machines.
+    var location: URL?
 }
 
 /// Everything needed to install macOS from a restore image.
@@ -77,6 +81,8 @@ struct MacInstallRequest {
     var account: GuestProvisioning?
     /// Add the host's SSH key to the account once the guest is up.
     var installsSSHKey: Bool
+    /// The folder to keep the machine in. `nil` is the folder for new machines.
+    var location: URL?
 }
 
 extension AppModel {
@@ -147,6 +153,7 @@ extension AppModel {
         guard let image = request.distribution.cloudImage else {
             throw VMError.invalidConfiguration("\(request.distribution.name) has no ready-made image.")
         }
+        try prepareLocation(request.location)
         let imageURL = try await download(image, named: request.distribution.name, creation: creation)
         try Task.checkCancellation()
 
@@ -177,7 +184,7 @@ extension AppModel {
         )
 
         creation.update("Preparing disk…", fraction: 0)
-        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(in: request.location), configuration: configuration)
         do {
             let diskURL = bundle.diskURL(for: disk)
             let progress = ProgressRelay { fraction in creation.fraction = fraction }
@@ -189,12 +196,13 @@ extension AppModel {
             sshWriter.forgetHostKey(for: alias)
             return try addToLibrary(staged: bundle)
         } catch {
-            try? FileManager.default.removeItem(at: bundle.url)
+            library.discard(staged: bundle)
             throw error
         }
     }
 
     private func performInstallerCreate(_ request: LinuxInstallerRequest, os: GuestOS, creation: MachineCreation) async throws -> VirtualMachine {
+        try prepareLocation(request.location)
         let mediaURL: URL
         switch request.media {
         case .localFile(let url):
@@ -216,17 +224,18 @@ extension AppModel {
             networkInterfaces: [NetworkInterfaceConfiguration()],
             ssh: SSHConfiguration(alias: uniqueAlias(for: request.name))
         )
-        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(in: request.location), configuration: configuration)
         do {
             try DiskService.createBlankDisk(at: bundle.diskURL(for: disk), capacity: disk.capacity, format: disk.format)
             return try addToLibrary(staged: bundle)
         } catch {
-            try? FileManager.default.removeItem(at: bundle.url)
+            library.discard(staged: bundle)
             throw error
         }
     }
 
     private func performMacInstall(_ request: MacInstallRequest, creation: MachineCreation) async throws -> VirtualMachine {
+        try prepareLocation(request.location)
         var image: MacRestoreImage
         if let requested = request.image {
             image = requested
@@ -272,7 +281,7 @@ extension AppModel {
         )
 
         creation.update("Creating disk…")
-        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration)
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(in: request.location), configuration: configuration)
         do {
             try MacOSInstaller.prepare(bundle, for: requirements)
             try DiskService.createBlankDisk(at: bundle.diskURL(for: disk), capacity: disk.capacity, format: disk.format)
@@ -288,9 +297,15 @@ extension AppModel {
             }
             return machine
         } catch {
-            try? FileManager.default.removeItem(at: bundle.url)
+            library.discard(staged: bundle)
             throw error
         }
+    }
+
+    /// Makes sure the machine can be kept where it is meant to go, before anything is downloaded for it:
+    /// a folder on a disk that isn't connected is better heard of now than in half an hour.
+    private func prepareLocation(_ location: URL?) throws {
+        try library.prepareFolder(location ?? library.machinesDirectory)
     }
 
     /// Moves a finished bundle into the library and gives its network interface a free address.

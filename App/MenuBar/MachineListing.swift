@@ -42,7 +42,9 @@ enum MachineListing {
     ///   - sshCommand: What to type in a terminal to get into the guest, if that is short enough to show.
     static func statusLine(for machine: VirtualMachine, address: String? = nil, sshCommand: String? = nil) -> String {
         if let activity = machine.activity {
-            return activity.label + "…"
+            // A move to another disk says how far it has come.
+            let progress = machine.activityProgress.map { " \(Int(($0 * 100).rounded()))%" } ?? ""
+            return activity.label + "…" + progress
         }
         let state = machine.state
         let hardware = Formatting.hardware(of: machine.configuration)
@@ -74,5 +76,35 @@ enum MachineListing {
             return total == 1 ? "1 virtual machine" : "\(total) virtual machines"
         }
         return "\(running) of \(total) running"
+    }
+}
+
+extension UnavailableMachine {
+    /// The line under its name in the panel.
+    var statusLine: String {
+        switch reason {
+        case .diskNotConnected(let volumeName?): "On “\(volumeName)”, which isn't connected"
+        case .diskNotConnected(nil): "On a disk that isn't connected"
+        case .unreadable: "Can't be opened"
+        }
+    }
+
+    /// Why it can't be used and what would change that, in a sentence or two.
+    var explanation: String {
+        switch reason {
+        case .diskNotConnected(let volumeName?):
+            "“\(name)” is kept on “\(volumeName)”, which isn't connected. Connect the disk to use it."
+        case .diskNotConnected(nil):
+            "“\(name)” is kept on a disk that isn't connected. Connect the disk to use it."
+        case .unreadable(let reason):
+            "“\(name)” can't be opened: \(reason)"
+        }
+    }
+
+    var symbol: String {
+        switch reason {
+        case .diskNotConnected: "externaldrive.badge.xmark"
+        case .unreadable: "exclamationmark.triangle"
+        }
     }
 }

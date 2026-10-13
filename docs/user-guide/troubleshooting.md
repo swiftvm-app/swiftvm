@@ -21,6 +21,19 @@ until you have read them.
 
 The command drives the running app. Open SwiftVM first.
 
+## A machine is listed as Not Available
+
+The machine is on a disk that isn't connected, or its package can't be read.
+Point at it in the panel to see which, and where SwiftVM expects it.
+
+- Connect the disk. The machine is back in the list by itself.
+- If it says that this Mac doesn't let SwiftVM look at it, allow SwiftVM under
+  **System Settings → Privacy & Security → Files and Folders**, then open the
+  panel again.
+- If you moved the package to another disk by hand, open it from the Finder.
+- **Remove from List**, in the machine's **…**, takes it out of SwiftVM without
+  touching its files.
+
 ## A macOS guest won't shut down
 
 Without the [guest tools](../features/guest-tools.md), macOS asks on its own

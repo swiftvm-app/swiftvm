@@ -33,7 +33,7 @@ struct MenuBarPanel: View {
                     dismiss()
                 }
             }
-            if model.library.machines.isEmpty, model.creations.isEmpty {
+            if model.library.machines.isEmpty, model.library.unavailableMachines.isEmpty, model.creations.isEmpty {
                 emptyState
             } else {
                 PanelScrollArea(maximumHeight: Self.maximumListHeight, scrollTarget: highlight) {
@@ -155,7 +155,14 @@ struct MenuBarPanel: View {
                     CreationPanelRow(creation: creation) { model.dismiss(creation) }
                 }
             }
-            if groups.isEmpty, model.creations.isEmpty {
+            if !model.library.unavailableMachines.isEmpty {
+                // Whatever the filter: nothing is known of their system while they can't be read.
+                sectionTitle("Not Available")
+                ForEach(model.library.unavailableMachines) { machine in
+                    UnavailablePanelRow(machine: machine)
+                }
+            }
+            if groups.isEmpty, model.creations.isEmpty, !model.library.machines.isEmpty {
                 noMatch
             }
         }

@@ -54,8 +54,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Self.wasAskedToTerminate = true
         let model = AppModel.shared
+        let moving = model.machinesBeingMoved
+        if !moving.isEmpty, !model.isQuittingUnattended {
+            // Copying a machine to another disk is the one piece of work on its files that isn't over in
+            // a moment. It can be called off at no cost: the machine is where it was until it has arrived.
+            let alert = NSAlert()
+            alert.messageText = moving.count == 1
+                ? "“\(moving[0].name)” is still being moved."
+                : "\(moving.count) virtual machines are still being moved."
+            alert.informativeText = "If you quit now, the move is cancelled and the virtual machine stays where it was."
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return stayOpen() }
+            model.cancelMoves()
+        }
         if model.isWorkingOnMachineFiles {
-            // A snapshot, a copy or a resize is over in a moment. Let it finish, then ask again.
+            // A snapshot, a copy or a resize is over in a moment, and so is a move that was called off.
+            // Let it finish, then ask again.
             Task {
                 await model.waitForWorkOnMachineFiles()
                 Self.terminate()

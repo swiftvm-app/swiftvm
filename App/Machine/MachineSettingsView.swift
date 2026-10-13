@@ -9,7 +9,11 @@ struct MachineSettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var sshAlias = ""
     @State private var sshUser = ""
+    @State private var sshPort = ""
+    /// What is wrong with the SSH name or port that was typed, while something is.
+    @State private var sshProblem: String?
     @State private var isResizingDisk = false
 
     private var configuration: VMConfiguration { machine.configuration }
@@ -52,8 +56,10 @@ struct MachineSettingsView: View {
                 }
                 Spacer()
                 Button("Done") {
-                    commitTextFields()
-                    dismiss()
+                    // What can't be saved as it is typed stays on the screen to be put right.
+                    if commitTextFields() {
+                        dismiss()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -62,11 +68,13 @@ struct MachineSettingsView: View {
         .frame(width: 560, height: 640)
         .onAppear {
             name = configuration.name
+            sshAlias = configuration.ssh.alias
             sshUser = configuration.ssh.user
+            sshPort = String(configuration.ssh.port)
         }
         // In a window of their own the settings can be closed without Done. What was typed is kept all
-        // the same.
-        .onDisappear(perform: commitTextFields)
+        // the same, as far as it can be.
+        .onDisappear { commitTextFields() }
     }
 
     // MARK: Sections
@@ -74,18 +82,44 @@ struct MachineSettingsView: View {
     private var generalSection: some View {
         Section("General") {
             TextField("Name", text: $name)
-                .onSubmit(commitTextFields)
+                .onSubmit { commitTextFields() }
             LabeledContent("System", value: configuration.os.summary)
             LabeledContent("Location") {
-                Button((machine.bundle.url.path as NSString).abbreviatingWithTildeInPath) {
-                    model.revealInFinder(machine)
+                HStack {
+                    Button(machine.bundle.url.abbreviatedPath) {
+                        model.revealInFinder(machine)
+                    }
+                    .buttonStyle(.link)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help("Show in Finder")
+                    if machine.activity == .moving {
+                        // To another disk the machine is copied, which takes as long as its disks are full.
+                        ProgressView(value: machine.activityProgress)
+                            .controlSize(.small)
+                            .frame(width: 64)
+                            .accessibilityLabel("Moving the virtual machine")
+                        Button("Cancel") { model.cancelMove(of: machine) }
+                    } else {
+                        Button("Move…", action: chooseLocation)
+                            .disabled(machine.state != .stopped || machine.activity != nil)
+                            .help(machine.state == .stopped
+                                ? "Move the virtual machine to another folder or disk"
+                                : "Shut down the virtual machine to move it")
+                    }
                 }
-                .buttonStyle(.link)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help("Show in Finder")
             }
         }
+    }
+
+    /// Asks for the folder to move the machine into, and moves it there.
+    private func chooseLocation() {
+        let current = machine.bundle.url.deletingLastPathComponent()
+        guard let folder = FolderPanel.choose(
+            message: "Choose the folder to move “\(machine.name)” into. On another disk this copies the virtual machine, which can take a while.",
+            prompt: "Move", startingAt: current
+        ) else { return }
+        model.moveReportingErrors(machine, to: folder)
     }
 
     private var resourcesSection: some View {
@@ -174,8 +208,13 @@ struct MachineSettingsView: View {
                 Text("This virtual machine has no network interface.")
                     .foregroundStyle(.secondary)
             }
+            TextField("SSH Name", text: $sshAlias)
+                .onSubmit { commitTextFields() }
+                .help("The name that ssh and swiftvm reach this virtual machine by")
             TextField("SSH User", text: $sshUser, prompt: Text(NSUserName()))
-                .onSubmit(commitTextFields)
+                .onSubmit { commitTextFields() }
+            TextField("SSH Port", text: $sshPort, prompt: Text("22"))
+                .onSubmit { commitTextFields() }
             if let command = model.sshCommand(for: machine) {
                 LabeledContent("Connect") {
                     Text(command)
@@ -186,7 +225,9 @@ struct MachineSettingsView: View {
         } header: {
             Text("Network and SSH")
         } footer: {
-            if !model.isSSHIncludeInstalled {
+            if let sshProblem {
+                Text(sshProblem).foregroundStyle(.red)
+            } else if !model.isSSHIncludeInstalled {
                 Text("Turn on “Add machines to ~/.ssh/config” in SwiftVM Settings to connect with just “ssh \(configuration.ssh.alias)”.")
             }
         }
@@ -217,6 +258,14 @@ struct MachineSettingsView: View {
             Toggle("Sound Output", isOn: binding(\.audio.outputEnabled))
             Toggle("Microphone", isOn: binding(\.audio.inputEnabled))
             Toggle("Resize Display with Window", isOn: binding(\.display.automaticallyResizes))
+            if !configuration.display.automaticallyResizes {
+                // A display that doesn't follow the window has a size of its own.
+                Picker("Resolution", selection: resolutionBinding) {
+                    ForEach(DisplayResolution.choices(for: configuration)) { resolution in
+                        Text(resolution.label(for: configuration)).tag(resolution)
+                    }
+                }
+            }
         }
         .disabled(isActive)
     }
@@ -259,16 +308,57 @@ struct MachineSettingsView: View {
         )
     }
 
-    private func commitTextFields() {
+    private var resolutionBinding: Binding<DisplayResolution> {
+        Binding(
+            get: { DisplayResolution(configuration.display) },
+            set: { newValue in
+                update {
+                    $0.display.widthInPixels = newValue.width
+                    $0.display.heightInPixels = newValue.height
+                }
+            }
+        )
+    }
+
+    /// Saves what was typed into the text fields.
+    ///
+    /// - Returns: `false` if something that was typed can't be saved, which the form then says.
+    @discardableResult
+    private func commitTextFields() -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedUser = sshUser.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPort = sshPort.trimmingCharacters(in: .whitespaces)
+        // An empty field is the usual port.
+        let port = trimmedPort.isEmpty ? 22 : UInt16(trimmedPort).flatMap { $0 > 0 ? $0 : nil }
         update { configuration in
             if !trimmedName.isEmpty {
                 configuration.name = trimmedName
             }
             configuration.ssh.user = trimmedUser
+            if let port {
+                configuration.ssh.port = port
+            }
         }
         name = machine.configuration.name
+        sshProblem = nil
+        if port == nil {
+            sshProblem = "The SSH port is a number from 1 to 65535."
+        } else {
+            sshPort = String(machine.configuration.ssh.port)
+        }
+        let typedAlias = sshAlias.trimmingCharacters(in: .whitespaces)
+        if typedAlias.isEmpty {
+            sshAlias = machine.configuration.ssh.alias
+        } else if typedAlias != machine.configuration.ssh.alias {
+            // Only a name that was changed here is made to fit: one that came with a machine from
+            // elsewhere stays as it is for as long as nobody touches it.
+            do {
+                sshAlias = try model.setSSHAlias(typedAlias, for: machine)
+            } catch {
+                sshProblem = error.localizedDescription
+            }
+        }
+        return sshProblem == nil
     }
 
     private func update(_ body: (inout VMConfiguration) -> Void) {
@@ -277,5 +367,45 @@ struct MachineSettingsView: View {
         } catch {
             machine.lastError = VMErrorInfo(title: "Couldn't save the settings", message: error.localizedDescription)
         }
+    }
+}
+
+/// A size for a guest's display that doesn't follow its window.
+struct DisplayResolution: Hashable, Identifiable {
+    var width: Int
+    var height: Int
+
+    var id: Self { self }
+
+    init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+
+    init(_ display: DisplayConfiguration) {
+        self.init(width: display.widthInPixels, height: display.heightInPixels)
+    }
+
+    private static let standard = [
+        (1280, 800), (1440, 900), (1680, 1050), (1920, 1080), (1920, 1200), (2560, 1440), (2560, 1600), (3840, 2160),
+    ].map { DisplayResolution(width: $0.0, height: $0.1) }
+
+    /// A macOS guest draws at twice the size on a display as dense as its own, so its sizes are larger.
+    private static let retina = [
+        (2560, 1600), (2880, 1800), (3360, 2100), (3840, 2160), (3840, 2400), (5120, 2880),
+    ].map { DisplayResolution(width: $0.0, height: $0.1) }
+
+    /// The sizes on offer for a machine, with the one it has, whatever that is.
+    static func choices(for configuration: VMConfiguration) -> [DisplayResolution] {
+        let current = DisplayResolution(configuration.display)
+        let offered = configuration.os.family == .macOS ? retina : standard
+        return offered.contains(current) ? offered : [current] + offered
+    }
+
+    /// `1920 × 1200`, and for a macOS guest on a dense display what it looks like: `2560 × 1600 (looks like 1280 × 800)`.
+    func label(for configuration: VMConfiguration) -> String {
+        let pixels = "\(width) × \(height)"
+        guard configuration.os.family == .macOS, configuration.display.pixelsPerInch >= 200 else { return pixels }
+        return "\(pixels) (looks like \(width / 2) × \(height / 2))"
     }
 }

@@ -59,7 +59,9 @@ implementation today. A second engine for Windows guests would sit next to it.
 
 ## A machine on disk
 
-A machine is a `.swiftvm` package in the library folder.
+A machine is a `.swiftvm` package. New ones go to the library's folder for
+machines, or to a folder that was chosen for them; either may be on another
+disk.
 
 | File | What it holds |
 | --- | --- |
@@ -73,7 +75,23 @@ A machine is a `.swiftvm` package in the library folder.
 | `logs/console.log` | Serial console output |
 
 New machines are built in a staging folder and moved into the library once
-they are complete, so a creation that is cut short leaves nothing behind.
+they are complete, so a creation that is cut short leaves nothing behind. The
+staging folder is next to where the machine is going, so that the finished
+machine never has to be copied from one disk to another. In a folder of the
+user's, the library writes down each package it is putting together and only
+ever clears those: another copy of the app may be at work in the same folder.
+
+`library.json` lists every machine: its path, and a bookmark that finds the
+package again when it has been moved on its disk or the disk is connected
+somewhere else. The bookmark also names the disk, which tells a machine whose
+disk isn't connected from one that was deleted: the first stays listed, with
+its name, SSH name, and addresses kept for it, and the second is forgotten.
+
+A machine that moves to another folder is renamed there if that is on its
+disk. To another disk it is copied into that folder's staging folder, with
+`copyfile` so that disk images stay sparse, and flushed to that disk. The
+original is only removed once the new place is in `library.json`. If that
+can't be written, the move is undone.
 
 ## Starting a machine
 

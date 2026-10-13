@@ -10,7 +10,7 @@ Choose **New Virtual Machine**, and **macOS** as the operating system.
 | Setting | What it is |
 | --- | --- |
 | Version | The latest macOS, downloaded from Apple (about 25 GB), or **Choose Restore Image…** for an IPSW you already have |
-| Hardware | Processors, memory, and disk size. Pick a generous disk: [it can't grow later](disks.md#growing-the-disk) |
+| Hardware | Processors, memory, disk size, and [where the machine is kept](virtual-machines.md#where-machines-are-kept). Pick a generous disk, 64 GB or more: [it can't grow later](disks.md#growing-the-disk) |
 | Account | Full name, account name, and a password |
 | **Log in automatically** | The guest logs in to the account when it starts |
 | **Sign in over SSH with my key** | Installs your SSH key, so `ssh` works without a password |

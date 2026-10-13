@@ -31,7 +31,8 @@ public struct ImageDownloader: Sendable {
         }
     }
 
-    public let cacheDirectory: URL
+    /// Where downloads are kept. Changing it leaves what is there already where it is.
+    public var cacheDirectory: URL
     /// Pause before an interrupted download is picked up again.
     var resumeDelay: Duration = .seconds(2)
     /// The downloads under way. Shared by copies of this value.
