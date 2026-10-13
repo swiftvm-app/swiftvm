@@ -133,6 +133,14 @@ async function build() {
 }
 
 async function main() {
+    // Cloudflare's own builder, which runs this on every push to main for as long as the Worker is
+    // connected to the repository, and would put what it built online. It gets nothing to put there.
+    if (process.env.WORKERS_CI) {
+        throw new Error(
+            'The site goes online from the Deploy Website workflow, not from a push. ' +
+                'Disconnect the Worker from the repository in Cloudflare, under Settings → Builds.',
+        )
+    }
     if (!process.argv.includes('--serve')) {
         const started = performance.now()
         const count = await build()

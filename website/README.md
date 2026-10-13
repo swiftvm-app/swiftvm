@@ -62,13 +62,19 @@ shared, is a capture of the hero at 1200 × 630.
 
 ## Deploying
 
-The site only changes when someone runs **Deploy Website**, under **Actions**
-on GitHub. A push to `main` leaves it as it is, so the pages of `docs/` can
+The site changes at two moments, and at no other:
+
+- When a stable release is published. **Release** ends by building the site
+  from the release's tag, so the documentation online is that of the latest
+  stable version.
+- When someone runs **Deploy Website**, under **Actions** on GitHub. It builds
+  the branch it is run from, or the branch, tag or commit it is given.
+
+A push to `main` leaves the site as it is, so the pages of `docs/` can
 describe what isn't released yet.
 
-The workflow builds the branch or tag it is run from and gives `dist/` to
-Cloudflare, which serves it as a Worker that is nothing but those files.
-`wrangler.jsonc` says so. To set it up:
+The workflow gives `dist/` to Cloudflare, which serves it as a Worker that is
+nothing but those files. `wrangler.jsonc` says so. To set it up:
 
 1. In the Cloudflare dashboard, create an API token from the
    **Edit Cloudflare Workers** template, for the account the site is in.
@@ -85,7 +91,9 @@ Cloudflare, which serves it as a Worker that is nothing but those files.
    **Add → Custom Domain**, and enter `swiftvm.app`.
 
 - Don't connect the Worker to this repository under **Settings → Builds**.
-  Connected, Cloudflare deploys every push to `main` by itself.
+  Connected, Cloudflare builds every push to `main` by itself. The build
+  refuses to run there, so nothing goes online, but every push then shows a
+  failed check from Cloudflare.
 - `.node-version` tells the workflow which Node.js to build with.
 - `src/static/_headers` sets the headers the site's files are sent with.
 

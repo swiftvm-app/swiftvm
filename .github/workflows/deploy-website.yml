@@ -1,13 +1,20 @@
 name: Deploy Website
 
-# Only by hand. A push to main leaves the site as it is, so the pages of docs/ can describe what isn't
-# released yet. It builds the branch or tag it is run from.
+# By hand, or as the last step of a stable release. A push to main leaves the site as it is, so the pages
+# of docs/ can describe what isn't released yet.
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to build the site from"
+        required: true
+        type: string
   workflow_dispatch:
-
-concurrency:
-  group: deploy-website
-  cancel-in-progress: false
+    inputs:
+      ref:
+        description: "Branch, tag or commit to build the site from. Empty: the one this is run from"
+        required: false
+        type: string
 
 jobs:
   deploy:
@@ -16,11 +23,17 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # One deployment at a time, in the order they were asked for.
+    concurrency:
+      group: deploy-website
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: website
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-node@v4
         with:

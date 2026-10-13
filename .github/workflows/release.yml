@@ -177,3 +177,12 @@ jobs:
     with:
       tag: v${{ needs.validate.outputs.version }}
     secrets: inherit
+
+  # The site's documentation is that of the latest stable release: it is built from the release's tag.
+  deploy-website:
+    needs: [validate, release]
+    if: ${{ !inputs.draft }}
+    uses: ./.github/workflows/deploy-website.yml
+    with:
+      ref: v${{ needs.validate.outputs.version }}
+    secrets: inherit

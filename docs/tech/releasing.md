@@ -31,10 +31,12 @@ Both workflows are started by hand, under **Actions** on GitHub.
    as a pre-release. Try that build.
 2. Run **Release** with the beta's tag, the stable version, and the version
    the next betas should count toward. It publishes the release, updates the
-   Homebrew tap, and writes the new `BETA_VERSION` to `main`.
+   Homebrew tap, puts the website online as it is at the release's tag, and
+   writes the new `BETA_VERSION` to `main`.
 
-Neither touches the website. **Deploy Website** puts the pages of `docs/`
-online, and is started by hand too.
+The website changes with a stable release and not with a push to `main` or a
+beta, so its documentation is that of the latest stable version. To change it
+in between, run **Deploy Website**.
 
 ## Workflows
 
@@ -42,11 +44,11 @@ online, and is started by hand too.
 | --- | --- |
 | Checks | On pull requests: builds the app and runs the tests |
 | Release (Beta) | Builds `main` as a beta, publishes a pre-release, and adds it to the beta appcast |
-| Release | Promotes a beta to stable, publishes the release with its appcast, and bumps `BETA_VERSION` |
+| Release | Promotes a beta to stable, publishes the release with its appcast, deploys the website, and bumps `BETA_VERSION` |
 | Update Homebrew Tap | Writes the cask to `swiftvm-app/homebrew-tap`. Runs after a release, or by hand |
 | Republish Beta Appcast | Puts a beta back into the beta appcast |
 | Build Release | The build that both releases share |
-| Deploy Website | Builds [the website](../../website/README.md) from the branch or tag it is run from and puts it online. Only by hand |
+| Deploy Website | Builds [the website](../../website/README.md) and puts it online. Runs after a release, or by hand |
 
 The ones that build the app run on GitHub's `xcode-27` image, which has the
 macOS 27 SDK.
