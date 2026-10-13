@@ -49,6 +49,12 @@ struct SwiftVMApp: App {
         }
         .auxiliaryWindow()
 
+        Window("Templates", id: WindowID.templates) {
+            TemplatesView()
+                .environment(model)
+        }
+        .auxiliaryWindow()
+
         // A window like the others rather than a Settings scene: it is opened from the menu bar panel,
         // by the same means as every other window.
         Window("\(AppIdentity.current.name) Settings", id: WindowID.settings) {

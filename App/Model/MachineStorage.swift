@@ -41,55 +41,80 @@ extension AppModel {
         }
         return try await machine.whileStopped(.duplicating) {
             let copyName = name.isEmpty ? nameForCopy(of: machine) : name
-            let alias = uniqueAlias(for: copyName)
-            let configuration = machine.configuration.duplicated(name: copyName, sshAlias: alias)
-            let source = machine.bundle
+            let configuration = machine.configuration.duplicated(name: copyName, sshAlias: uniqueAlias(for: copyName))
             // Next to the original, wherever that is: on its disk the copy shares the original's space,
             // and on another one it would be written out in full.
-            let destination = try library.makeStagingBundleURL(in: source.url.deletingLastPathComponent())
+            return try await makeCopy(of: machine.bundle, configuration: configuration, in: machine.bundle.url.deletingLastPathComponent())
+        }
+    }
 
-            // On APFS this takes no time; on another file system it copies every byte of the disks.
-            let copying = Task.detached(priority: .userInitiated) {
-                let copy = try source.duplicate(to: destination, configuration: configuration)
-                do {
-                    switch configuration.os.family {
-                    case .macOS:
-                        try MacOSInstaller.assignNewMachineIdentifier(to: copy)
-                    case .linux where configuration.installation.attachesSeedImage:
-                        // Without this the copy would come up with the original's host name and wait for
-                        // a network card that isn't there.
-                        if FileManager.default.fileExists(atPath: copy.seedImageURL.path) {
-                            try CloudInitSeed.reissue(
-                                at: copy.seedImageURL,
-                                hostName: alias,
-                                macAddress: configuration.networkInterfaces.first?.macAddress
-                            )
-                        }
-                    case .linux, .windows:
-                        // A new identifier is made when the copy first starts.
-                        break
-                    }
-                } catch {
-                    try? FileManager.default.removeItem(at: copy.url)
-                    throw error
+    /// Makes a machine of its own from the disks and firmware in `source`, which is a machine's bundle
+    /// or a template's: copies them into a new bundle, gives the copy what tells it from the original,
+    /// and adds it to the library. Cancelling the task stops the copying, and leaves nothing behind.
+    ///
+    /// - Parameters:
+    ///   - configuration: The copy's, with an identifier, a name and an SSH alias of its own.
+    ///   - folder: Where to keep the copy. `nil` is the folder for new machines.
+    ///   - diskCapacity: The size to grow the copy's disk to, which `configuration` has for it already.
+    ///   - progress: Called with how far the copying has come, from 0 to 1, where it takes time.
+    func makeCopy(
+        of source: VMBundle, configuration: VMConfiguration, in folder: URL?, growingDiskTo diskCapacity: UInt64? = nil,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> VirtualMachine {
+        let alias = configuration.ssh.alias
+        let destination = try library.makeStagingBundleURL(in: folder)
+
+        // On APFS this takes no time; on another file system it copies every byte of the disks.
+        let copying = Task.detached(priority: .userInitiated) {
+            let copy = try source.duplicate(
+                to: destination, configuration: configuration, progress: progress, isCancelled: { Task.isCancelled }
+            )
+            do {
+                if let diskCapacity, let disk = configuration.systemDisk {
+                    try DiskService.growDisk(at: copy.diskURL(for: disk), format: disk.format, to: diskCapacity)
                 }
-                return copy
-            }
-            let copy: VMBundle
-            do {
-                copy = try await copying.value
+                switch configuration.os.family {
+                case .macOS:
+                    try MacOSInstaller.assignNewMachineIdentifier(to: copy)
+                case .linux where configuration.installation.attachesSeedImage:
+                    // Without this the copy would come up with the original's host name and wait for
+                    // a network card that isn't there.
+                    if FileManager.default.fileExists(atPath: copy.seedImageURL.path) {
+                        try CloudInitSeed.reissue(
+                            at: copy.seedImageURL,
+                            hostName: alias,
+                            macAddress: configuration.networkInterfaces.first?.macAddress
+                        )
+                    }
+                case .linux, .windows:
+                    // A new identifier is made when the copy first starts.
+                    break
+                }
             } catch {
-                library.discard(staged: VMBundle(url: destination))
+                try? FileManager.default.removeItem(at: copy.url)
                 throw error
             }
+            return copy
+        }
+        let copy: VMBundle
+        do {
+            copy = try await withTaskCancellationHandler {
+                try await copying.value
+            } onCancel: {
+                copying.cancel()
+            }
+            try Task.checkCancellation()
+        } catch {
+            library.discard(staged: VMBundle(url: destination))
+            throw error
+        }
 
-            sshWriter.forgetHostKey(for: alias)
-            do {
-                return try addToLibrary(staged: copy)
-            } catch {
-                library.discard(staged: copy)
-                throw error
-            }
+        sshWriter.forgetHostKey(for: alias)
+        do {
+            return try addToLibrary(staged: copy)
+        } catch {
+            library.discard(staged: copy)
+            throw error
         }
     }
 

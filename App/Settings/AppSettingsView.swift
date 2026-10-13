@@ -9,7 +9,7 @@ struct AppSettingsView: View {
     /// The link is being installed or removed, possibly with a password dialog on the screen.
     @State private var isChangingTool = false
     @State private var toolProblem: String?
-    /// Why a folder that was chosen for machines or downloads can't be used.
+    /// Why a folder that was chosen for machines, templates or downloads can't be used.
     @State private var storageProblem: String?
 
     var body: some View {
@@ -61,6 +61,12 @@ struct AppSettingsView: View {
                 change: model.setMachinesDirectory
             )
             folderRow(
+                "Templates", folder: model.templates.directory,
+                isDefault: model.templates.directory.path == model.templates.defaultDirectory.path,
+                message: "Choose the folder that templates are kept in.",
+                change: model.setTemplatesDirectory
+            )
+            folderRow(
                 "Downloaded Images", folder: model.downloader.cacheDirectory,
                 isDefault: model.isUsingDefaultDownloadsDirectory,
                 message: "Choose the folder that downloaded Linux images and macOS restore images are kept in.",
@@ -72,12 +78,12 @@ struct AppSettingsView: View {
             if let storageProblem {
                 Text(storageProblem).foregroundStyle(.red)
             } else {
-                Text("Either folder can be on another disk. Virtual machines and downloads that are there already stay where they are. To move a virtual machine, use Move… in its settings.")
+                Text("Each folder can be on another disk. Virtual machines, templates and downloads that are there already stay where they are. To move a virtual machine, use Move… in its settings.")
             }
         }
     }
 
-    /// One of the two folders: where it is, which opens it in the Finder, and the way to another one.
+    /// One of the folders: where it is, which opens it in the Finder, and the way to another one.
     ///
     /// - Parameter change: Takes the folder that was chosen, or `nil` for the default one.
     private func folderRow(

@@ -675,7 +675,7 @@ public final class VMLibrary {
 }
 
 /// Says across threads that a copy is to stop.
-private final class CancellationFlag: @unchecked Sendable {
+final class CancellationFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false
 

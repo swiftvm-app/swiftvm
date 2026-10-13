@@ -26,6 +26,7 @@ swiftvm info web-server      # one machine in detail
 | `list` | List virtual machines |
 | `info <machine>` | Show one machine in detail |
 | `create <system> [options]` | Create a machine and wait until it is ready |
+| `create --template <template> [options]` | Create a machine from a [template](templates.md#creating-a-machine-from-one) |
 | `clone <machine> [name]` | Copy a machine that is shut down |
 | `move <machine> <folder>` | Move a machine that is shut down to [another folder or disk](virtual-machines.md#where-machines-are-kept), and wait until it is there |
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
@@ -36,7 +37,7 @@ swiftvm info web-server      # one machine in detail
 `debian-13`.
 
 `swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
-SwiftVM's [templates](setup-scripts.md#templates), and
+SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 [your own](setup-scripts.md#your-own-scripts). With a Linux image, as in
 `swiftvm scripts debian-13`, it lists those for that image.
 
@@ -56,6 +57,10 @@ SwiftVM's [templates](setup-scripts.md#templates), and
 | `--script <file>` | The same with a file, by its path: `./mine.sh` |
 | `--script … --script …` | Several, which run in that order |
 | `--no-start` | Don't start the machine when it is ready |
+
+With `--template`, the machine keeps the template's system and account, and
+only `--name`, `--cpus`, `--memory`, `--disk`, `--location`, and `--no-start`
+apply. `--disk` then grows the disk beyond the template's.
 
 ## Power
 
@@ -124,6 +129,18 @@ See [Automation](automation.md).
 | `rename-snapshot <machine> <snapshot> <new name>` | Rename one |
 | `delete-snapshot <machine> <snapshot>` | Delete one |
 
+## Templates
+
+| Command | What it does |
+| --- | --- |
+| `templates` | List [templates](templates.md) |
+| `save-template <machine> [name]` | Save a machine that is shut down as a template. `--snapshot <snapshot>` saves it as it was at a snapshot taken while it was shut down |
+| `create --template <template> [options]` | Create a machine from a template |
+| `rename-template <template> <new name>` | Rename one |
+| `delete-template <template>` | Move one to the Trash. Machines made from it stay as they are |
+
+`<template>` is a template's name, or its ID from `swiftvm templates`.
+
 ## Quitting
 
 `swiftvm quit` quits the app. It never asks anything, so it refuses while a
@@ -140,6 +157,8 @@ swiftvm move web-server /Volumes/External/Machines
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80
 swiftvm snapshot web-server "Before upgrade"
+swiftvm save-template web-server "Web Base"         # while it is shut down
+swiftvm create --template "Web Base" --name "Web 2"
 swiftvm ssh web-server
 swiftvm exec web-server --root -- apt-get install -y nginx
 swiftvm cp ./site web-server:/var/www

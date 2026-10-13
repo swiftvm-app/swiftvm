@@ -61,27 +61,83 @@ public struct VMBundle: Sendable, Hashable {
 
     // MARK: Duplicating
 
+    /// A file that goes into a copy of a machine, and where it is taken from.
+    struct PortableFile: Sendable {
+        /// Its name in a bundle.
+        let name: String
+        let url: URL
+    }
+
+    /// The files a copy of this machine is made of: its disks, its firmware and its first-boot data, as
+    /// they are now or, with `snapshot`, as they were then. What makes this machine itself is not among
+    /// them: its identifier, saved memory, snapshots and logs.
+    func portableFiles(for configuration: VMConfiguration, at snapshot: VMSnapshot? = nil) -> [PortableFile] {
+        // What a snapshot holds of the machine. The rest never changes, and is in the bundle itself.
+        let state = Set(
+            configuration.disks.filter { !$0.readOnly }.map(\.fileName)
+                + [auxiliaryStorageURL, efiVariableStoreURL].map(\.lastPathComponent)
+        )
+        let names = configuration.disks.map(\.fileName) + [
+            auxiliaryStorageURL, hardwareModelURL, efiVariableStoreURL, seedImageURL,
+        ].map(\.lastPathComponent)
+        return names
+            .map { name in
+                let folder = snapshot.flatMap { state.contains(name) ? snapshotURL(for: $0.id) : nil } ?? url
+                return PortableFile(name: name, url: folder.appending(path: name))
+            }
+            .filter { FileManager.default.fileExists(atPath: $0.url.path) }
+    }
+
     /// Copies this machine's disks and firmware into a new bundle at `destination`, for the machine that
     /// `configuration` describes. On APFS the copies share their blocks with the originals.
     ///
     /// What makes this machine itself stays behind: its identifier, saved memory, snapshots and logs. The
     /// copy needs an identifier of its own before it starts.
+    ///
+    /// - Parameters:
+    ///   - progress: Called on the copying thread with how far the copy has come, from 0 to 1, where
+    ///     the files have to be written out.
+    ///   - isCancelled: Asked while copying. Once it says yes the copy stops with a `CancellationError`.
     @discardableResult
-    public func duplicate(to destination: URL, configuration: VMConfiguration) throws -> VMBundle {
+    public func duplicate(
+        to destination: URL, configuration: VMConfiguration, progress: (@Sendable (Double) -> Void)? = nil,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) throws -> VMBundle {
         let copy = try VMBundle.create(at: destination, configuration: configuration)
-        let fileManager = FileManager.default
-        let fileNames = configuration.disks.map(\.fileName) + [
-            auxiliaryStorageURL, hardwareModelURL, efiVariableStoreURL, seedImageURL,
-        ].map(\.lastPathComponent)
         do {
-            for fileName in fileNames where fileManager.fileExists(atPath: url.appending(path: fileName).path) {
-                try fileManager.copyItem(at: url.appending(path: fileName), to: copy.url.appending(path: fileName))
-            }
+            try Self.copy(portableFiles(for: configuration), into: copy.url, progress: progress, isCancelled: isCancelled)
         } catch {
-            try? fileManager.removeItem(at: copy.url)
+            try? FileManager.default.removeItem(at: copy.url)
             throw error
         }
         return copy
+    }
+
+    /// Copies `files` into `folder`, which has none of them yet. On a disk that can, a copy shares its
+    /// blocks with the original and takes no time. Anywhere else the files are written out, which takes
+    /// as long as they are full: a disk image's empty space stays empty, as it does when a machine moves
+    /// (``copy(to:cloning:progress:isCancelled:)``).
+    static func copy(
+        _ files: [PortableFile], into folder: URL, progress: (@Sendable (Double) -> Void)? = nil,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) throws {
+        let total = files.reduce(UInt64(0)) { total, file in
+            let values = try? file.url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+            return total + UInt64(max(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0, 0))
+        }
+        let tracker = CopyTracker(total: total, progress: progress, isCancelled: isCancelled)
+        let flags = COPYFILE_ALL | COPYFILE_CLONE | COPYFILE_DATA_SPARSE
+        for file in files {
+            // A file that shares its blocks is there at once, with nobody asked in between.
+            let code = isCancelled()
+                ? ECANCELED
+                : copyItem(at: file.url, to: folder.appending(path: file.name), flags: flags, tracker: tracker)
+            if let code {
+                throw code == ECANCELED ? CancellationError() : POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            }
+            tracker.finishFile()
+        }
+        progress?(1)
     }
 
     // MARK: Moving to another disk
@@ -121,6 +177,32 @@ public struct VMBundle: Sendable, Hashable {
             throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: copy.url.path])
         }
         let tracker = CopyTracker(total: totalAllocatedSize, progress: progress, isCancelled: isCancelled)
+        var flags = COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_DATA_SPARSE
+        if cloning {
+            flags |= COPYFILE_CLONE
+        }
+        if let code = Self.copyItem(at: url, to: copy.url, flags: flags, tracker: tracker) {
+            try? FileManager.default.removeItem(at: copy.url)
+            if code == ECANCELED {
+                throw CancellationError()
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        do {
+            try copy.flushToDisk()
+        } catch {
+            try? FileManager.default.removeItem(at: copy.url)
+            throw error
+        }
+        progress?(1)
+        return copy
+    }
+
+    /// Copies the file or folder at `source` to `destination` with `copyfile`, which tells `tracker` how
+    /// far it has come and asks it whether to go on.
+    ///
+    /// - Returns: What went wrong, as an `errno`, or `nil`.
+    private static func copyItem(at source: URL, to destination: URL, flags: Int32, tracker: CopyTracker) -> Int32? {
         let state = copyfile_state_alloc()
         defer { copyfile_state_free(state) }
         let callback: copyfile_callback_t = { what, stage, state, _, _, context in
@@ -147,32 +229,12 @@ public struct VMBundle: Sendable, Hashable {
         }
         copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CB), unsafeBitCast(callback, to: UnsafeRawPointer.self))
         copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CTX), Unmanaged.passUnretained(tracker).toOpaque())
-
-        var flags = COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_DATA_SPARSE
-        if cloning {
-            flags |= COPYFILE_CLONE
-        }
-        let result = withExtendedLifetime(tracker) { copyfile(url.path, copy.url.path, state, copyfile_flags_t(flags)) }
-        let code = tracker.failure ?? (result == 0 ? nil : errno)
-        if let code {
-            try? FileManager.default.removeItem(at: copy.url)
-            if code == ECANCELED {
-                throw CancellationError()
-            }
-            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
-        }
-        do {
-            try copy.flushToDisk()
-        } catch {
-            try? FileManager.default.removeItem(at: copy.url)
-            throw error
-        }
-        progress?(1)
-        return copy
+        let result = withExtendedLifetime(tracker) { copyfile(source.path, destination.path, state, copyfile_flags_t(flags)) }
+        return tracker.failure ?? (result == 0 ? nil : errno)
     }
 
     /// Has every file of the bundle written out to its disk, rather than waiting in memory to be.
-    private func flushToDisk() throws {
+    func flushToDisk() throws {
         guard let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) else { return }
         for case let file as URL in files where (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
             let descriptor = open(file.path, O_RDONLY)
@@ -220,7 +282,7 @@ public struct VMBundle: Sendable, Hashable {
     }()
 }
 
-/// Keeps count for ``VMBundle/copy(to:cloning:progress:isCancelled:)``. Only the copying thread uses it.
+/// Keeps count for a copy that ``VMBundle`` makes with `copyfile`. Only the copying thread uses it.
 private final class CopyTracker {
     /// What the bundle occupies, which is about what there is to copy: empty space is skipped.
     private let total: UInt64

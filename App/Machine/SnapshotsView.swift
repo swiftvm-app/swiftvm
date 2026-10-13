@@ -6,6 +6,7 @@ import VMCore
 struct SnapshotsView: View {
     let machine: VirtualMachine
 
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var newName = ""
     @State private var snapshotPendingRevert: VMSnapshot?
@@ -146,6 +147,13 @@ struct SnapshotsView: View {
                             snapshotBeingRenamed = snapshot
                         }
                         Button("Revert…") { snapshotPendingRevert = snapshot }
+                        // Only what a machine has on its disk when it is shut down makes a template:
+                        // the memory of a guest that was running belongs to this machine alone.
+                        Button("Save as Template") { model.saveTemplateReportingErrors(of: machine, at: snapshot) }
+                            .disabled(snapshot.includesMemory)
+                            .help(snapshot.includesMemory
+                                ? "Only a snapshot that was taken while the virtual machine was shut down can be saved as a template"
+                                : "Save the virtual machine as it was then, to make new virtual machines from")
                         Divider()
                         Button("Delete…", role: .destructive) { snapshotPendingDeletion = snapshot }
                     }

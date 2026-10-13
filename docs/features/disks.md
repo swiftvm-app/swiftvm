@@ -51,9 +51,11 @@ swiftvm eject web-server data.img
 
 ## Copies and snapshots
 
-[Duplicates](virtual-machines.md#duplicating) and
-[snapshots](snapshots.md) are instant because APFS shares the unchanged parts
-of the disk. On a volume with another file system they are full copies.
+[Duplicates](virtual-machines.md#duplicating),
+[templates](templates.md), and [snapshots](snapshots.md) are instant because
+APFS shares the unchanged parts of the disk. On a volume with another file
+system they are full copies, and so is a template that is kept on another disk
+than its machine.
 
 A machine that [moves to another disk](virtual-machines.md#where-machines-are-kept)
 takes its snapshots along. They are copied in full then, since two disks can't

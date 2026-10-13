@@ -49,6 +49,9 @@ Not yet supported: Windows guests, and Intel Macs.
   and won't suspend a running machine for a snapshot on a locked Mac.
 - A resumed guest thinks no time has passed. macOS corrects itself in seconds;
   Linux needs the guest agent.
+- Saved memory only fits the machine it was saved in: the same hardware, down
+  to the address of its network card. A duplicate or a template is made from a
+  machine that is shut down, and leaves saved memory behind.
 - macOS guests answer the power button with a question on their screen. Only
   the guest agent shuts them down unattended.
 - A shutdown request sent during startup is lost, so it is repeated for Linux

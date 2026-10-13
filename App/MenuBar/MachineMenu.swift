@@ -11,6 +11,8 @@ struct MachineMenu: View {
     var onOpen: (() -> Void)?
     let onSettings: () -> Void
     let onSnapshots: () -> Void
+    /// Saves the machine as a template, and shows the window that lists it.
+    let onSaveTemplate: () -> Void
     /// `nil` hides the item.
     var onDelete: (() -> Void)?
 
@@ -26,6 +28,8 @@ struct MachineMenu: View {
         Button("Settings…", systemImage: "slider.horizontal.3", action: onSettings)
         Button("Snapshots…", systemImage: "clock.arrow.circlepath", action: onSnapshots)
         Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicateReportingErrors(machine) }
+            .disabled(machine.state != .stopped || machine.activity != nil)
+        Button("Save as Template", systemImage: "square.on.square.dashed", action: onSaveTemplate)
             .disabled(machine.state != .stopped || machine.activity != nil)
 
         Divider()

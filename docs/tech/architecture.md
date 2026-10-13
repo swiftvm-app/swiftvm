@@ -44,7 +44,7 @@ flowchart TB
 | Module | Role |
 | --- | --- |
 | `App/` | The SwiftUI app: the menu bar panel, the windows, and the model behind them |
-| `VMCore` | What a machine is: its configuration, its package on disk, the library, snapshots, the serial console, USB rules. Knows no engine |
+| `VMCore` | What a machine is: its configuration, its package on disk, the library, snapshots, templates, the serial console, USB rules. Knows no engine |
 | `VZEngine` | Runs machines on the Virtualization framework, and installs macOS |
 | `VMNetworking` | The shared network, address reservations, and the port relay |
 | `SSHIntegration` | SSH names, keys, and the generated SSH configuration |
@@ -214,8 +214,8 @@ bytes on between the two connections.
 ## Setup scripts
 
 A [setup script](../features/setup-scripts.md) is one file with a comment
-header. One catalog is the only place scripts come from: the templates, which
-are scripts inside the app, and the files in the user's folder,
+header. One catalog is the only place scripts come from: the built-in
+scripts, which are inside the app, and the files in the user's folder,
 `~/.config/swiftvm/setup-scripts`. A list fetched from elsewhere has one place
 to join. The app and the command line show the same list, by kind.
 
@@ -265,6 +265,33 @@ sequenceDiagram
 - Going back copies the snapshot's files next to the machine's first, then
   swaps them in. If that is cut short, the machine never ends up with memory
   saved next to a disk it doesn't belong to.
+
+## Templates
+
+A template is a `.swiftvmtemplate` package in the folder for templates, which
+can be on another disk.
+
+| File | What it holds |
+| --- | --- |
+| `template.json` | The template's name, and the configuration of the machine it was saved from |
+| `disk.img`, `disk.asif` | The disk |
+| `efi-vars.fd`, `aux.img`, `hardware-model.bin` | Firmware state |
+| `seed.iso` | Linux Quick Create: the first-boot setup data |
+
+- The files are those a copy of a machine is made of, under the names they
+  have in a machine's package. So a machine is made from a template the way a
+  duplicate is made from a machine: the files are copied into a staging
+  folder, the copy gets an identity of its own, and it joins the library.
+- What makes a machine itself is left out: its identifier, saved memory,
+  snapshots, and logs.
+- Files are copied with `copyfile`. On the same APFS disk that is a clone. To
+  another disk the data is written out, and empty space stays empty.
+- A template is written under a hidden name, flushed to its disk, and renamed
+  when it is complete. The library writes down each package it is writing, in
+  `templates.json`, and clears what a save left behind that was cut short.
+- From a snapshot, the disk and the firmware state come from the snapshot's
+  folder, and the rest from the machine's package. Nothing writes to a
+  snapshot, so the machine can be running meanwhile.
 
 ## The app in the menu bar
 
