@@ -4,15 +4,19 @@
 its screen, and use its mouse and keyboard. It is made for scripts and for AI
 agents, which get a machine of their own to work in instead of your Mac.
 
-All of it goes through the [guest tools](guest-tools.md), over the machine's
-own socket device. The guest needs no network and no SSH key for it.
+Most of it goes through the [guest tools](guest-tools.md), over the machine's
+own socket device. The guest needs no network and no SSH key for it. The
+screen, the mouse, and the keyboard of a macOS guest are the machine's own:
+SwiftVM reads the display and presses the keys itself, and the guest isn't
+asked.
 
 ## Getting ready
 
 ```bash
 swiftvm start desk
 swiftvm wait desk               # until the guest tools answer
-swiftvm info desk               # the Automation line says what they do
+swiftvm info desk               # the Automation line says what works
+swiftvm allow-accessibility desk --password '…'   # a macOS guest, once: for ui tree
 ```
 
 Guest tools that came with an older SwiftVM do none of this.
@@ -23,10 +27,10 @@ or newer for it, which every system SwiftVM sets up has.
 
 | | Linux | macOS |
 | --- | --- | --- |
-| `exec`, `cp` | Yes | Yes |
-| `screenshot` | Any desktop, the login screen, and the console | Once someone is logged in, and [macOS allows it](#macos-guests) |
+| `exec`, `cp` | With the guest tools | With the guest tools |
+| `screenshot` | With the guest tools: any desktop, the login screen, and the console | Always: whatever the display shows, also the login screen and a locked screen |
 | `ui` mouse and keyboard | The same | The same |
-| `ui tree`, `press`, `set`, `focus` | A desktop that someone is logged in to | The same |
+| `ui tree`, `press`, `set`, `focus` | A desktop that someone is logged in to | The same, once [macOS allows it](#macos-guests) |
 
 ## Commands
 
@@ -94,10 +98,13 @@ swiftvm screenshot desk -        # to standard output
 Without a file name the picture goes to the current folder, and `swiftvm`
 prints where.
 
-- In a Linux guest the mouse pointer isn't in the picture.
+- The mouse pointer isn't in the picture.
 - A desktop turns the display off after a while without input, and locks the
   screen. A screenshot then says that the display is off: wake it with
   `swiftvm ui <machine> key shift`, and look again before you type.
+- A macOS guest's screen can be looked at, clicked on, and typed into in any
+  state: without the guest tools, before anyone is logged in, while it is
+  locked.
 
 ## Mouse and keyboard
 
@@ -118,12 +125,15 @@ swiftvm ui desk key ctrl+c
   `PageDown`, the arrows `Up` `Down` `Left` `Right`, `F1` to `F12`, any single
   character, and `ctrl`, `shift`, `alt`, `super` to hold. `cmd` and `super`
   are one key. Several keys in one command are pressed one after the other.
-- In a Linux guest, `type` presses the keys of a US keyboard. A guest set to
-  another layout gets other characters, and text beyond those keys isn't
-  typed: put it into a text field with [`ui set`](#what-is-on-the-screen).
-  A macOS guest takes any text.
-- Linux guests take all of this at the login screen too, so a script can sign
-  in.
+- `type` presses the keys of a US keyboard. A guest set to another layout
+  gets other characters.
+- Text beyond those keys isn't typed in a Linux guest: put it into a text
+  field with [`ui set`](#what-is-on-the-screen). In a macOS guest the guest
+  tools type it, once [macOS allows it](#macos-guests).
+- All of this works at the login screen too, so a script can sign in.
+- `scroll` goes the way it says in a macOS guest, whichever way the guest is
+  set to scroll. Without the guest tools it takes the guest to scroll the way
+  macOS comes: **Natural scrolling** on.
 
 ## What is on the screen
 
@@ -176,17 +186,36 @@ swiftvm ui desk focus 10345/0/3/1
 
 ## macOS guests
 
-macOS asks whoever sits at the screen before a program may record it, or use
-its mouse and keyboard. Nothing can say yes for you, so each macOS guest needs
-this once:
+`screenshot`, and the mouse and keyboard of `ui`, need nothing in the guest:
+no guest tools, no login, and nothing allowed.
 
-1. Log in at the guest's screen.
-2. Run `swiftvm screenshot <machine>` and `swiftvm ui <machine> tree`. Both
-   fail the first time, and macOS puts its question on the guest's screen.
-3. In the guest, open **System Settings › Privacy & Security**. Turn on
-   **swiftvm-agent** under **Screen & System Audio Recording**, and under
-   **Accessibility**.
-4. Run the commands again.
+The tree is different. macOS asks whoever sits at the screen before a program
+may read what others show there, and the guest tools are such a program. Each
+macOS guest has to allow it once:
+
+```bash
+swiftvm allow-accessibility desk --password 'the account password'
+```
+
+SwiftVM gives the answer the way a person at the guest's screen would, with
+the machine's own mouse and keyboard. It opens System Settings in the guest,
+turns on the switch for **swiftvm-agent**, and types the password where macOS
+asks for it. Then it closes System Settings again.
+
+- It takes a few seconds. The first time, reading the guest's screen can take
+  half a minute.
+- Someone has to be logged in at the guest's screen, and the password has to
+  be that of an administrator there. An account that SwiftVM created is one.
+- Leave the guest's mouse and keyboard alone while it runs.
+- The guest tools have to be version 1.2 or newer. `swiftvm info <machine>`
+  shows the version, and `swiftvm install-tools <machine>` updates them.
+- The password is typed on the machine's keyboard, so it has to be made of
+  what a US keyboard has keys for.
+- A machine that is already allowed is left as it is.
+
+To do it by hand instead, open **System Settings › Privacy & Security › Device
+Control and Data Access** in the guest, which earlier versions call
+**Accessibility**, and turn on **swiftvm-agent**.
 
 A copy of the machine keeps what you allowed. `exec` and `cp` need none of it.
 
@@ -210,7 +239,9 @@ the `swiftvm` that started it.
 
 1. `swiftvm screenshot <machine> shot.png`, and look at it.
 2. `swiftvm ui <machine> tree`, to find a part by name where that is easier
-   than by its place.
+   than by its place. A macOS guest [has to allow](#macos-guests) that first,
+   with `swiftvm allow-accessibility`. The screenshot and the clicks work
+   without.
 3. Act: `press` a part by its `id`, or `click` where the screenshot shows it,
    and `type`.
 4. Take another screenshot to see what happened.

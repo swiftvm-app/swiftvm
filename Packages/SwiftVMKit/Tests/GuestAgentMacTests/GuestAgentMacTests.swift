@@ -94,6 +94,11 @@ private final class PretendDesktop: AgentDesktop, @unchecked Sendable {
         lock.withLock { done.append("\(request.action.rawValue) \(request.element)") }
         return Data("{}".utf8)
     }
+
+    func permission(_ request: GuestJob.Permission) throws -> Data {
+        lock.withLock { done.append("permission \(request.action.rawValue)") }
+        return try JSONEncoder().encode(GuestPermissionState(isAllowed: false, scale: 2, settings: [540, 132, 1480, 1250]))
+    }
 }
 
 /// A clipboard that the test copies to and reads from.
@@ -919,6 +924,15 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(await click.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
         #expect(await click.frame()?.end == .success)
         #expect(desktop.calls == ["screenshot", "click 40,50"])
+
+        // Where its system asks to be allowed is this half's to say: it is the one that is let, or not.
+        let asked = send(.permission(.init(action: .ask)), to: daemon)
+        defer { asked.hangUp() }
+        #expect(await asked.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        let state = await asked.frame().flatMap { try? JSONDecoder().decode(GuestPermissionState.self, from: $0.payload) }
+        #expect(state == GuestPermissionState(isAllowed: false, scale: 2, settings: [540, 132, 1480, 1250]))
+        #expect(await asked.frame()?.end == .success)
+        #expect(desktop.calls.last == "permission ask")
 
         // What macOS hasn't allowed ends the job with what the desktop has to say about it.
         desktop.refusal = "macOS hasn't let the guest tools record this Mac's screen yet."

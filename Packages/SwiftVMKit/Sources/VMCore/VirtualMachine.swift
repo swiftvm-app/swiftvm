@@ -417,6 +417,113 @@ public final class VirtualMachine: Identifiable {
         return connection
     }
 
+    /// Has the guest's agent do `job` to its end, and returns what it put out. For a job that takes
+    /// nothing in and is over in a moment: one that doesn't finish its next frame within `patience`
+    /// is called off.
+    public func collect(_ job: GuestJob, patience: TimeInterval = 30) async throws -> Data {
+        let connection = try await openJob(job)
+        let descriptor = connection.fileDescriptor
+        let name = name
+        let outcome: Result<Data, GuestJobError> = await withCheckedContinuation { continuation in
+            Thread.detachNewThread {
+                // A command is told at once that it has no input coming.
+                if case .exec = job {
+                    JobFrame.write(.input, to: descriptor)
+                }
+                var collected = Data()
+                while true {
+                    guard let frame = try? JobFrame.read(from: descriptor, timeout: patience) else {
+                        continuation.resume(returning: .failure(.noAnswer(name: name)))
+                        return
+                    }
+                    switch frame.kind {
+                    case .output:
+                        guard collected.count + frame.payload.count <= Self.longestCollectedOutput else {
+                            continuation.resume(returning: .failure(.tooLong))
+                            return
+                        }
+                        collected.append(frame.payload)
+                    case .end:
+                        let end = frame.end ?? .success
+                        if let error = end.shownError {
+                            continuation.resume(returning: .failure(.refused(error)))
+                        } else if end.status != 0 {
+                            continuation.resume(returning: .failure(.refused("The guest tools in “\(name)” gave up, without saying why.")))
+                        } else {
+                            continuation.resume(returning: .success(collected))
+                        }
+                        return
+                    case .input, .errorOutput:
+                        break
+                    }
+                }
+            }
+        }
+        // Hanging up is what ends the job on the agent's side.
+        try? connection.close()
+        return try outcome.get()
+    }
+
+    /// The most that a job which is collected may put out: the tree of a screen is the longest.
+    private nonisolated static let longestCollectedOutput = 64 << 20
+
+    // MARK: The machine's own display, mouse and keyboard
+
+    /// Whether this Mac does `job` itself, with the machine's own display, mouse and keyboard, rather
+    /// than have the guest's agent do it.
+    ///
+    /// It does for macOS guests, where an agent would need the say-so of someone at the guest's screen
+    /// first. Text that the machine's keyboard has no keys for is left to an agent that types.
+    public func doesItself(_ job: GuestJob) -> Bool {
+        guard configuration.os.family == .macOS else { return false }
+        switch job {
+        case .screenshot, .pointer:
+            return true
+        case .keys(let keys):
+            return (keys.text ?? "").allSatisfy { MacKeys.press(typing: $0) != nil } || !agent.offers(GuestFeature.input)
+        case .exec, .tree, .element, .permission, .unknown:
+            return false
+        }
+    }
+
+    /// Whether a kind of job, by its ``GuestFeature``, is done in this machine's guest right now: by
+    /// its agent, or by this Mac itself.
+    public func does(_ feature: String) -> Bool {
+        if agent.offers(feature) {
+            return true
+        }
+        return state == .running && configuration.os.family == .macOS && [GuestFeature.screen, GuestFeature.input].contains(feature)
+    }
+
+    /// Does a job this Mac does itself (``doesItself(_:)``), and returns what the job is for: the
+    /// picture of the screen. Like any job, only for a machine that is to be driven from the command line.
+    public func carryOut(_ job: GuestJob) async throws -> Data {
+        guard configuration.automation.isAllowed else { throw GuestJobError.notAllowed(name: name) }
+        guard state == .running, let backend else { throw VMError.notRunning(name: name) }
+        switch job {
+        case .screenshot:
+            return try await backend.screenshot()
+        case .pointer(let request):
+            let turnsWheel = request.action == .scroll ? await guestTurnsWheel() : false
+            try await backend.pointer(request, guestTurnsWheel: turnsWheel)
+        case .keys(let request):
+            try await backend.keys(request)
+        case .exec, .tree, .element, .permission, .unknown:
+            throw MachineDeskError.unavailable
+        }
+        return Data()
+    }
+
+    /// Whether the guest scrolls the other way round than its wheel is turned. macOS does, until
+    /// someone turns that off in its settings, which only the guest can tell: its agent is asked, and
+    /// a guest without one is taken to be as macOS comes.
+    private func guestTurnsWheel() async -> Bool {
+        guard agent.isConnected, agent.offers(GuestFeature.exec) else { return true }
+        let setting = GuestJob.exec(.init(arguments: ["/usr/bin/defaults", "read", "-g", "com.apple.swipescrolldirection"]))
+        guard let said = try? await collect(setting, patience: 5) else { return true }
+        return String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) != "0"
+    }
+
     public func refreshDiskUsage() {
         allocatedDiskSize = bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })
     }

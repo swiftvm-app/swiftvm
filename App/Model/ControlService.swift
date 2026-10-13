@@ -353,6 +353,16 @@ extension AppModel {
             if machine.lastError == nil {
                 return details(machine)
             }
+        case .allowAccessibility:
+            guard let password = request.password, !password.isEmpty else {
+                return .failure("macOS takes this from someone who knows the account's password. Give it with --password <password>.")
+            }
+            do {
+                try await allowAccessibility(on: machine, password: password)
+            } catch {
+                return .failure(Self.explanation(of: error, for: machine))
+            }
+            return details(machine)
         case .wait:
             if let problem = await waitForGuestTools(of: machine, timeout: request.waitTimeout) {
                 return .failure(problem)
@@ -490,6 +500,15 @@ extension AppModel {
                 exec.user = machine.configuration.ssh.user
                 job = .exec(exec)
             }
+            // The screen, the mouse and the keyboard of a macOS guest are the machine's own, and the app
+            // has those: no agent is asked, and nothing in the guest has to allow it.
+            if machine.doesItself(job) {
+                guard machine.configuration.automation.isAllowed else {
+                    return (.failure(Self.explanation(of: GuestJobError.notAllowed(name: machine.name), for: machine)), nil)
+                }
+                guard machine.state == .running else { return (.failure(VMError.notRunning(name: machine.name).localizedDescription), nil) }
+                return (success(machine), { [job] connection in await Self.carryOut(job, in: machine, connection: connection) })
+            }
             do {
                 let guest = try await machine.openJob(job)
                 return (success(machine), { connection in
@@ -509,6 +528,40 @@ extension AppModel {
     /// How long a guest's agent gets to end a job that was called off, before the app closes the line.
     private static let jobCallOffPatience: TimeInterval = 15
 
+    /// Does a job that the app does itself, and tells the tool what came of it the way an agent would:
+    /// what the job is for, and then how it ended.
+    private nonisolated static func carryOut(_ job: GuestJob, in machine: VirtualMachine, connection: Int32) async {
+        let output: Data
+        let end: JobEnd
+        do {
+            output = try await machine.carryOut(job)
+            end = .success
+        } catch {
+            output = Data()
+            end = .failure(await explanation(of: error, for: machine))
+        }
+        // Writing waits for the tool to read, and holds a thread of its own for that.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Thread.detachNewThread {
+                if output.isEmpty || JobFrame.write(.output, output, to: connection) {
+                    JobFrame.write(.end, JobFrame.end(end).payload, to: connection)
+                }
+                // The tool hangs up once it has read how the job ended. Closing before that could
+                // take the end with it. The connection itself is closed by whoever handed it over.
+                shutdown(connection, SHUT_WR)
+                var waiting = pollfd(fd: connection, events: Int16(POLLIN), revents: 0)
+                var rest = [UInt8](repeating: 0, count: 4096)
+                let deadline = Date().addingTimeInterval(5)
+                while deadline.timeIntervalSinceNow > 0 {
+                    let ready = poll(&waiting, 1, Int32(max(deadline.timeIntervalSinceNow, 0) * 1000))
+                    if ready < 0, errno == EINTR { continue }
+                    guard ready > 0, read(connection, &rest, rest.count) > 0 else { break }
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     /// Why a job wasn't started, with what whoever is at the terminal can do about it.
     private static func explanation(of error: any Error, for machine: VirtualMachine) -> String {
         let alias = machine.configuration.ssh.alias
@@ -519,7 +572,9 @@ extension AppModel {
         case .notOffered: "Update them with `swiftvm install-tools \(name)`."
         case .noAnswer, .tooLong, .refused, nil: nil
         }
-        return [error.localizedDescription, advice].compactMap { $0 }.joined(separator: " ")
+        // A guest turns its display off after a while without input, and any key turns it on again.
+        let wakes = error as? MachineDeskError == .nothingShown ? "A key wakes a display that went to sleep: `swiftvm ui \(name) key shift`." : nil
+        return [error.localizedDescription, advice, wakes].compactMap { $0 }.joined(separator: " ")
     }
 
     /// Waits until the guest tools of a machine that is up, or coming up, have answered. Returns what
@@ -943,11 +998,11 @@ extension AppModel {
             // The step a script ended at says nothing once it has come to its end.
             setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) },
             // Of what the agent says it does, the kinds of job this app knows: no other word of a
-            // guest's is passed on.
+            // guest's is passed on. And what the app does itself, with or without an agent.
             automation: configuration.canHaveGuestAgent
                 ? MachineDetails.Automation(
                     isAllowed: configuration.automation.isAllowed,
-                    features: GuestFeature.jobs.filter(machine.agent.offers)
+                    features: GuestFeature.jobs.filter(machine.does)
                 ) : nil
         )
         return ControlResponse(ok: true, machines: [summary])

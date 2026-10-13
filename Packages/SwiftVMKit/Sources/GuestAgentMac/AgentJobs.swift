@@ -95,7 +95,7 @@ final class AgentJobs: @unchecked Sendable {
         switch job {
         case .exec(let exec):
             CommandJob.run(exec, on: descriptor, system: system)
-        case .screenshot, .pointer, .keys, .tree, .element:
+        case .screenshot, .pointer, .keys, .tree, .element, .permission:
             handOver(line, on: descriptor)
         case .unknown(let type):
             GuestJobLine.answer(.refusal("This agent (\(version)) doesn't know what “\(type.prefix(64))” is."), on: descriptor)

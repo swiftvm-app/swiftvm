@@ -110,13 +110,20 @@ Usage: swiftvm <command> [arguments]
   ui <machine> press <element> [--action <name>] | focus <element> | set <element> <text>
                                     Do to one part of the tree, by its id, what a click on it would or
                                     another of its actions, give it the keyboard, or replace its text
+  allow-accessibility <machine> --password <password>
+                                    Have a macOS machine let its guest tools read the screen as a tree,
+                                    for ui tree, press, set and focus. macOS asks someone at its screen
+                                    for that: this turns the switch on in its System Settings and gives
+                                    the account's password, with the machine's own mouse and keyboard
   automation <machine> on|off       Let exec, cp, screenshot and ui work in the machine, or not
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
 <machine> is a name, SSH alias or UUID. <template> is a name or UUID.
 
-exec, cp, screenshot and ui need the guest tools in the machine: swiftvm install-tools.
+exec and cp need the guest tools in the machine: swiftvm install-tools. So do screenshot and ui in a
+Linux machine. A macOS machine's screen, mouse and keyboard need nothing in it. Its tree needs the
+guest tools, and macOS to let them: swiftvm allow-accessibility.
 """
 
 func fail(_ message: String, status: Int32 = 1) -> Never {
@@ -492,6 +499,15 @@ case "automation":
         fail("Usage: swiftvm automation <machine> on|off")
     }
     if let machine = send(ControlRequest(command: .automation, machine: machine, isOn: arguments[1] == "on")).machines.first {
+        printDetails(of: machine)
+    }
+
+case "allow-accessibility":
+    let machine = requireMachine()
+    guard arguments.count == 3, arguments[1] == "--password" else {
+        fail("Usage: swiftvm allow-accessibility <machine> --password <password>")
+    }
+    if let machine = send(ControlRequest(command: .allowAccessibility, machine: machine, password: arguments[2])).machines.first {
         printDetails(of: machine)
     }
 

@@ -170,7 +170,7 @@ final class AgentDaemon: @unchecked Sendable {
             agent: version, system: system.describe(), hostName: system.hostName(),
             features: [
                 GuestFeature.clipboard, GuestFeature.timeZone, GuestFeature.exec, GuestFeature.screen, GuestFeature.input,
-                GuestFeature.accessibility,
+                GuestFeature.accessibility, GuestFeature.permission,
             ]
         )))
         reportAddresses(always: true)

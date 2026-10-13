@@ -8,9 +8,10 @@ import UniformTypeIdentifiers
 /// The desktop of the session the agent runs in: its screen, its mouse and its keyboard.
 ///
 /// macOS asks whoever sits at the screen before a program may record it, and before one may use the
-/// mouse and the keyboard or read what other programs show. Nothing can say yes for them. Until they
-/// have, in System Settings, a job that takes it is answered with what to turn on, and macOS puts its
-/// own question on the screen.
+/// mouse and the keyboard or read what other programs show. Nothing in this system can say yes for
+/// them. The app on the Mac can: it has the machine's own mouse and keyboard, and gives the answer in
+/// System Settings as they would, while this half tells it where on the screen that is
+/// (``permission(_:)``). Until then a job that takes it is answered with what to do.
 struct MacDesktop: AgentDesktop {
     init() {}
 
@@ -97,7 +98,7 @@ struct MacDesktop: AgentDesktop {
         guard AXIsProcessTrusted() else {
             // Puts the system's own question on the screen, the first time.
             _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-            throw AgentFailure("macOS hasn't let the guest tools use this Mac's mouse and keyboard yet, or read what is on its screen. In the guest, turn on swiftvm-agent under System Settings › Privacy & Security › Accessibility, and try again.")
+            throw AgentFailure("macOS hasn't let the guest tools read what is on this Mac's screen yet, or act on it. `swiftvm allow-accessibility <machine> --password <password>`, on the Mac that runs this virtual machine, has it allowed. Or turn on swiftvm-agent in the guest, under System Settings › Privacy & Security › Device Control and Data Access, which earlier versions of macOS call Accessibility.")
         }
     }
 
@@ -199,6 +200,109 @@ struct MacDesktop: AgentDesktop {
         return try JSONEncoder().encode(try ScreenReader.act(on: request))
     }
 
+    // MARK: Being let
+
+    /// The system's settings, where its answer is given.
+    private static let settingsIdentifier = "com.apple.systempreferences"
+    /// The question the system puts on the screen by itself when it is asked.
+    private static let questionIdentifier = "com.apple.accessibility.universalAccessAuthWarn"
+    /// The page of the settings that lists who may read the screen and use the mouse and the keyboard.
+    private static let settingsPage = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    /// The settings were opened by this half, and are its to close again.
+    private static let hasOpenedSettings = Flag()
+
+    func permission(_ request: GuestJob.Permission) throws -> Data {
+        // The system's question leads to the settings and nowhere else, and lies over them.
+        Self.dismissQuestion()
+        switch request.action {
+        case .check:
+            break
+        case .ask:
+            try Self.ask()
+        case .finish:
+            Self.putAway()
+        }
+        return try JSONEncoder().encode(Self.permissionState())
+    }
+
+    private static func ask() throws {
+        guard !AXIsProcessTrusted() else { return }
+        // Asking is what puts this program on the settings' list.
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        dismissQuestion(patience: 3)
+        let wasOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier).isEmpty
+        guard let page = URL(string: settingsPage), NSWorkspace.shared.open(page) else {
+            throw AgentFailure("System Settings couldn't be opened in the guest.")
+        }
+        if !wasOpen {
+            hasOpenedSettings.value = true
+        }
+        let deadline = Date().addingTimeInterval(20)
+        while settingsWindows().isEmpty {
+            guard Date() < deadline else { throw AgentFailure("System Settings didn't open in the guest.") }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        // A window is there before what is in it.
+        Thread.sleep(forTimeInterval: 1.5)
+    }
+
+    private static func putAway() {
+        guard hasOpenedSettings.value else { return }
+        hasOpenedSettings.value = false
+        let settings = NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier)
+        settings.forEach { $0.terminate() }
+        // It doesn't quit while it still has a question of its own in front of its window. Whether it
+        // has gone is asked of the system: nothing here is told when a program ends.
+        func isRunning(_ application: NSRunningApplication) -> Bool { kill(application.processIdentifier, 0) == 0 }
+        let deadline = Date().addingTimeInterval(3)
+        while settings.contains(where: isRunning), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        settings.filter(isRunning).forEach { $0.forceTerminate() }
+    }
+
+    /// Takes the system's own question off the screen, waiting for it to come up for as long as `patience`.
+    private static func dismissQuestion(patience: TimeInterval = 0) {
+        let deadline = Date().addingTimeInterval(patience)
+        while true {
+            let questions = NSRunningApplication.runningApplications(withBundleIdentifier: questionIdentifier)
+            questions.forEach { $0.forceTerminate() }
+            guard questions.isEmpty, Date() < deadline else { return }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    }
+
+    private static func permissionState() -> GuestPermissionState {
+        let scale = (try? screen().scale) ?? 1
+        var state = GuestPermissionState(isAllowed: AXIsProcessTrusted(), scale: scale)
+        let windows = settingsWindows()
+        func pixels(_ window: CGRect) -> [Int] {
+            [window.minX, window.minY, window.width, window.height].map { Int(($0 * scale).rounded()) }
+        }
+        if let window = windows.max(by: { $0.width * $0.height < $1.width * $1.height }) {
+            state.settings = pixels(window)
+            // What the settings put in front of their window is smaller, and comes before it.
+            if let front = windows.first, front != window {
+                state.sheet = pixels(front)
+            }
+        }
+        return state
+    }
+
+    /// The windows of the system's settings that are on the screen, from the front to the back. Where
+    /// windows are is no secret to a program that isn't let see what is in them.
+    private static func settingsWindows() -> [CGRect] {
+        let processes = Set(NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier).map(\.processIdentifier))
+        guard !processes.isEmpty else { return [] }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.compactMap { window in
+            guard window[kCGWindowLayer as String] as? Int == 0, let process = window[kCGWindowOwnerPID as String] as? pid_t,
+                  processes.contains(process), let bounds = window[kCGWindowBounds as String] as? NSDictionary
+            else { return nil }
+            return CGRect(dictionaryRepresentation: bounds)
+        }
+    }
+
     /// The applications that have a window on the screen, the one in front first, and the Dock.
     private static func applications() -> [(process: pid_t, name: String)] {
         var found: [(process: pid_t, name: String)] = []
@@ -220,9 +324,20 @@ private final class Outcome<Value: Sendable>: @unchecked Sendable {
     var result: Result<Value, any Error>?
 }
 
+/// Something that is so or isn't, for the jobs' threads to agree on.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSet = false
+
+    var value: Bool {
+        get { lock.withLock { isSet } }
+        set { lock.withLock { isSet = newValue } }
+    }
+}
+
 // MARK: - The keyboard
 
-/// The keys of a Mac's keyboard, by what is printed on them, and how they are pressed.
+/// How the keys of a Mac's keyboard (``MacKeys``) are pressed in this session.
 enum MacKeyboard {
     /// One press: a key, and the keys that are held down for it.
     struct Press: Equatable {
@@ -235,82 +350,27 @@ enum MacKeyboard {
         var flag: UInt64
     }
 
-    static let returnKey: CGKeyCode = 36
-    static let tabKey: CGKeyCode = 48
+    static let returnKey: CGKeyCode = MacKeys.returnKey
+    static let tabKey: CGKeyCode = MacKeys.tabKey
 
-    private static let command = Modifier(key: 55, flag: CGEventFlags.maskCommand.rawValue)
-    private static let shift = Modifier(key: 56, flag: CGEventFlags.maskShift.rawValue)
-    private static let option = Modifier(key: 58, flag: CGEventFlags.maskAlternate.rawValue)
-    private static let control = Modifier(key: 59, flag: CGEventFlags.maskControl.rawValue)
-
-    private static let modifiers: [String: Modifier] = [
-        "cmd": command, "command": command, "super": command, "meta": command, "win": command,
-        "shift": shift, "alt": option, "option": option, "ctrl": control, "control": control,
-    ]
-
-    private static let named: [String: CGKeyCode] = [
-        "return": 36, "enter": 36, "escape": 53, "esc": 53, "tab": 48, "space": 49, "backspace": 51, "delete": 117, "del": 117,
-        "home": 115, "end": 119, "pageup": 116, "pagedown": 121, "up": 126, "down": 125, "left": 123, "right": 124,
-        "capslock": 57, "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101,
-        "f10": 109, "f11": 103, "f12": 111,
-    ]
-
-    /// Which key of a US keyboard has each character on it, and whether Shift is held for it.
-    private static let characters: [Character: (key: CGKeyCode, shifted: Bool)] = {
-        let plain: [(String, [CGKeyCode])] = [
-            ("asdfhgzxcv", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-            ("bqweryt", [11, 12, 13, 14, 15, 16, 17]),
-            ("123465=97-80]ou[ip", [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]),
-            ("lj'k;\\,/nm.", [37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]),
-            ("`", [50]),
-        ]
-        let shifted: [Character: Character] = [
-            "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")", "-": "_", "=": "+",
-            "[": "{", "]": "}", "\\": "|", ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?", "`": "~",
-        ]
-        var keys: [Character: (key: CGKeyCode, shifted: Bool)] = [:]
-        for (row, codes) in plain {
-            for (character, code) in zip(row, codes) {
-                keys[character] = (code, false)
-                if let other = shifted[character] {
-                    keys[other] = (code, true)
-                }
-            }
+    private static func modifier(_ modifier: MacKeys.Modifier) -> Modifier {
+        let flag: CGEventFlags = switch modifier {
+        case .command: .maskCommand
+        case .shift: .maskShift
+        case .option: .maskAlternate
+        case .control: .maskControl
         }
-        return keys
-    }()
+        return Modifier(key: modifier.key, flag: flag.rawValue)
+    }
 
     /// Reads a press as it is written: `Return`, `cmd+space`, `ctrl+shift+t`.
     static func press(for text: String) throws -> Press {
-        var names = text.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
-        // The plus sign is a key too: alone, or as the last of several.
-        if text == "+" {
-            names = ["+"]
-        } else if names.count > 2, names.suffix(2) == ["", ""] {
-            names = names.dropLast(2) + ["+"]
+        do {
+            let press = try MacKeys.press(for: text)
+            return Press(key: press.key, modifiers: press.modifiers.map(modifier))
+        } catch let problem as MacKeys.NoSuchKey {
+            throw AgentFailure(problem.message)
         }
-        var press = Press(key: nil, modifiers: [])
-        for (position, name) in names.enumerated() {
-            let lowered = name.lowercased()
-            if let modifier = modifiers[lowered] {
-                if !press.modifiers.contains(modifier) {
-                    press.modifiers.append(modifier)
-                }
-            } else if position < names.count - 1 {
-                throw AgentFailure("“\(name.prefix(32))” isn't a key to hold down. Those are cmd, shift, option and ctrl.")
-            } else if let key = named[lowered] {
-                press.key = key
-            } else if lowered.count == 1, let character = lowered.first, let key = characters[character] ?? characters[Character(name)] {
-                // A letter in a shortcut is the key, whichever way it is written.
-                press.key = key.key
-                if characters[Character(name)]?.shifted == true, !press.modifiers.contains(shift) {
-                    press.modifiers.append(shift)
-                }
-            } else {
-                throw AgentFailure("There is no key called “\(name.prefix(32))”.")
-            }
-        }
-        return press
     }
 
     static func press(_ press: Press) {

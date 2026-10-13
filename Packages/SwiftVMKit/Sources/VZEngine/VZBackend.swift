@@ -1,5 +1,6 @@
 import AccessoryAccess
 import AppKit
+import GuestChannel
 import VMCore
 import Virtualization
 
@@ -14,6 +15,8 @@ public final class VZBackend: NSObject, VMBackend {
     /// Creates a fresh attachment when an interface is plugged back in.
     private let attachmentProvider: @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment
     private var view: VZVirtualMachineView?
+    /// The display, the mouse and the keyboard for the app's own use, from when it first asks for them.
+    private var desk: MachineDesk?
     private var capturesSystemKeys: Bool
     /// The interfaces whose cable is out because the user pulled it.
     private var unpluggedInterfaces: Set<UUID>
@@ -53,6 +56,27 @@ public final class VZBackend: NSObject, VMBackend {
         view.automaticallyReconfiguresDisplay = machineConfiguration.display.automaticallyResizes
         self.view = view
         return view
+    }
+
+    private var ownDesk: MachineDesk {
+        if let desk {
+            return desk
+        }
+        let desk = MachineDesk(virtualMachine: virtualMachine)
+        self.desk = desk
+        return desk
+    }
+
+    public func screenshot() async throws -> Data {
+        try await ownDesk.screenshot()
+    }
+
+    public func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+        try await ownDesk.pointer(request, guestTurnsWheel: guestTurnsWheel)
+    }
+
+    public func keys(_ request: GuestJob.Keys) async throws {
+        try await ownDesk.keys(request)
     }
 
     // MARK: Lifecycle
@@ -148,6 +172,8 @@ public final class VZBackend: NSObject, VMBackend {
         }
         view?.virtualMachine = nil
         view = nil
+        desk?.invalidate()
+        desk = nil
     }
 
     public func setSharedFolders(_ folders: [SharedFolder]) throws {

@@ -193,7 +193,9 @@ struct MachineSettingsView: View {
         } header: {
             Text("Automation")
         } footer: {
-            Text("The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
+            Text(configuration.os.family == .macOS
+                ? "The swiftvm command can see the virtual machine's screen and use its mouse and keyboard. With the guest tools in the virtual machine it can also run commands there and copy files."
+                : "The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
         }
     }
 

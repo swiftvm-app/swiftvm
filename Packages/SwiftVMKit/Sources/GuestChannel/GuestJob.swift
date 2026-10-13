@@ -22,6 +22,8 @@ public enum GuestJob: Sendable, Hashable {
     /// What is on the screen as a tree of its parts, in JSON, as the system's accessibility tells it.
     case tree(Tree)
     case element(Element)
+    /// Whether the guest's system lets the agent read the screen as a tree, and what leads there.
+    case permission(Permission)
     /// A kind of job this build doesn't know.
     case unknown(type: String)
 
@@ -138,6 +140,27 @@ public enum GuestJob: Sendable, Hashable {
         }
     }
 
+    /// macOS asks whoever sits at the screen before a program may read what others show there and act
+    /// on it, in its settings and for a password. The app answers for them, with the machine's own
+    /// mouse and keyboard. The agent can't see the screen before it is let, but it knows where the
+    /// windows are, and says so in a ``GuestPermissionState``.
+    public struct Permission: Codable, Sendable, Hashable {
+        public enum Action: String, Codable, Sendable, Hashable, CaseIterable {
+            /// Say how things stand.
+            case check
+            /// Ask the system, and open its settings where the answer is given.
+            case ask
+            /// Put away what asking opened.
+            case finish
+        }
+
+        public var action: Action
+
+        public init(action: Action) {
+            self.action = action
+        }
+    }
+
     /// The ``GuestFeature`` an agent has to offer to be given this job.
     public var feature: String? {
         switch self {
@@ -145,8 +168,29 @@ public enum GuestJob: Sendable, Hashable {
         case .screenshot: GuestFeature.screen
         case .pointer, .keys: GuestFeature.input
         case .tree, .element: GuestFeature.accessibility
+        case .permission: GuestFeature.permission
         case .unknown: nil
         }
+    }
+}
+
+/// What an agent puts out for a ``GuestJob/permission(_:)``, in JSON: how things stand, and where on
+/// the screen the answer is given. Places are in the pixels of a screenshot: left, top, width, height.
+public struct GuestPermissionState: Codable, Sendable, Hashable {
+    /// The system lets the agent read the screen as a tree and act on its parts.
+    public var isAllowed: Bool
+    /// How many pixels of a screenshot make one of the points the system lays its windows out in.
+    public var scale: Double
+    /// The window of the system's settings, if it is on the screen.
+    public var settings: [Int]?
+    /// What the settings have put in front of their window: the question for the password.
+    public var sheet: [Int]?
+
+    public init(isAllowed: Bool, scale: Double = 1, settings: [Int]? = nil, sheet: [Int]? = nil) {
+        self.isAllowed = isAllowed
+        self.scale = scale
+        self.settings = settings
+        self.sheet = sheet
     }
 }
 
@@ -213,6 +257,7 @@ extension GuestJob: Codable {
         case "keys": self = .keys(try Keys(from: decoder))
         case "tree": self = .tree(try Tree(from: decoder))
         case "element": self = .element(try Element(from: decoder))
+        case "permission": self = .permission(try Permission(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -237,6 +282,9 @@ extension GuestJob: Codable {
         case .element(let element):
             try container.encode("element", forKey: .type)
             try element.encode(to: encoder)
+        case .permission(let permission):
+            try container.encode("permission", forKey: .type)
+            try permission.encode(to: encoder)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }
@@ -309,25 +357,37 @@ public struct JobFrame: Sendable, Hashable {
         return true
     }
 
-    /// Reads the next frame, waiting for as long as it takes. Returns `nil` when the other side has
-    /// hung up between two frames, and throws when it did so inside one or sent something that isn't a
-    /// frame. Frames of a kind this build doesn't know are passed over.
-    public static func read(from descriptor: Int32) throws -> JobFrame? {
+    public struct TimedOut: Error {}
+
+    /// Reads the next frame. Returns `nil` when the other side has hung up between two frames, and
+    /// throws when it did so inside one or sent something that isn't a frame. Frames of a kind this
+    /// build doesn't know are passed over. When given, `timeout` covers the whole frame and any passed
+    /// over before it, not just the wait for its first byte.
+    public static func read(from descriptor: Int32, timeout: TimeInterval? = nil) throws -> JobFrame? {
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
-            guard let header = try readExactly(5, from: descriptor, allowingEnd: true) else { return nil }
+            guard let header = try readExactly(5, from: descriptor, allowingEnd: true, deadline: deadline) else { return nil }
             let length = header.dropFirst().reduce(0) { $0 << 8 | Int($1) }
             guard length <= longestAcceptedPayload else { throw Malformed() }
-            guard let payload = try readExactly(length, from: descriptor, allowingEnd: false) else { throw Malformed() }
+            guard let payload = try readExactly(length, from: descriptor, allowingEnd: false, deadline: deadline) else { throw Malformed() }
             if let kind = Kind(rawValue: header[header.startIndex]) {
                 return JobFrame(kind, payload)
             }
         }
     }
 
-    private static func readExactly(_ count: Int, from descriptor: Int32, allowingEnd: Bool) throws -> Data? {
+    private static func readExactly(_ count: Int, from descriptor: Int32, allowingEnd: Bool, deadline: Date?) throws -> Data? {
         var data = Data(count: count)
         var offset = 0
         while offset < count {
+            if let deadline {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else { throw TimedOut() }
+                var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&waiting, 1, Int32(min(remaining * 1000, 60_000).rounded(.up)))
+                if ready < 0, errno != EINTR { throw Malformed() }
+                guard ready > 0 else { continue }
+            }
             let received = data.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress! + offset, count - offset) }
             if received > 0 {
                 offset += received

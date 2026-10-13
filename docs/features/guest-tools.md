@@ -17,7 +17,8 @@ guest has no network.
 | The time zone follows your Mac's, once | No | Yes |
 | [SSH without a network](ssh.md#without-a-network) on older systems | Yes | No |
 | `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes |
-| `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests) |
+| `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Works without the guest tools |
+| `swiftvm` [reads the screen as a tree](automation.md#what-is-on-the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests): `swiftvm allow-accessibility` |
 
 ## Which machines have them
 
@@ -80,7 +81,7 @@ sudo sh /usr/local/lib/swiftvm/install.sh --remove
 | Guest | What |
 | --- | --- |
 | Linux | One Python script and its systemd units |
-| macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard, the screen, the mouse, and the keyboard |
+| macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard and for reading the screen as a tree |
 
 The agent only takes orders from your Mac, and only over the machine's socket
 device. What `swiftvm` may have it do in a guest can be
