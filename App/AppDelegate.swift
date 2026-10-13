@@ -68,8 +68,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard alert.runModal() == .alertFirstButtonReturn else { return stayOpen() }
             model.cancelMoves()
         }
+        let saving = model.machinesBeingSavedAsTemplates
+        if !saving.isEmpty, !model.isQuittingUnattended {
+            // Like a move, a template that is saved on another disk is copied there, and can be called
+            // off at no cost: the machine it is saved from isn't touched.
+            let alert = NSAlert()
+            alert.messageText = saving.count == 1
+                ? "“\(saving[0].name)” is still being saved as a template."
+                : "\(saving.count) virtual machines are still being saved as templates."
+            alert.informativeText = "If you quit now, the template isn't saved. The virtual machine stays as it is."
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return stayOpen() }
+            model.cancelTemplateSaves()
+        }
         if model.isWorkingOnMachineFiles {
-            // A snapshot, a copy or a resize is over in a moment, and so is a move that was called off.
+            // A snapshot, a copy or a resize is over in a moment, and so is a move or a template
+            // that was called off.
             // Let it finish, then ask again.
             Task {
                 await model.waitForWorkOnMachineFiles()

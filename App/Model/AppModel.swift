@@ -13,6 +13,8 @@ final class AppModel {
     static let shared = AppModel()
 
     let library: VMLibrary
+    /// The machines that were saved to make new machines from.
+    let templates: VMTemplateLibrary
     /// Downloads Linux images and macOS restore images, into a folder the user can change.
     private(set) var downloader: ImageDownloader
     let sshWriter: SSHConfigWriter
@@ -48,6 +50,11 @@ final class AppModel {
     }
     /// A problem that isn't tied to a single machine.
     var generalError: VMErrorInfo?
+    /// What went wrong with a template, which the Templates window shows.
+    var templateProblem: VMErrorInfo?
+    /// Whether the Templates window is open, or was just asked for. What goes wrong with saving a
+    /// template is said there then, and otherwise wherever the machine's errors are.
+    @ObservationIgnored var isShowingTemplates = false
     /// Whether `~/.ssh/config` includes SwiftVM's generated hosts.
     private(set) var isSSHIncludeInstalled = false
     /// Addresses that running machines actually hold, by machine ID.
@@ -65,8 +72,12 @@ final class AppModel {
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
     @ObservationIgnored var lastDuplication: Task<Void, Never>?
+    /// A machine being prepared keeps its SSH alias until its task finishes, even if its row is dismissed.
+    @ObservationIgnored var reservedAliases: Set<String> = []
     /// The moves to another folder that are under way, by machine, for calling one off.
     @ObservationIgnored var moves: [UUID: Task<Void, any Error>] = [:]
+    /// The templates that are being saved, by the machine each is saved from, for calling one off.
+    @ObservationIgnored var templateSaves: [UUID: Task<VMTemplate, any Error>] = [:]
     /// Set once the app has agreed to quit for the command-line tool, where there is nobody to ask what
     /// to do with machines. See ``quitUnattended()``.
     @ObservationIgnored private(set) var isQuittingUnattended = false
@@ -80,6 +91,7 @@ final class AppModel {
 
     private init() {
         library = VMLibrary(rootDirectory: ControlPaths.applicationSupport)
+        templates = VMTemplateLibrary(rootDirectory: ControlPaths.applicationSupport)
         downloader = ImageDownloader(
             cacheDirectory: UserDefaults.standard.string(forKey: Self.downloadsDirectoryKey)
                 .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? ImageDownloader.defaultCacheDirectory
@@ -120,6 +132,8 @@ final class AppModel {
         // Whatever was being created when the app last quit can't be finished.
         library.removeStagedBundles()
         library.load()
+        templates.removeUnfinished()
+        templates.load()
         watchVolumes()
         // If the host has joined a network that collides with ours, move before any machine starts.
         networkManager?.relocateDefaultSubnetIfNeeded()
@@ -128,13 +142,16 @@ final class AppModel {
         startUSBDevices()
     }
 
-    /// Looks at the library again whenever a disk is connected, taken away or renamed: machines that are
-    /// kept on it come and go with it.
+    /// Looks at the library again whenever a disk is connected, taken away or renamed: machines and
+    /// templates that are kept on it come and go with it.
     private func watchVolumes() {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification, NSWorkspace.didRenameVolumeNotification] {
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.library.load() }
+                Task { @MainActor in
+                    self?.library.load()
+                    self?.templates.load()
+                }
             }
         }
     }
@@ -538,16 +555,24 @@ final class AppModel {
 
     // MARK: Machines
 
-    /// The SSH aliases that are spoken for: those of the machines, also of the ones whose disk isn't
-    /// connected, which come back with theirs.
+    /// The SSH aliases that are spoken for: those of the machines, also of the ones being prepared and
+    /// the ones whose disk isn't connected, which come back with theirs.
     private func takenAliases(besides machine: VirtualMachine? = nil) -> Set<String> {
         Set(library.machines.filter { $0.id != machine?.id }.map(\.configuration.ssh.alias))
             .union(library.unavailableMachines.compactMap(\.sshAlias))
+            .union(reservedAliases)
     }
 
     /// An SSH alias derived from `name` that no other machine uses.
     func uniqueAlias(for name: String) -> String {
         SSHAlias.unique(SSHAlias.slug(from: name), avoiding: takenAliases())
+    }
+
+    /// Keeps an alias for a machine that isn't in the library yet, until its caller releases it.
+    func reserveAlias(for name: String) -> String {
+        let alias = uniqueAlias(for: name)
+        reservedAliases.insert(alias)
+        return alias
     }
 
     /// Gives a machine another SSH name: what `ssh` and `swiftvm` reach it by. Whatever is typed is made
@@ -650,7 +675,8 @@ final class AppModel {
         library.machines.filter(\.state.isActive)
     }
 
-    /// Whether a snapshot, a copy, a resize or a move is under way on any machine.
+    /// Whether a snapshot, a copy, a resize, a move or the saving of a template is under way on any
+    /// machine.
     var isWorkingOnMachineFiles: Bool {
         library.machines.contains { $0.activity != nil }
     }
@@ -662,7 +688,8 @@ final class AppModel {
     }
 
     /// Returns once no machine's files are being worked on. That work is short, or was called off
-    /// if it wasn't, and stopping the app in the middle of it could leave a machine half saved.
+    /// if it wasn't, as a move and a template that is being saved are, and stopping the app in the
+    /// middle of it could leave a machine half saved.
     func waitForWorkOnMachineFiles() async {
         while isWorkingOnMachineFiles {
             try? await Task.sleep(for: .milliseconds(50))

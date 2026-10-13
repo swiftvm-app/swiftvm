@@ -88,5 +88,6 @@ updates to each new beta.
   [macOS guests](../features/macos-guests.md).
 - [Networking](../features/networking.md), [SSH](../features/ssh.md), and
   [Shared folders and clipboard](../features/sharing.md).
-- [Snapshots](../features/snapshots.md).
+- [Snapshots](../features/snapshots.md) and
+  [Templates](../features/templates.md).
 - [Settings](settings.md) and [Troubleshooting](troubleshooting.md).

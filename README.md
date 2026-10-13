@@ -20,6 +20,7 @@
 - Setup scripts for everything else a new machine needs, in one file you write
 - `ssh <machine>` from your Mac
 - Snapshots and instant duplicates
+- Templates: save a machine you set up, and create new ones from it
 - Suspend and resume
 - Shared folders and clipboard
 - Port forwarding

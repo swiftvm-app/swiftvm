@@ -28,7 +28,8 @@ struct MachineToolbar: ToolbarContent {
                     machine: machine,
                     onStart: { Task { await machine.start() } },
                     onSettings: { isShowingSettings = true },
-                    onSnapshots: { isShowingSnapshots = true }
+                    onSnapshots: { isShowingSnapshots = true },
+                    onSaveTemplate: { model.saveTemplateReportingErrors(of: machine) }
                 )
             }
             .menuIndicator(.hidden)

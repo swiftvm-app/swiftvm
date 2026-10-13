@@ -23,8 +23,9 @@ in git history as
 | D12 | Swift packages and scripts, no Xcode project | `swift build` is the build |
 | D13 | A desktop is installed by a script in the guest | One file, the same kind for ours and for users' |
 | D14 | `swiftvm` works in a guest through its agent | Commands, screen, and input without a network or private API |
-| D15 | The app sees and uses a macOS guest's screen itself | No question on the guest's screen, and no guest tools |
-| D16 | `swiftvm` answers a macOS guest's question when it is told to | One command and the password, instead of a person at the screen |
+| D15 | A template is a copy of its own, apart from the machines | It never changes, and outlives its machine |
+| D16 | The app sees and uses a macOS guest's screen itself | No question on the guest's screen, and no guest tools |
+| D17 | `swiftvm` answers a macOS guest's question when it is told to | One command and the password, instead of a person at the screen |
 
 ## D1. The Virtualization framework runs macOS and Linux guests
 
@@ -164,7 +165,7 @@ the relay.
   works at the login screen. Measured on Ubuntu 26.04 with GNOME on Wayland:
   5 ms to read a 1920 by 1200 screen. A macOS agent can do the same with the
   system's own interfaces, but only once the person at the screen has allowed
-  it, which is why the app does it for macOS guests (D15).
+  it, which is why the app does it for macOS guests (D16).
 - **A job has its own connection.** The agent's line carries one short
   message at a time. A screenshot is megabytes and a command runs for hours.
 - **Copying is `tar` through a command.** Both ends have `tar`, and it knows
@@ -182,7 +183,30 @@ desktop, most of them behind a question on the screen. A separate program for
 the screen and the keyboard, which would be a second thing to install and to
 keep in step.
 
-## D15. The app sees and uses a macOS guest's screen itself
+## D15. A template is a copy of its own, apart from the machines
+
+Making machines from one that is set up needs a state that stays put. A
+template is a copy of a shut-down machine's disk, firmware, and settings in a
+package of its own, in a folder for templates. It never runs, so it never
+changes, and it is still there when the machine it came from is deleted. On
+APFS the copy is a clone, as a snapshot and a duplicate are (D5).
+
+A machine is made from a template the way a duplicate is made from a machine,
+by the same code: copy the files, give the copy its own identity, add it to
+the library.
+
+Only a machine that is shut down makes a template. Saved memory expects the
+machine it was saved in, and two guests resumed from one memory would wake up
+as the same machine on the same network.
+
+Turned down: making machines straight from a snapshot, which lives in its
+machine's package, goes with it when the machine is deleted, and may hold
+memory. Marking a machine as a template, which leaves a machine in the list
+that mustn't start, and changes the template the moment it does. Templates
+that share a disk layer with the machines made from them, for the reason
+snapshots aren't layers (D5).
+
+## D16. The app sees and uses a macOS guest's screen itself
 
 A macOS guest's agent may only record the screen and use the mouse and the
 keyboard once someone at that screen has said so, in System Settings and with
@@ -218,15 +242,15 @@ Integrity Protection off in the guest, so that the answer to its question can
 be written down for it: that takes the recovery system, and leaves every such
 guest less protected.
 
-## D16. `swiftvm` answers a macOS guest's question when it is told to
+## D17. `swiftvm` answers a macOS guest's question when it is told to
 
-Reading a macOS guest's screen as a tree stays in the guest (D15), where macOS
+Reading a macOS guest's screen as a tree stays in the guest (D16), where macOS
 asks someone at the screen first: a switch in System Settings, and the
 account's password. A script or an AI agent that has just made a machine has
 nobody to send there.
 
 `swiftvm allow-accessibility <machine> --password <password>` is that someone.
-The app has the machine's mouse and keyboard (D15), and does what a person
+The app has the machine's mouse and keyboard (D16), and does what a person
 would: the agent has System Settings opened on the right page, the app finds
 the line that says `swiftvm-agent` in a picture of the screen, clicks the
 switch at its end, and types the password into the question that follows.

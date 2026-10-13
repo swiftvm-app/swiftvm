@@ -85,6 +85,20 @@ struct MacInstallRequest {
     var location: URL?
 }
 
+/// Everything needed to make a machine from a template.
+struct TemplateCreateRequest {
+    var name: String
+    var template: VMTemplate
+    /// `nil` is as many processors as the template has.
+    var cpuCount: Int?
+    /// `nil` is as much memory as the template has.
+    var memorySize: UInt64?
+    /// The size to grow the disk to. `nil` leaves it as large as the template's.
+    var diskCapacity: UInt64?
+    /// The folder to keep the machine in. `nil` is the folder for new machines.
+    var location: URL?
+}
+
 extension AppModel {
     /// Starts creating a machine from a cloud image. `onReady` runs once it is in the library.
     @discardableResult
@@ -113,6 +127,14 @@ extension AppModel {
         let os = request.image?.guestOS ?? GuestOS(family: .macOS)
         return run(MachineCreation(name: request.name, os: os), onReady: onReady) { creation in
             try await self.performMacInstall(request, creation: creation)
+        }
+    }
+
+    /// Starts making a machine from a template.
+    @discardableResult
+    func create(_ request: TemplateCreateRequest, onReady: @escaping (VirtualMachine) -> Void = { _ in }) -> MachineCreation {
+        run(MachineCreation(name: request.name, os: request.template.configuration.os), onReady: onReady) { creation in
+            try await self.performTemplateCreate(request, creation: creation)
         }
     }
 
@@ -157,7 +179,8 @@ extension AppModel {
         let imageURL = try await download(image, named: request.distribution.name, creation: creation)
         try Task.checkCancellation()
 
-        let alias = uniqueAlias(for: request.name)
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
         let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
         let disk = DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
         let interface = NetworkInterfaceConfiguration()
@@ -264,7 +287,8 @@ extension AppModel {
         }
         try Task.checkCancellation()
 
-        let alias = uniqueAlias(for: request.name)
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
         let account = image.supportsProvisioning ? request.account : nil
         try account?.validateForMacOS()
         let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try keyManager.preferredKeyPair() : nil
@@ -299,6 +323,28 @@ extension AppModel {
         } catch {
             library.discard(staged: bundle)
             throw error
+        }
+    }
+
+    private func performTemplateCreate(_ request: TemplateCreateRequest, creation: MachineCreation) async throws -> VirtualMachine {
+        try prepareLocation(request.location)
+        let template = request.template
+        guard let source = templates.bundle(of: template), FileManager.default.fileExists(atPath: source.url.path) else {
+            throw VMError.invalidConfiguration("The template “\(template.name)” isn't there any more.")
+        }
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
+        let configuration = template.machineConfiguration(
+            name: request.name, sshAlias: alias, cpuCount: request.cpuCount,
+            memorySize: request.memorySize, diskCapacity: request.diskCapacity
+        )
+        // On the disk the template is on this is over at once. To another one its disks are copied.
+        creation.update("Copying “\(template.name)”…")
+        let progress = ProgressRelay { fraction in creation.fraction = fraction }
+        return try await templates.whileUsing(template) {
+            try await makeCopy(
+                of: source, configuration: configuration, in: request.location, growingDiskTo: request.diskCapacity
+            ) { progress.report($0) }
         }
     }
 

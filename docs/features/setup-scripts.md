@@ -4,8 +4,8 @@ A setup script sets a new Linux machine up the first time it starts. It can
 install a desktop, Docker, your tools: anything a program can do as root. A
 machine can have several, which run one after the other.
 
-SwiftVM brings [templates](#templates): the desktops, Docker, a web server,
-and updates. You can [add your own](#your-own-scripts).
+SwiftVM brings [built-in scripts](#built-in-scripts): the desktops, Docker, a
+web server, and updates. You can [add your own](#your-own-scripts).
 
 Setup scripts are for machines made with
 [Quick Create](linux-guests.md#quick-create).
@@ -24,7 +24,7 @@ script's name, in what it says about itself, and in its kind: `desktop`,
 
 | In the list | What it is |
 | --- | --- |
-| The templates | What SwiftVM brings, by kind |
+| The built-in scripts | What SwiftVM brings, by kind |
 | Your scripts | The files in [your folder](#the-folder), marked **From your folder** |
 | **New Script…** | [Write one](#writing-one-in-the-app) on the spot. It is saved in your folder |
 | **Choose File…** | A file for this machine only |
@@ -66,9 +66,9 @@ they run.
   for, unless you set them yourself.
 - The copy of a machine keeps what its scripts set up. Nothing runs again.
 
-## Templates
+## Built-in scripts
 
-| Template | Name for `--script` | Kind | Needs at least |
+| Script | Name for `--script` | Kind | Needs at least |
 | --- | --- | --- | --- |
 | GNOME | `gnome` | Desktop | 4 GB memory, 24 GB disk |
 | KDE Plasma | `kde-plasma` | Desktop | 4 GB memory, 24 GB disk |
@@ -128,8 +128,8 @@ shows it in the Finder.
 - Every file in the folder is a script, whatever its name ends in. It goes by
   its file name without the ending: `docker.sh` is `docker`.
 - The folder is read whenever the list is shown. There is nothing to reload.
-- A script with the name of one of SwiftVM's templates takes its place. Save
-  your own `xfce.sh` and **Xfce** installs yours.
+- A script with the name of one of SwiftVM's built-in scripts takes its
+  place. Save your own `xfce.sh` and **Xfce** installs yours.
 - Hidden files and folders inside it are passed over, and so is what an
   editor keeps next to a file it has open (`name~`, `#name#`). So is
   everything after the first 200 files.
@@ -142,10 +142,10 @@ shows it in the Finder.
 from. Give it a name and choose **Save and Add**: it is saved under that name
 in your folder, and added to the machine you are creating. The name is what
 the script goes by, unless you give it another with `# name:` in its header. A
-name that is taken, by one of your scripts or by a template, is turned down.
-Names starting with `.` or `#`, or ending with `~`, are turned down too, since
-the folder's list skips those files. To change the script later, open the file
-in the folder with any editor.
+name that is taken, by one of your scripts or by a built-in one, is turned
+down. Names starting with `.` or `#`, or ending with `~`, are turned down too,
+since the folder's list skips those files. To change the script later, open
+the file in the folder with any editor.
 
 ### A file, once
 
@@ -223,12 +223,12 @@ header: comments below it are only comments.
 ## Examples
 
 Each of these runs as it is on Ubuntu 26.04, Ubuntu 24.04, and Debian 13. The
-first three are templates that come with SwiftVM, as they are. To change one,
+first three are scripts that come with SwiftVM, as they are. To change one,
 save it in [your folder](#the-folder) under another name.
 
 ### Docker
 
-The script under [Writing one](#writing-one) is the **Docker** template.
+The script under [Writing one](#writing-one) is the built-in **Docker** script.
 
 ### Updates, and a restart
 

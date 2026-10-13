@@ -50,5 +50,8 @@ Deleting a snapshot doesn't change the machine or its other snapshots.
 - A running machine can't be snapshotted while it has a writable disk image or
   a [USB device](usb-devices.md) attached, or while your Mac is locked. Eject
   or detach it, or shut the machine down first.
+- A snapshot takes its own machine back. To make new machines from a state,
+  save a [template](templates.md). A snapshot that was taken while the machine
+  was shut down can [become one](templates.md#from-a-snapshot).
 - After going back, the guest's clock is behind. The
   [guest tools](guest-tools.md) set it right away.

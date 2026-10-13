@@ -918,6 +918,18 @@ public final class VirtualMachine: Identifiable {
         return try await operation()
     }
 
+    /// Runs `operation` on the machine's files in whatever state the machine is, and keeps it in that
+    /// state until the operation is over: a guest that is up stays up. For work that only reads what
+    /// the guest doesn't write to, such as a snapshot.
+    func whileClaimed<T>(_ activity: VMActivity, _ operation: () async throws -> T) async throws -> T {
+        try begin(activity)
+        defer {
+            self.activity = nil
+            activityProgress = nil
+        }
+        return try await operation()
+    }
+
     /// Claims the machine for work on its files. Throws if it is already claimed or in the middle of
     /// starting up or shutting down.
     private func begin(_ activity: VMActivity) throws {

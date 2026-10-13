@@ -15,21 +15,23 @@ running ones first, with what each is doing and where to reach it.
 | **Open Window** | Show the machine's display |
 | **…** on a machine, or right-click | Everything else: power, settings, snapshots, SSH, delete |
 | **+** | New virtual machine (`Cmd+N`) |
-| **…** at the top | Sort by date or name, show one kind of system, check for updates |
+| **…** at the top | Sort by date or name, show one kind of system, [templates](templates.md), check for updates |
 | **Settings…** | [App settings](../user-guide/settings.md) (`Cmd+,`) |
 
 SwiftVM is in the Dock only while one of its windows is open.
 
 ## Creating
 
-Choose **New Virtual Machine** and pick the operating system at the top of the
-form. The window opens on the one you made last. You can also drop an
-installer disc (ISO), a macOS restore image (IPSW), or an existing virtual
-machine on the window.
+Choose **New Virtual Machine** and pick what to make the machine from under
+**Create From**, at the top of the form: an operating system, or a template.
+The window opens on the system you made last. You can also drop an installer
+disc (ISO), a macOS restore image (IPSW), or an existing virtual machine on
+the window.
 
 - [Linux guests](linux-guests.md): from a ready-made image, or from an
   installer disc.
 - [macOS guests](macos-guests.md): the latest macOS, or your own restore image.
+- [Templates](templates.md): a machine you set up before and saved.
 
 New machines get half of your Mac's cores (between 2 and 4), 8 GB of memory
 (4 GB on Macs with less than 16 GB), and a 64 GB disk for Linux or 128 GB for
@@ -98,6 +100,10 @@ own, with a new name, address, and SSH name.
 - Forwarded ports, writable disk images, and USB devices the original takes by
   itself stay with the original. Snapshots aren't copied.
 
+To make machine after machine from one that is set up, save it as a
+[template](templates.md): the template stays as it was, whatever happens to
+the machine afterwards.
+
 ## Where machines are kept
 
 A machine is one package on disk, and you choose where: on your Mac, or on an
@@ -129,7 +135,7 @@ Moving needs the machine shut down.
   again.
 - **Remove from List**, in the **…** of a machine that isn't available, takes
   it out of SwiftVM. Its files stay where they are.
-- Disks that aren't APFS work, but [duplicates and snapshots](disks.md#copies-and-snapshots)
+- Disks that aren't APFS work, but [duplicates, templates, and snapshots](disks.md#copies-and-snapshots)
   are full copies there, and the disk of a Quick Create Linux machine takes up
   its whole size.
 

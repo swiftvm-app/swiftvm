@@ -43,9 +43,9 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SwiftVM passes microphone audio to virtual machines that have the microphone turned on.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
-	<string>SwiftVM keeps virtual machines and downloaded images on the disks you choose for them.</string>
+	<string>SwiftVM keeps virtual machines, templates and downloaded images on the disks you choose for them.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
-	<string>SwiftVM keeps virtual machines and downloaded images on the disks you choose for them.</string>
+	<string>SwiftVM keeps virtual machines, templates and downloaded images on the disks you choose for them.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
@@ -63,6 +63,24 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>swiftvm</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.swiftvm.template</string>
+			<key>UTTypeDescription</key>
+			<string>SwiftVM Template</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>swiftvmtemplate</string>
 				</array>
 			</dict>
 		</dict>

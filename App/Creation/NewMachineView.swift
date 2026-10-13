@@ -31,6 +31,12 @@ struct NewMachineRequest: Identifiable {
     init() {}
 }
 
+/// What a new machine is made from: a system to install, or one of the templates.
+enum NewMachineSource: Hashable {
+    case system(GuestFamily)
+    case template
+}
+
 /// The form that creates a new virtual machine, shown in the New Virtual Machine window.
 struct NewMachineView: View {
     /// Called when the new machine is in the library; the flag says whether to start it right away.
@@ -43,6 +49,8 @@ struct NewMachineView: View {
     /// The kind of system that was picked here last, which the window opens on the next time.
     @AppStorage(Self.familyKey) private var preferredFamily = GuestFamily.linux
     @State private var family: GuestFamily
+    /// The machine is made from a template, instead of a system that is installed.
+    @State private var isFromTemplate = false
     /// The file the form was opened for.
     private let source: NewMachineRequest.Source
 
@@ -61,24 +69,34 @@ struct NewMachineView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            switch family {
-            case .macOS:
-                MacMachineForm(family: familyBinding, initialImage: initialImage, onReady: onReady)
-            case .linux, .windows:
-                // Windows can't be picked yet.
-                LinuxMachineForm(family: familyBinding, initialDisc: initialDisc, onReady: onReady)
+            if isFromTemplate {
+                TemplateSourceForm(source: sourceBinding, onReady: onReady)
+            } else {
+                switch family {
+                case .macOS:
+                    MacMachineForm(source: sourceBinding, initialImage: initialImage, onReady: onReady)
+                case .linux, .windows:
+                    // Windows can't be picked yet.
+                    LinuxMachineForm(source: sourceBinding, initialDisc: initialDisc, onReady: onReady)
+                }
             }
         }
         .frame(width: 600)
     }
 
     /// A file the form was opened for doesn't change what the window opens on the next time. Picking
-    /// a system by hand does.
-    private var familyBinding: Binding<GuestFamily> {
-        Binding(get: { family }, set: { newValue in
-            guard Self.families.contains(newValue) else { return }
-            family = newValue
-            preferredFamily = newValue
+    /// a system by hand does. A template is picked for the one machine.
+    private var sourceBinding: Binding<NewMachineSource> {
+        Binding(get: { isFromTemplate ? .template : .system(family) }, set: { newValue in
+            switch newValue {
+            case .system(let newFamily):
+                guard Self.families.contains(newFamily) else { return }
+                isFromTemplate = false
+                family = newFamily
+                preferredFamily = newFamily
+            case .template:
+                isFromTemplate = true
+            }
         })
     }
 
@@ -95,19 +113,22 @@ struct NewMachineView: View {
 
 // MARK: - What both forms share
 
-/// The first row of a form: the kind of system the machine is for. Picking another one puts that
-/// system's form in the place of this one.
-private struct OperatingSystemPicker: View {
-    @Binding var selection: GuestFamily
+/// The first row of a form: what the machine is made from, a kind of system to install or a template.
+/// Picking another one puts that one's form in the place of this one.
+///
+/// A template is on offer whether or not there is one: its form says how one is made.
+struct NewMachineSourcePicker: View {
+    @Binding var selection: NewMachineSource
 
     var body: some View {
-        Picker("Operating System", selection: $selection) {
+        Picker("Create From", selection: $selection) {
             ForEach(NewMachineView.families, id: \.self) { family in
-                Text(family.displayName).tag(family)
+                Text(family.displayName).tag(NewMachineSource.system(family))
             }
+            Text("Template").tag(NewMachineSource.template)
             Divider()
             Text("\(GuestFamily.windows.displayName) (coming soon)")
-                .tag(GuestFamily.windows)
+                .tag(NewMachineSource.system(.windows))
                 .disabled(true)
         }
     }
@@ -115,7 +136,7 @@ private struct OperatingSystemPicker: View {
 
 /// The row that says where the new machine is kept and lets another folder be chosen, one on an
 /// external disk for a start.
-private struct LocationRow: View {
+struct LocationRow: View {
     /// The folder that was chosen. `nil` is the folder for new machines.
     @Binding var location: URL?
 
@@ -144,7 +165,7 @@ private struct LocationRow: View {
 }
 
 /// The row that sets the size of the new machine's disk: any size, typed or stepped to.
-private struct DiskSizeRow: View {
+struct DiskSizeRow: View {
     @Binding var gigabytes: Int
     /// The sizes a disk for this system can have.
     let range: ClosedRange<Int>
@@ -185,9 +206,11 @@ private struct DiskSizeRow: View {
 }
 
 /// The foot of a form: what is wrong with the name, or what else the window takes, and the buttons.
-private struct FormButtons: View {
+struct FormButtons: View {
     var problem: String?
     var canCreate: Bool
+    /// Whether the form is in the window that files can be dropped on, and says so.
+    var takesDroppedFiles = true
     let create: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -198,7 +221,7 @@ private struct FormButtons: View {
                 Text(problem)
                     .font(.callout)
                     .foregroundStyle(.red)
-            } else {
+            } else if takesDroppedFiles {
                 Text("Or drop an ISO, an IPSW or a virtual machine on this window.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -234,7 +257,7 @@ private struct LinuxMachineForm: View {
         var id: Self { self }
     }
 
-    @Binding var family: GuestFamily
+    @Binding var source: NewMachineSource
     let onReady: (VirtualMachine, Bool) -> Void
 
     @Environment(AppModel.self) private var model
@@ -256,8 +279,8 @@ private struct LinuxMachineForm: View {
     @State private var localISO: URL?
 
     /// - Parameter initialDisc: An installer disc image to start with, instead of Quick Create.
-    init(family: Binding<GuestFamily>, initialDisc: URL? = nil, onReady: @escaping (VirtualMachine, Bool) -> Void) {
-        _family = family
+    init(source: Binding<NewMachineSource>, initialDisc: URL? = nil, onReady: @escaping (VirtualMachine, Bool) -> Void) {
+        _source = source
         self.onReady = onReady
         _isOpenedForDisc = State(initialValue: initialDisc != nil)
         _method = State(initialValue: initialDisc == nil ? .quickCreate : .installer)
@@ -360,7 +383,7 @@ private struct LinuxMachineForm: View {
     @ViewBuilder
     private var simpleSections: some View {
         Section {
-            OperatingSystemPicker(selection: $family)
+            NewMachineSourcePicker(selection: $source)
             distributionPicker
             scriptRows
             SecureField("Password", text: $password, prompt: Text(isPasswordRequired ? "Required" : "Optional"))
@@ -425,7 +448,7 @@ private struct LinuxMachineForm: View {
     @ViewBuilder
     private var advancedSections: some View {
         Section {
-            OperatingSystemPicker(selection: $family)
+            NewMachineSourcePicker(selection: $source)
             Picker("Setup", selection: $method) {
                 ForEach(Method.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -776,8 +799,8 @@ private struct LinuxMachineForm: View {
 
 // MARK: - Adding setup scripts
 
-/// The sheet that adds setup scripts to the machine that is being created: the templates the app
-/// brings and the scripts in the user's folder, a file, or one written on the spot. A list fetched
+/// The sheet that adds setup scripts to the machine that is being created: the scripts the app
+/// brings and those in the user's folder, a file, or one written on the spot. A list fetched
 /// from elsewhere would be one more thing to pick from here.
 private struct SetupScriptChooser: View {
     let distribution: LinuxDistribution
@@ -1309,7 +1332,7 @@ private struct MacMachineForm: View {
         case unavailable(String)
     }
 
-    @Binding var family: GuestFamily
+    @Binding var source: NewMachineSource
     /// A restore image to start with, instead of the latest macOS.
     var initialImage: URL?
     let onReady: (VirtualMachine, Bool) -> Void
@@ -1344,7 +1367,7 @@ private struct MacMachineForm: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    OperatingSystemPicker(selection: $family)
+                    NewMachineSourcePicker(selection: $source)
                     Picker("Version", selection: versionBinding) {
                         Text(latestTitle).tag(false)
                         if let localImage {
