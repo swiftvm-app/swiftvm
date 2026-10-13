@@ -1,4 +1,5 @@
 import AppKit
+import GuestChannel
 
 /// Lifecycle state of a virtual machine as shown in the UI.
 public enum VMState: String, Sendable, Hashable {
@@ -151,12 +152,36 @@ public protocol VMBackend: AnyObject {
     /// isn't. The connection is closed when the returned handle is released.
     func connectToGuest(port: UInt32) async throws -> FileHandle
 
+    /// What the machine's display shows right now, as a PNG. This Mac reads it itself: nothing in the
+    /// guest is asked, and nothing there has to allow it.
+    func screenshot() async throws -> Data
+    /// Uses the machine's own mouse. Places are in the pixels of a screenshot, from its top left corner.
+    ///
+    /// - Parameter guestTurnsWheel: The guest scrolls the other way round than its wheel is turned, as
+    ///   macOS does until someone tells it not to. A wheel is turned so that what was asked for happens.
+    func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws
+    /// Presses keys of the machine's own keyboard, which has the keys of a US keyboard.
+    func keys(_ request: GuestJob.Keys) async throws
+
     /// Lets go of host resources (network attachments, the display) after the guest has stopped, without
     /// waiting for the backend object itself to be deallocated.
     func invalidate()
 }
 
 extension VMBackend {
+    // An engine with no way to a machine's display and input devices says so when asked.
+    public func screenshot() async throws -> Data {
+        throw MachineDeskError.unavailable
+    }
+
+    public func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+        throw MachineDeskError.unavailable
+    }
+
+    public func keys(_ request: GuestJob.Keys) async throws {
+        throw MachineDeskError.unavailable
+    }
+
     // An engine that can't hand USB devices over says so when asked, and has none to give back.
     public func attachUSBDevice(_ device: USBDevice) async throws {
         throw VMError.invalidConfiguration("This virtual machine's engine can't take USB devices.")
@@ -253,6 +278,31 @@ public enum GuestJobError: Error, LocalizedError, Equatable {
             "That is more than the guest tools take in one request. What is long goes to a command on its input rather than in its arguments."
         case .refused(let reason):
             reason
+        }
+    }
+}
+
+/// Why this Mac couldn't do something with a machine's own display, mouse or keyboard.
+public enum MachineDeskError: Error, LocalizedError, Equatable {
+    /// The machine's engine has no way to them.
+    case unavailable
+    /// The display shows nothing: the guest has turned it off, or hasn't drawn on it yet.
+    case nothingShown
+    /// It can't be done the way it was asked for: a place that isn't on the screen, a key there isn't.
+    case invalid(String)
+    /// The text has characters that no key of the machine's keyboard types. The first of them.
+    case notOnTheKeyboard(Character)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "This virtual machine's engine has no way to its display, mouse and keyboard."
+        case .nothingShown:
+            "The virtual machine's display is off, or shows nothing yet."
+        case .invalid(let reason):
+            reason
+        case .notOnTheKeyboard(let character):
+            "The machine's keyboard has the keys of a US keyboard, and none of them types “\(character)”. With the guest tools in the guest, and macOS letting them, any text is typed."
         }
     }
 }

@@ -23,6 +23,8 @@ in git history as
 | D12 | Swift packages and scripts, no Xcode project | `swift build` is the build |
 | D13 | A desktop is installed by a script in the guest | One file, the same kind for ours and for users' |
 | D14 | `swiftvm` works in a guest through its agent | Commands, screen, and input without a network or private API |
+| D15 | The app sees and uses a macOS guest's screen itself | No question on the guest's screen, and no guest tools |
+| D16 | `swiftvm` answers a macOS guest's question when it is told to | One command and the password, instead of a person at the screen |
 
 ## D1. The Virtualization framework runs macOS and Linux guests
 
@@ -156,13 +158,13 @@ line to the Mac that needs no network (D7). So it does these as jobs, each on
 a connection of its own to a second port, with the app as the gate and then
 the relay.
 
-- **The screen and the input are the guest's own.** The Virtualization
-  framework has no public way to read a guest's display or to press its keys.
-  A Linux agent reads the display from the kernel's mode setting and makes
-  input devices through `uinput`: no desktop is asked, nothing is installed,
-  and it works at the login screen. Measured on Ubuntu 26.04 with GNOME on
-  Wayland: 5 ms to read a 1920 by 1200 screen. A macOS agent uses the system's
-  own interfaces, which the person at the screen has to allow once.
+- **The screen and the input are the guest's own, in Linux guests.** A Linux
+  agent reads the display from the kernel's mode setting and makes input
+  devices through `uinput`: no desktop is asked, nothing is installed, and it
+  works at the login screen. Measured on Ubuntu 26.04 with GNOME on Wayland:
+  5 ms to read a 1920 by 1200 screen. A macOS agent can do the same with the
+  system's own interfaces, but only once the person at the screen has allowed
+  it, which is why the app does it for macOS guests (D15).
 - **A job has its own connection.** The agent's line carries one short
   message at a time. A screenshot is megabytes and a command runs for hours.
 - **Copying is `tar` through a command.** Both ends have `tar`, and it knows
@@ -179,3 +181,71 @@ desktop for a screenshot, which on Wayland is a different request for every
 desktop, most of them behind a question on the screen. A separate program for
 the screen and the keyboard, which would be a second thing to install and to
 keep in step.
+
+## D15. The app sees and uses a macOS guest's screen itself
+
+A macOS guest's agent may only record the screen and use the mouse and the
+keyboard once someone at that screen has said so, in System Settings and with
+a password. For a machine that a script or an AI agent has just created,
+nobody is at the screen.
+
+The app has the machine's display and its input devices, through the view the
+framework shows a machine with. So for macOS guests it takes the screenshot
+and presses the keys itself: a second view of the machine, in a window that is
+never shown, whose picture is read from the surface it is drawn with and which
+is handed the events a mouse and a keyboard over it would make. On a macOS
+27.0.1 guest with nothing allowed in it, that showed the desktop, the locked
+screen, and the login screen of a guest nobody was logged in to, and typed the
+password that let it in.
+
+- **Only public interfaces.** The view, AppKit's events, and the surface in a
+  layer's contents are all public. How the view shows a display is not
+  promised, though: if a later macOS shows it another way, screenshots stop
+  and say so, and the agent's own way is still there to go back to.
+- **The switch stays the gate.** Whoever can run `swiftvm` could already reach
+  the guest's disk (D14). They now see its screen without the guest's say-so
+  as well, so a machine that nothing but a person is to touch has automation
+  turned off.
+- **Linux guests stay with their agent**, which asks nobody either, and types
+  on the guest's own terms.
+- **The tree stays in the guest.** What programs tell the system's
+  accessibility is only told inside it, and macOS still asks before the agent
+  may read it.
+
+Turned down: a virtual keyboard and mouse made by the agent as root, which
+macOS refuses without an entitlement that Apple hands out. Turning System
+Integrity Protection off in the guest, so that the answer to its question can
+be written down for it: that takes the recovery system, and leaves every such
+guest less protected.
+
+## D16. `swiftvm` answers a macOS guest's question when it is told to
+
+Reading a macOS guest's screen as a tree stays in the guest (D15), where macOS
+asks someone at the screen first: a switch in System Settings, and the
+account's password. A script or an AI agent that has just made a machine has
+nobody to send there.
+
+`swiftvm allow-accessibility <machine> --password <password>` is that someone.
+The app has the machine's mouse and keyboard (D15), and does what a person
+would: the agent has System Settings opened on the right page, the app finds
+the line that says `swiftvm-agent` in a picture of the screen, clicks the
+switch at its end, and types the password into the question that follows.
+
+- **Only when it is asked, and with the password.** macOS means the question
+  for whoever owns the machine. They answer it by running the command, with a
+  password that only they have. Nothing is allowed behind their back: not when
+  a machine is created, and not when the guest tools are installed.
+- **The agent says where, the app looks and clicks.** A program that isn't
+  allowed yet can't see the screen, but is told where windows are. So the
+  agent reports the window of System Settings and the question in front of
+  it, and the app reads the list with the system's text recognition: the name
+  of the program is the same in every language.
+- **It is checked, not assumed.** After each step the agent says whether it is
+  allowed now. A switch that goes off instead of on is clicked again, and a
+  password that macOS doesn't take ends it with that for an answer.
+
+Turned down: doing this by itself for every new macOS guest, since the app
+holds the password while it sets one up. Writing the answer into the guest's
+privacy database, which macOS protects from everything in the guest, root
+included. Clicking where the switch was the last time, without looking: a list
+with other programs on it has it elsewhere.

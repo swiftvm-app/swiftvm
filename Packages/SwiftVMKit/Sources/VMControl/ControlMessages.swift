@@ -80,6 +80,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case job
         /// Let the machine be given jobs or not, as ``ControlRequest/isOn`` says.
         case automation
+        /// Have a macOS guest let its guest tools read the screen as a tree, by answering its question
+        /// with ``ControlRequest/password``.
+        case allowAccessibility = "allow-accessibility"
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -186,8 +189,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var port: UInt32?
     /// For `install-tools`: plug in the guest tools disc instead of installing over SSH.
     public var usesDisc: Bool?
-    /// For `install-tools` over SSH: the guest account's password, which macOS wants before it lets
-    /// anything be installed.
+    /// For `install-tools` over SSH and for `allow-accessibility`: the guest account's password, which
+    /// macOS wants before it lets anything be installed, or allowed.
     public var password: String?
     /// For `share-clipboard`, `usb-auto` and `automation`: whether it is to be on.
     public var isOn: Bool?

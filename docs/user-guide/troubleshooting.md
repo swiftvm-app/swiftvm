@@ -108,10 +108,14 @@ Install the [guest tools](../features/guest-tools.md), or
   them.
 - **Automation is turned off.** Turn on **Allow Automation** in the machine's
   settings.
-- **A macOS guest says it isn't allowed.** Allow it
-  [in the guest](../features/automation.md#macos-guests), once.
-- **Nobody is logged in.** The tree of what is on the screen, and everything
-  about a macOS guest's screen, belongs to whoever is logged in there.
+- **A macOS guest says it isn't allowed.** That is the tree of what is on its
+  screen. `swiftvm allow-accessibility <machine> --password <password>`
+  [has the guest allow it](../features/automation.md#macos-guests), once. A
+  screenshot, the mouse, and the keyboard need nothing allowed.
+- **The display is off.** A guest turns its display off after a while without
+  input. `swiftvm ui <machine> key shift` wakes it.
+- **Nobody is logged in.** The tree of what is on the screen belongs to
+  whoever is logged in there.
 
 ## The USB button is missing
 

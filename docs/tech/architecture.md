@@ -12,7 +12,8 @@ The programs, the modules, and how they work together.
 | `swiftvm-agent.py` | Linux guests | The guest agent for Linux: one Python script and its systemd units |
 
 Both agents also do [jobs](#jobs-in-the-guest) for `swiftvm`: commands, the
-screen, the mouse, and the keyboard.
+screen, the mouse, and the keyboard. The screen, the mouse, and the keyboard
+of a macOS guest are done by the app itself.
 
 ## Modules
 
@@ -45,13 +46,13 @@ flowchart TB
 | --- | --- |
 | `App/` | The SwiftUI app: the menu bar panel, the windows, and the model behind them |
 | `VMCore` | What a machine is: its configuration, its package on disk, the library, snapshots, the serial console, USB rules. Knows no engine |
-| `VZEngine` | Runs machines on the Virtualization framework, and installs macOS |
+| `VZEngine` | Runs machines on the Virtualization framework, installs macOS, and sees and uses a machine's display, mouse, and keyboard |
 | `VMNetworking` | The shared network, address reservations, and the port relay |
 | `SSHIntegration` | SSH names, keys, and the generated SSH configuration |
 | `DiskTools` | Creates, grows, and converts disk images, and builds small ISO images |
 | `Installers` | The distribution catalog, setup scripts, downloads, first-boot setup for Linux, and the guest agent installers |
 | `VMControl` | The messages between the app and `swiftvm`, and which copy of the app a program belongs to |
-| `GuestChannel` | The messages between the app and a guest agent, and the jobs an agent does for `swiftvm` |
+| `GuestChannel` | The messages between the app and a guest agent, the jobs an agent does for `swiftvm`, and the keys of a Mac's keyboard by name |
 | `GuestAgentMac` | The guest agent for macOS |
 
 `VMCore` defines a backend protocol, and `VZEngine` is its only
@@ -144,8 +145,10 @@ sequenceDiagram
 
 ## Jobs in the guest
 
-`swiftvm exec`, `cp`, `screenshot`, and `ui` are jobs that a guest's agent
-does. See [Automation](../features/automation.md).
+`swiftvm exec`, `cp`, `screenshot`, and `ui` are jobs. A guest's agent does
+them, except for the screen, the mouse, and the keyboard of a macOS guest,
+which [the app does itself](#the-screen-of-a-macos-guest). See
+[Automation](../features/automation.md).
 
 ```mermaid
 sequenceDiagram
@@ -176,17 +179,68 @@ sequenceDiagram
 - `swiftvm cp` is `exec` twice over: `tar` packs on one side and unpacks on
   the other. What a guest sends is unpacked in a folder of its own first.
 
-| Job | Linux agent | macOS agent |
+| Job | Linux guest | macOS guest |
 | --- | --- | --- |
-| Command | A process of the account it runs as, with the environment of that user's desktop session if there is one | The agent's own program, started as `run-as`: it becomes the account, then the command. Inside the user's session if they are logged in |
-| Screenshot | What the display shows, read from the kernel's mode setting | ScreenCaptureKit, in the session's half |
-| Mouse and keyboard | Input devices of its own, made through `uinput` | Core Graphics events, in the session's half |
-| Tree | AT-SPI, asked by the same script run as the user at the screen | The accessibility API, in the session's half |
+| Command | The agent: a process of the account it runs as, with the environment of that user's desktop session if there is one | The agent's own program, started as `run-as`: it becomes the account, then the command. Inside the user's session if they are logged in |
+| Screenshot | The agent: what the display shows, read from the kernel's mode setting | The app: the surface of the machine's display |
+| Mouse and keyboard | The agent: input devices of its own, made through `uinput` | The app: events for the machine's own mouse and keyboard. Text that a US keyboard has no keys for is typed by the agent's half in the session, with Core Graphics events |
+| Tree | The agent: AT-SPI, asked by the same script run as the user at the screen | The agent: the accessibility API, in the session's half, once [macOS allows it](#allowing-the-tree-in-a-macos-guest) |
 
-In a macOS guest, the screen, mouse, and keyboard belong to whoever is logged
-in. The root daemon takes the job, tells the session's half its name, and the
-session's half connects for it on a second Unix socket. The daemon then passes
-bytes on between the two connections.
+In a macOS guest, what a program may do with the screen belongs to whoever is
+logged in. The root daemon takes such a job, tells the session's half its
+name, and the session's half connects for it on a second Unix socket. The
+daemon then passes bytes on between the two connections.
+
+### The screen of a macOS guest
+
+macOS asks someone at the screen before a program in the guest may record it
+or use its mouse and keyboard. The app doesn't have to ask: it has the
+machine's display and input devices.
+
+- The engine keeps a second view of the machine, next to the one in the
+  machine's window, in a window that is never shown. It is made when a job
+  first needs it, and never resizes the guest's display.
+- A screenshot is the surface that view would show, copied and packed as a
+  PNG. A guest that has turned its display off has none.
+- The mouse and the keyboard are the events AppKit would hand the view if
+  someone used them over it. Keys go by their number on a US keyboard.
+- The app answers `swiftvm` the way an agent would, in frames, so the tool
+  doesn't know the difference.
+- A wheel is turned the way that scrolls as asked. The agent, if there is one,
+  says whether the guest turns its wheel around.
+
+### Allowing the tree in a macOS guest
+
+`swiftvm allow-accessibility` has macOS let the agent read the screen as a
+tree. The app does what a person at the guest's screen would, and the agent's
+half in the session tells it where.
+
+```mermaid
+sequenceDiagram
+    participant Tool as swiftvm
+    participant App as App
+    participant Agent as Agent, in the session
+    participant Guest as macOS, on the guest's screen
+    Tool->>App: allow-accessibility, with the password
+    App->>Agent: permission: ask
+    Agent->>Guest: Ask to be allowed. Open System Settings on its page
+    Agent-->>App: Not allowed. Where the window is
+    App->>Guest: Screenshot. Find the line that says swiftvm-agent
+    App->>Guest: Click the switch at its end
+    Agent-->>App: A question is in front of the window
+    App->>Guest: Type the password, and Return
+    Agent-->>App: Allowed
+    App->>Agent: permission: finish
+    Agent->>Guest: Close System Settings
+```
+
+- The agent's part is a job like the others, `permission`, done by its half in
+  the session: that is the program macOS allows, and the one that knows.
+- The app's part goes through the machine's own display, mouse, and keyboard,
+  as a screenshot and a click from `swiftvm` do.
+- The line is found by reading the picture of the screen, inside the window
+  the agent named. The switch is at the end of that line, at a fixed distance
+  from the window's edge.
 
 ## Networking
 

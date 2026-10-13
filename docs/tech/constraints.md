@@ -64,12 +64,58 @@ Not yet supported: Windows guests, and Intel Macs.
 
 ## Guests
 
-- The framework has no public way to read a guest's display or to press its
-  keys. Both are done by the agent, inside the guest.
-- macOS asks whoever sits at the screen before a program may record it or use
-  the mouse and keyboard, and nothing can answer for them. A program that was
-  running when it was allowed may still not be let record, so the agent's half
-  in the session ends itself when it is refused, and launchd starts it anew.
+- The framework has one public way to a guest's display and its input
+  devices: the view that shows a machine to its user. The view doesn't have to
+  be shown. In a window that is never put on the screen it still gets the
+  guest's picture, as a surface in the contents of one of its layers, and
+  still passes on the mouse and key events it is handed.
+- A view of the framework's asks nobody when it is given a second view of the
+  same machine. Only one of them may resize the display to fit itself, so the
+  one that is never shown doesn't.
+- A guest that has turned its display off has no picture: the view's layer
+  loses its surface until a key wakes the display.
+- AppKit makes every mouse event it is asked for with the first button,
+  whatever kind of event it is. An event for another button, or for the wheel,
+  is made as Core Graphics makes them. Such an event belongs to no window and
+  says where on the screen it happened, which the view takes for a place in
+  its own window.
+- The view only passes on a wheel that counts in points. One that counts in
+  lines is dropped.
+- A key event tells the view which of the two keys of a kind is held, left or
+  right, in bits that AppKit has no names for. Without them a held Shift isn't
+  held in the guest.
+- A wheel reaches a guest as its hardware turned it, and macOS turns that
+  around unless **Natural scrolling** is off. Which it is, only the guest
+  knows.
+- Inside a macOS guest there is no way around the question on its screen. A
+  program that runs as root is told that it isn't entitled when it makes a
+  keyboard or a mouse of its own, the events it posts are dropped, and the
+  screen isn't recorded for it either.
+- A program that macOS hasn't allowed to see the screen is still told where
+  every window is and whose it is, only not what it is called or what is in
+  it.
+- Asking macOS to be allowed is what puts a program on the list in System
+  Settings. The question that comes up with it only leads there, and lies over
+  the list: the agent ends the program that shows it.
+- The page of System Settings with that list opens by its address, whatever
+  macOS calls the page: **Accessibility** before, **Device Control and Data
+  Access** in macOS 27.
+- Turning a switch on that list on asks for the password, in a window of
+  System Settings' own. Turning it off asks for nothing.
+- That question is on the screen before it listens. What is typed in its
+  first second is lost, and the rest is no password.
+- A pointer that already rested where something new came up never moved onto
+  it, and macOS takes its click for one on what lies beneath: the line of a
+  list instead of the switch on it. A click arrives from a point beside.
+- A program that keeps its permission is not told when the permission is
+  taken away: it goes on being allowed until it starts anew.
+- The first time text is read from a picture, the system can take some twenty
+  seconds over it. Later readings take a fraction of one.
+- macOS asks whoever sits at the screen before a program may record it, use
+  the mouse and keyboard, or read what others show there, and nothing in the
+  guest can answer for them. A program that was running when it was allowed
+  may still not be let record, so the agent's half in the session ends itself
+  when it is refused, and launchd starts it anew.
 - A daemon's child that becomes a user can run as them, but not open a window:
   it is outside their session. `launchctl asuser` puts it inside.
 - A Wayland desktop doesn't tell an application where on the screen its

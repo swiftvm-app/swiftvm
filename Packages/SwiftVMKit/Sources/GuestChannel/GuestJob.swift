@@ -22,6 +22,8 @@ public enum GuestJob: Sendable, Hashable {
     /// What is on the screen as a tree of its parts, in JSON, as the system's accessibility tells it.
     case tree(Tree)
     case element(Element)
+    /// Whether the guest's system lets the agent read the screen as a tree, and what leads there.
+    case permission(Permission)
     /// A kind of job this build doesn't know.
     case unknown(type: String)
 
@@ -138,6 +140,27 @@ public enum GuestJob: Sendable, Hashable {
         }
     }
 
+    /// macOS asks whoever sits at the screen before a program may read what others show there and act
+    /// on it, in its settings and for a password. The app answers for them, with the machine's own
+    /// mouse and keyboard. The agent can't see the screen before it is let, but it knows where the
+    /// windows are, and says so in a ``GuestPermissionState``.
+    public struct Permission: Codable, Sendable, Hashable {
+        public enum Action: String, Codable, Sendable, Hashable, CaseIterable {
+            /// Say how things stand.
+            case check
+            /// Ask the system, and open its settings where the answer is given.
+            case ask
+            /// Put away what asking opened.
+            case finish
+        }
+
+        public var action: Action
+
+        public init(action: Action) {
+            self.action = action
+        }
+    }
+
     /// The ``GuestFeature`` an agent has to offer to be given this job.
     public var feature: String? {
         switch self {
@@ -145,8 +168,29 @@ public enum GuestJob: Sendable, Hashable {
         case .screenshot: GuestFeature.screen
         case .pointer, .keys: GuestFeature.input
         case .tree, .element: GuestFeature.accessibility
+        case .permission: GuestFeature.permission
         case .unknown: nil
         }
+    }
+}
+
+/// What an agent puts out for a ``GuestJob/permission(_:)``, in JSON: how things stand, and where on
+/// the screen the answer is given. Places are in the pixels of a screenshot: left, top, width, height.
+public struct GuestPermissionState: Codable, Sendable, Hashable {
+    /// The system lets the agent read the screen as a tree and act on its parts.
+    public var isAllowed: Bool
+    /// How many pixels of a screenshot make one of the points the system lays its windows out in.
+    public var scale: Double
+    /// The window of the system's settings, if it is on the screen.
+    public var settings: [Int]?
+    /// What the settings have put in front of their window: the question for the password.
+    public var sheet: [Int]?
+
+    public init(isAllowed: Bool, scale: Double = 1, settings: [Int]? = nil, sheet: [Int]? = nil) {
+        self.isAllowed = isAllowed
+        self.scale = scale
+        self.settings = settings
+        self.sheet = sheet
     }
 }
 
@@ -213,6 +257,7 @@ extension GuestJob: Codable {
         case "keys": self = .keys(try Keys(from: decoder))
         case "tree": self = .tree(try Tree(from: decoder))
         case "element": self = .element(try Element(from: decoder))
+        case "permission": self = .permission(try Permission(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -237,6 +282,9 @@ extension GuestJob: Codable {
         case .element(let element):
             try container.encode("element", forKey: .type)
             try element.encode(to: encoder)
+        case .permission(let permission):
+            try container.encode("permission", forKey: .type)
+            try permission.encode(to: encoder)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }

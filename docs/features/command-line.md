@@ -112,6 +112,7 @@ See [Automation](automation.md).
 | `ui <machine> key <key>…` | Press keys: `Return`, `ctrl+c` |
 | `ui <machine> tree` | Print [what is on the screen](automation.md#what-is-on-the-screen) as a tree, in JSON. `--app <name>`, `--depth <levels>`, `--all` |
 | `ui <machine> press <element>` | Press a part of the tree, by its `id`. Also `focus <element>` and `set <element> <text>` |
+| `allow-accessibility <machine> --password <password>` | Have a macOS guest [let the guest tools read its screen as a tree](automation.md#macos-guests), once |
 | `automation <machine> on\|off` | Let all of the above work in the machine, or [not](automation.md#turning-it-off) |
 
 ## Snapshots

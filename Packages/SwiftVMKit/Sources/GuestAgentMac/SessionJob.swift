@@ -12,9 +12,13 @@ protocol AgentDesktop: Sendable {
     func tree(_ request: GuestJob.Tree) throws -> Data
     /// Does something to one part of that tree, and says to which, in JSON.
     func act(on request: GuestJob.Element) throws -> Data
+    /// Says whether the system lets the agent read the screen as a tree, asks it to, or puts away what
+    /// asking opened: a ``GuestPermissionState`` in JSON.
+    func permission(_ request: GuestJob.Permission) throws -> Data
 }
 
-/// A job that the agent's half in a user's session does: one with the screen, the mouse or the keyboard.
+/// A job that the agent's half in a user's session does: one with the screen, the mouse or the keyboard,
+/// or with what the system lets this half do with them.
 ///
 /// The half that runs as root says that there is one, and under which name. This half connects for it,
 /// and from there on it is the one that answers the Mac: what it sends is passed on as it is.
@@ -41,7 +45,7 @@ enum SessionJob {
               let job = GuestMessageCoding.message(GuestJob.self, from: line)
         else { return }
         switch job {
-        case .screenshot, .pointer, .keys, .tree, .element:
+        case .screenshot, .pointer, .keys, .tree, .element, .permission:
             break
         case .exec, .unknown:
             GuestJobLine.answer(.refusal("That isn't a job for a user's session."), on: descriptor)
@@ -65,6 +69,8 @@ enum SessionJob {
                 output = try desktop.tree(request)
             case .element(let request):
                 output = try desktop.act(on: request)
+            case .permission(let request):
+                output = try desktop.permission(request)
             case .exec, .unknown:
                 output = nil
             }

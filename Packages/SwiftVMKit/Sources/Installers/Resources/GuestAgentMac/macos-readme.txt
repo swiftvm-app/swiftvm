@@ -11,9 +11,13 @@ To install, run this in Terminal in the virtual machine:
 
 macOS then says that a background item was added. That is the agent.
 
-Before the swiftvm command can see this Mac's screen or use its mouse and keyboard, macOS asks
-you to allow it, the first time each is tried: turn on swiftvm-agent in System Settings, under
-Privacy & Security, for Screen & System Audio Recording and for Accessibility.
+Before the swiftvm command can read what is on this Mac's screen as a tree of its parts, macOS
+wants that allowed. On your Mac, this does it:
+
+    swiftvm allow-accessibility <machine> --password <this account's password>
+
+Or turn on swiftvm-agent here, in System Settings, under Privacy & Security, for Device Control
+and Data Access, which earlier versions of macOS call Accessibility.
 
 To remove the tools again:
 

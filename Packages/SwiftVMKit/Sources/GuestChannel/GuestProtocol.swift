@@ -20,7 +20,7 @@ public enum GuestProtocol {
     public static let maximumLineLength = 256 * 1024
     /// The version of the agent for macOS guests that is built from these sources, as it reports it
     /// when it connects. The agent for Linux keeps its own, in its script.
-    public static let macAgentVersion = "1.1"
+    public static let macAgentVersion = "1.2"
 
     /// The time on this Mac, in nanoseconds since 1970, as the agent takes it for setting the guest's clock.
     public static func currentTimeInNanoseconds() -> Int64 {
@@ -48,6 +48,9 @@ public enum GuestFeature {
     /// Reads the screen as a tree of its parts and acts on them: ``GuestJob/tree(_:)`` and
     /// ``GuestJob/element(_:)``.
     public static let accessibility = "accessibility"
+    /// Says whether its system lets it do that, and helps the app to have it allowed:
+    /// ``GuestJob/permission(_:)``. For systems that ask someone at the screen first.
+    public static let permission = "permission"
 
     /// The features that are kinds of ``GuestJob``.
     public static let jobs = [exec, screen, input, accessibility]

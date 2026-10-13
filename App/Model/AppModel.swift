@@ -34,6 +34,9 @@ final class AppModel {
     var creations: [MachineCreation] = []
     /// Machines whose own window is open; their errors are shown there instead of in the menu bar panel.
     var openMachineWindows: Set<UUID> = []
+    /// Machines whose guest is being asked to let the guest tools read its screen right now. The app
+    /// uses the guest's mouse and keyboard for that, which two askers would do across each other.
+    @ObservationIgnored var machinesBeingAllowed: Set<UUID> = []
     /// Whether the app's item is in the menu bar. It always is: with no window open the item is all there
     /// is of the app. macOS lets an item be dragged out of the menu bar all the same, so one that is
     /// taken out is put back.

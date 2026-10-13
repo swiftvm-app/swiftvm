@@ -31,6 +31,21 @@ private final class AgentBackend: VMBackend {
 
     /// The jobs the agent was sent, as they arrived.
     var jobs: [String] { record.all }
+    /// What was done with the machine's own display, mouse and keyboard.
+    var deskCalls: [String] = []
+
+    func screenshot() async throws -> Data {
+        deskCalls.append("screenshot")
+        return Data("a picture".utf8)
+    }
+
+    func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+        deskCalls.append("\(request.action.rawValue) \(request.x),\(request.y)")
+    }
+
+    func keys(_ request: GuestJob.Keys) async throws {
+        deskCalls.append("keys \(request.text ?? "")")
+    }
 
     func start(options: VMStartOptions) async throws {}
     func requestStop() throws {}
@@ -95,9 +110,9 @@ private final class AgentProvider: VMBackendProvider {
     private let provider = AgentProvider()
 
     /// A running machine whose agent has said hello.
-    private func startMachine(automation: Bool = true) async throws -> VirtualMachine {
+    private func startMachine(automation: Bool = true, family: GuestFamily = .linux) async throws -> VirtualMachine {
         let configuration = VMConfiguration(
-            name: "Web", os: GuestOS(family: .linux), cpuCount: 2, memorySize: 2 << 30, disks: [],
+            name: "Web", os: GuestOS(family: family), cpuCount: 2, memorySize: 2 << 30, disks: [],
             automation: AutomationConfiguration(isAllowed: automation)
         )
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
@@ -151,6 +166,42 @@ private final class AgentProvider: VMBackendProvider {
 
         // A guest that is down has no agent to ask.
         await #expect(throws: VMError.self) { _ = try await machine.openJob(.exec(.init(arguments: ["true"]))) }
+    }
+
+    @Test func aMacGuestsScreenMouseAndKeyboardAreTheMachinesOwn() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // An agent that would do all of it, if macOS in the guest let it.
+        provider.backend.features = [GuestFeature.exec, GuestFeature.screen, GuestFeature.input, GuestFeature.accessibility]
+        let machine = try await startMachine(family: .macOS)
+        #expect(machine.doesItself(.screenshot))
+        #expect(machine.doesItself(.pointer(.init(action: .click, x: 4, y: 2))))
+        #expect(machine.doesItself(.keys(.init(text: "ls -la\n", keys: ["cmd+k"]))))
+        // Text that the machine's keyboard has no keys for is left to an agent that types.
+        #expect(!machine.doesItself(.keys(.init(text: "grüße"))))
+        // Commands and the screen as a tree are in the guest, and an agent's to do.
+        #expect(!machine.doesItself(.exec(.init(arguments: ["true"]))))
+        #expect(!machine.doesItself(.tree(.init())))
+
+        #expect(try await machine.carryOut(.screenshot) == Data("a picture".utf8))
+        _ = try await machine.carryOut(.pointer(.init(action: .click, x: 4, y: 2)))
+        _ = try await machine.carryOut(.keys(.init(text: "ls")))
+        #expect(provider.backend.deskCalls == ["screenshot", "click 4,2", "keys ls"])
+        // None of it went to the agent.
+        #expect(provider.backend.jobs.isEmpty)
+
+        // A machine that is not to be driven is not driven this way either.
+        try machine.updateConfiguration { $0.automation.isAllowed = false }
+        await #expect(throws: GuestJobError.notAllowed(name: "Web")) { _ = try await machine.carryOut(.screenshot) }
+        #expect(provider.backend.deskCalls.count == 3)
+        await machine.forceStop()
+    }
+
+    @Test func aLinuxGuestsScreenIsItsAgentsToShow() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await startMachine()
+        #expect(!machine.doesItself(.screenshot))
+        #expect(!machine.doesItself(.keys(.init(text: "ls"))))
+        await machine.forceStop()
     }
 
     @Test func goingBackToASnapshotKeepsTheSwitchAsItIsNow() {
