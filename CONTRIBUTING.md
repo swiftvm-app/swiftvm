@@ -10,6 +10,9 @@ Read [docs/tech](docs/tech/README.md) first. It describes how SwiftVM is built a
 
 - macOS 27 or newer, on Apple silicon
 - Xcode 27 or newer
+- For the QEMU that runs Windows guests, which the build scripts build the first
+  time: `brew install ninja meson pkgconf glib pixman python`. Without them,
+  `SWIFTVM_QEMU=-` builds the app without it
 
 No Apple Developer account is needed, except for [USB devices](docs/tech/building.md#usb-devices).
 

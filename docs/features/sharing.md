@@ -19,6 +19,12 @@ Folders can be added and removed while the machine runs.
 | --- | --- |
 | macOS | **My Shared Files** in the Finder sidebar, at `/Volumes/My Shared Files` |
 | Linux | `/mnt/shared`, one folder each |
+| Windows | Drive **Z:**, one folder each, with the [guest tools](guest-tools.md) |
+
+Windows has no driver for the file sharing the others use, so SwiftVM serves
+the folders to it over WebDAV, only on the virtual network, under an address
+that only that machine is told. See
+[Windows guests](windows-guests.md#shared-folders).
 
 ### Linux guests you installed yourself
 
@@ -46,6 +52,7 @@ Text you copy on your Mac can be pasted in the guest, and the other way round.
 | --- | --- |
 | macOS | The [guest tools](guest-tools.md) |
 | Linux | A desktop that runs `spice-vdagent` |
+| Windows | The [guest tools](guest-tools.md) |
 
 - Only text is shared, up to about 250 kB. Pictures and files stay where they
   were copied.

@@ -21,7 +21,7 @@ public final class NBDServer: @unchecked Sendable {
     public let url: URL
 
     private let disk: CompressedDisk
-    private let socketPath: String
+    let socketPath: String
     private let listener: Int32
     /// A pipe that is written to when it is over, for the thread that waits for the machine to connect.
     private let wake: (read: Int32, write: Int32)
@@ -405,6 +405,10 @@ public final class NBDServer: @unchecked Sendable {
 public final class CompressedDiskExport: Sendable {
     /// What the Virtualization framework connects to.
     public var url: URL { server.url }
+    /// The socket the server listens on, for an engine that is told where its disk is by path: QEMU.
+    public var socketPath: String { server.socketPath }
+    /// The name the server gives the disk.
+    public static let exportName = "disk"
 
     private let disk: CompressedDisk
     private let server: NBDServer

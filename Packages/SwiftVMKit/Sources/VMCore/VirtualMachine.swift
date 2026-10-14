@@ -44,6 +44,10 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public var onGuestClipboard: (@MainActor (VirtualMachine, String) -> Void)?
     /// Called when the guest asks for what is on this Mac's clipboard.
     @ObservationIgnored public var onGuestClipboardRequest: (@MainActor (VirtualMachine) -> Void)?
+    /// Where the guest's agent finds the shared folders, for a guest that can't have them through a
+    /// file-sharing device: a Windows guest, which maps them as a drive over WebDAV. `nil` is the
+    /// device's tag, mounted where a Linux guest mounts it.
+    @ObservationIgnored public var sharedFoldersPlace: (@MainActor (VirtualMachine) -> SharedFoldersPlace?)?
 
     /// The account to set up on the first boot after installation. Kept in memory only: if the app quits
     /// before that boot, the guest shows its own setup assistant instead.
@@ -82,6 +86,9 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored private var usbDevicesOnTheirWay = 0
     /// The guest's clock stood still for a while, suspended or paused, and has not been set since.
     @ObservationIgnored private var isGuestClockStale = false
+    /// A Windows guest has said its setup is over, which ``finishWindowsSetup()`` follows up once the
+    /// machine has stopped.
+    @ObservationIgnored private var finishesWindowsSetupAtStop = false
     /// Counts the times the guest's clock has gone stale, to tell whether it did again while it was being set.
     @ObservationIgnored private var clockStandstills = 0
     /// The run of the guest that ``setupFailureRecordChanges`` counts for.
@@ -271,7 +278,6 @@ public final class VirtualMachine: Identifiable {
 
     /// Starts looking for the agent in a guest that has just come up.
     private func reachForAgent() {
-        guard configuration.canHaveGuestAgent else { return }
         agent.start { [weak self] in
             guard let self else { throw CancellationError() }
             return try await connectToGuest(port: GuestProtocol.agentPort)
@@ -291,6 +297,11 @@ public final class VirtualMachine: Identifiable {
                     configuration.os.build = build
                 }
             }
+        }
+        // A driver for a display that follows the window is used from the guest's next start: the
+        // hardware of a machine that runs doesn't change.
+        if hello.features.contains(GuestFeature.resizableDisplay), !configuration.installation.hasDisplayDriver {
+            try? updateConfiguration { $0.installation.hasDisplayDriver = true }
         }
         onGuestAgentChange?(self)
         Task { await lookAfterGuest() }
@@ -314,6 +325,9 @@ public final class VirtualMachine: Identifiable {
     /// that comes back up with a script that failed long ago has nothing new to tell. Run again, it is
     /// at work again, and a failure after that is news once more.
     private func guestSetupDidChange(to status: GuestSetupStatus) {
+        if status.state == .finished, configuration.os.family == .windows, configuration.installation.attachesSeedImage {
+            finishesWindowsSetupAtStop = true
+        }
         let hasFailed = status.state == .failed
         guard hasFailed != configuration.installation.hasReportedSetupFailure else { return }
         if setupFailureRecordRun != startCount {
@@ -332,6 +346,24 @@ public final class VirtualMachine: Identifiable {
         }
         try? updateConfiguration { $0.installation.hasReportedSetupFailure = hasFailed }
     }
+
+    /// A Windows guest has set itself up. Its installer and drivers come out, and so does its setup disc,
+    /// which holds the account's password. The guest restarts at the end of its setup, and the machine
+    /// comes back without them. Not before it stops: until then QEMU has them plugged in, and memory saved
+    /// in between expects them back.
+    private func finishWindowsSetup() {
+        try? updateConfiguration { configuration in
+            let media = Set(configuration.installation.setupMedia)
+            configuration.removableImages.removeAll { media.contains($0.id) }
+            configuration.installation.setupMedia = []
+            configuration.installation.attachesSeedImage = false
+            configuration.installation.isProvisioned = true
+        }
+        bundle.removeSeedImage()
+    }
+
+    /// Where the agent mounts the folders a guest has through its file-sharing device.
+    private static let deviceSharedFoldersPlace = SharedFoldersPlace(tag: GuestIntegration.sharedFoldersTag, mountPoint: GuestIntegration.sharedFoldersMountPoint)
 
     /// Does through the agent what the guest needs from the host right now: a clock that is right, its
     /// shared folders mounted, and once in its life this Mac's time zone. Called when the agent connects
@@ -354,8 +386,11 @@ public final class VirtualMachine: Identifiable {
             if isGuestClockStale, await agent.setClock(), run == startCount, standstills == clockStandstills {
                 isGuestClockStale = false
             }
+            // Looked up only when there is something to mount. A machine on QEMU has its folders where
+            // the app serves them, and none while it can't.
             if !configuration.mountsSharedFoldersAutomatically, !hasAgentMountedSharedFolders,
-               await agent.mountSharedFolders(tag: GuestIntegration.sharedFoldersTag, at: GuestIntegration.sharedFoldersMountPoint),
+               let place = sharedFoldersPlace?(self) ?? (configuration.engine == .qemu ? nil : Self.deviceSharedFoldersPlace),
+               await agent.mountSharedFolders(tag: place.tag, at: place.mountPoint),
                // The answer may come after the guest has stopped, or stopped and started again.
                run == startCount, agent.isConnected {
                 hasAgentMountedSharedFolders = true
@@ -473,9 +508,10 @@ public final class VirtualMachine: Identifiable {
     /// than have the guest's agent do it.
     ///
     /// It does for macOS guests, where an agent would need the say-so of someone at the guest's screen
-    /// first. Text that the machine's keyboard has no keys for is left to an agent that types.
+    /// first, and for guests on QEMU, whose display the app reads anyway to show it. Text that the
+    /// machine's keyboard has no keys for is left to an agent that types.
     public func doesItself(_ job: GuestJob) -> Bool {
-        guard configuration.os.family == .macOS else { return false }
+        guard hasOwnDesk else { return false }
         switch job {
         case .screenshot, .pointer:
             return true
@@ -486,13 +522,18 @@ public final class VirtualMachine: Identifiable {
         }
     }
 
+    /// Whether this Mac has the machine's display, mouse and keyboard for jobs of its own.
+    private var hasOwnDesk: Bool {
+        configuration.os.family == .macOS || configuration.engine == .qemu
+    }
+
     /// Whether a kind of job, by its ``GuestFeature``, is done in this machine's guest right now: by
     /// its agent, or by this Mac itself.
     public func does(_ feature: String) -> Bool {
         if agent.offers(feature) {
             return true
         }
-        return state == .running && configuration.os.family == .macOS && [GuestFeature.screen, GuestFeature.input].contains(feature)
+        return state == .running && hasOwnDesk && [GuestFeature.screen, GuestFeature.input].contains(feature)
     }
 
     /// Does a job this Mac does itself (``doesItself(_:)``), and returns what the job is for: the
@@ -518,6 +559,8 @@ public final class VirtualMachine: Identifiable {
     /// someone turns that off in its settings, which only the guest can tell: its agent is asked, and
     /// a guest without one is taken to be as macOS comes.
     private func guestTurnsWheel() async -> Bool {
+        // Only macOS turns its wheel around by default.
+        guard configuration.os.family == .macOS else { return false }
         guard agent.isConnected, agent.offers(GuestFeature.exec) else { return true }
         let setting = GuestJob.exec(.init(arguments: ["/usr/bin/defaults", "read", "-g", "com.apple.swipescrolldirection"]))
         guard let said = try? await collect(setting, patience: 5) else { return true }
@@ -948,8 +991,8 @@ public final class VirtualMachine: Identifiable {
 
     private func handle(_ event: VMBackendEvent) {
         switch event {
-        case .guestDidStop:
-            let restart = restartsAfterStop
+        case .guestDidStop, .guestDidRestart:
+            let restart = restartsAfterStop || event.isRestart
             finishStop()
             if restart {
                 // Until the start has begun, the machine looks shut down. Nothing may claim it for
@@ -976,6 +1019,10 @@ public final class VirtualMachine: Identifiable {
         shutdownRequestExpiry?.cancel()
         shutdownRequestExpiry = nil
         tearDownBackend()
+        if finishesWindowsSetupAtStop {
+            finishesWindowsSetupAtStop = false
+            finishWindowsSetup()
+        }
         state = .stopped
         refreshDiskUsage()
     }

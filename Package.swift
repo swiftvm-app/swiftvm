@@ -24,6 +24,8 @@ let package = Package(
             dependencies: [
                 .product(name: "VMCore", package: "SwiftVMKit"),
                 .product(name: "VZEngine", package: "SwiftVMKit"),
+                .product(name: "QEMUEngine", package: "SwiftVMKit"),
+                .product(name: "FileSharing", package: "SwiftVMKit"),
                 .product(name: "VMNetworking", package: "SwiftVMKit"),
                 .product(name: "SSHIntegration", package: "SwiftVMKit"),
                 .product(name: "DiskTools", package: "SwiftVMKit"),

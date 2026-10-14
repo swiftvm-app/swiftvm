@@ -276,7 +276,7 @@ struct SharedFoldersGuestHint: View {
             case .macOS:
                 hint("Folders appear in the guest under “My Shared Files” in the Finder sidebar.")
             case .windows:
-                hint("Folders appear in the guest as a network drive.")
+                hint("Folders appear in the guest on drive \(GuestIntegration.windowsSharedFoldersDrive), once the guest tools are installed. Changes apply right away.")
             case .linux:
                 if configuration.mountsSharedFoldersAutomatically || isMountedByAgent {
                     hint("Folders appear in the guest under \(GuestIntegration.sharedFoldersMountPoint). Changes apply right away.")

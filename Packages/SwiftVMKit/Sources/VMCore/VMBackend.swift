@@ -36,12 +36,23 @@ public enum VMState: String, Sendable, Hashable {
 public enum VMBackendEvent: Sendable {
     /// The guest shut itself down.
     case guestDidStop
+    /// The guest restarted itself, and the engine had it stop for that instead: it starts again as the
+    /// machine is configured now. QEMU does so, so that a restart picks up a change of its hardware.
+    case guestDidRestart
     /// The machine stopped because of an error.
     case stoppedWithError(String)
     /// A network interface lost its attachment.
     case networkDisconnected(String)
     /// A USB device that the guest had been handed is gone: pulled out, or taken back by the host.
     case usbDeviceDisconnected(USBDevice.ID)
+}
+
+extension VMBackendEvent {
+    /// The guest is to start again once it has stopped.
+    var isRestart: Bool {
+        if case .guestDidRestart = self { return true }
+        return false
+    }
 }
 
 /// How a guest was asked to shut down.

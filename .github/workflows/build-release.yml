@@ -45,6 +45,10 @@ jobs:
       - name: Install create-dmg
         run: npm install --global create-dmg
 
+      # What scripts/build-qemu.sh builds the QEMU for Windows guests with.
+      - name: Install QEMU's build tools and libraries
+        run: brew install ninja meson pkgconf glib pixman python
+
       - name: Import signing certificate
         env:
           CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE }}

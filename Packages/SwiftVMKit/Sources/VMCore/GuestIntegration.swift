@@ -1,11 +1,26 @@
 import Foundation
 
+/// Where a guest's agent is told to find the shared folders, and where to put them.
+public struct SharedFoldersPlace: Sendable, Hashable {
+    /// The tag of a file-sharing device, or for a Windows guest the address of the folders over WebDAV.
+    public var tag: String
+    /// The folder to mount them at, or for a Windows guest the drive.
+    public var mountPoint: String
+
+    public init(tag: String, mountPoint: String) {
+        self.tag = tag
+        self.mountPoint = mountPoint
+    }
+}
+
 /// Names shared between the host-side device configuration and guest-side setup.
 public enum GuestIntegration {
     /// virtio-fs tag of the device that carries the machine's shared folders (Linux guests).
     public static let sharedFoldersTag = "swiftvm"
     /// Where Linux guests mount the shared folders; each folder appears as a subdirectory.
     public static let sharedFoldersMountPoint = "/mnt/shared"
+    /// The drive Windows guests map the shared folders to; each folder appears as a folder on it.
+    public static let windowsSharedFoldersDrive = "Z:"
     /// Mounts the shared folders in a Linux guest that SwiftVM didn't set up (an ISO install or live session).
     public static var linuxMountCommand: String {
         "sudo mkdir -p \(sharedFoldersMountPoint) && sudo mount -t virtiofs \(sharedFoldersTag) \(sharedFoldersMountPoint)"

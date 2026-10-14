@@ -14,7 +14,8 @@
 #
 # The copy is at ".build/SwiftVM Dev.app", with its swiftvm tool in Contents/Helpers. A copy that is
 # still running from there is asked to quit once the new one is ready to take its place. SWIFTVM_HOME
-# gives the copy another data directory; for SWIFTVM_SIGN_IDENTITY see scripts/bundle-app.sh.
+# gives the copy another data directory; for SWIFTVM_SIGN_IDENTITY see scripts/bundle-app.sh. The QEMU
+# that runs Windows guests is built the first time, by scripts/build-qemu.sh; SWIFTVM_QEMU=- leaves it out.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
@@ -44,6 +45,11 @@ fi
 swift build --quiet --package-path Packages/SwiftVMKit --product swiftvm
 swift build --quiet --package-path Packages/SwiftVMKit --product swiftvm-agent
 helpers=$(swift build --package-path Packages/SwiftVMKit --show-bin-path)
+qemu=()
+if [[ ${SWIFTVM_QEMU:-} != - ]]; then
+    qemu_folder=$("$root/scripts/build-qemu.sh")
+    qemu=(--qemu "$qemu_folder")
+fi
 
 app="$root/.build/SwiftVM Dev.app"
 tool=$app/Contents/Helpers/swiftvm
@@ -51,7 +57,7 @@ tool=$app/Contents/Helpers/swiftvm
 # The new copy is put together before the old one is asked to leave. If that fails, over a certificate
 # that has run out for one, the copy that is open stays open.
 staged="$root/.build/staged/${app:t}"
-"$root/scripts/bundle-app.sh" --products "$products" --helpers "$helpers" --output "$staged" --development > /dev/null
+"$root/scripts/bundle-app.sh" --products "$products" --helpers "$helpers" --output "$staged" --development $qemu > /dev/null
 
 running_from "$app"
 if (( ${#reply} )); then

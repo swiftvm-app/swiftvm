@@ -10,6 +10,8 @@ The programs, the modules, and how they work together.
 | `swiftvm` | Your Mac | The command-line tool, inside the app at `Contents/Helpers`. Sends requests to the running app |
 | `swiftvm-agent` | macOS guests | The guest agent for macOS. Built with the app and carried into guests by an installer |
 | `swiftvm-agent.py` | Linux guests | The guest agent for Linux: one Python script and its systemd units |
+| `qemu-system-aarch64` | Your Mac | QEMU, inside the app at `Contents/Helpers/QEMU`. One for each running Windows machine, started and driven by the app |
+| `swiftvm-agent.exe` | Windows guests | The guest agent for Windows, built in the guest from its C# source |
 
 Both agents also do [jobs](#jobs-in-the-guest) for `swiftvm`: commands, the
 screen, the mouse, and the keyboard. The screen, the mouse, and the keyboard
@@ -23,6 +25,8 @@ interface is in `Packages/SwiftVMKit`.
 ```mermaid
 flowchart TB
     APP["SwiftVM app"] --> VZ["VZEngine"]
+    APP --> QEMU["QEMUEngine"]
+    APP --> SHARING["FileSharing"]
     APP --> INSTALLERS["Installers"]
     APP --> SSH["SSHIntegration"]
     APP --> CONTROL["VMControl"]
@@ -31,6 +35,9 @@ flowchart TB
     CONTROL --> CHANNEL
     VZ --> NETWORKING["VMNetworking"]
     VZ --> DISK["DiskTools"]
+    QEMU --> NETWORKING
+    QEMU --> DISK
+    QEMU --> CORE
     INSTALLERS --> DISK
     VZ --> CORE["VMCore"]
     NETWORKING --> CORE
@@ -47,6 +54,8 @@ flowchart TB
 | `App/` | The SwiftUI app: the menu bar panel, the windows, and the model behind them |
 | `VMCore` | What a machine is: its configuration, its package on disk, the library, snapshots, templates, the serial console, USB rules. Knows no engine |
 | `VZEngine` | Runs machines on the Virtualization framework, installs macOS, and sees and uses a machine's display, mouse, and keyboard |
+| `QEMUEngine` | Runs Windows machines on QEMU: starts it, talks to it over its machine protocol, shows its display over VNC, and carries the agent's connections over a serial line |
+| `FileSharing` | Serves the shared folders of Windows guests over WebDAV |
 | `VMNetworking` | The shared network, address reservations, and the port relay |
 | `SSHIntegration` | SSH names, keys, and the generated SSH configuration |
 | `DiskTools` | Creates, grows, and converts disk images, builds small ISO images, and holds the compressed disk with the server that hands it to a machine |
@@ -55,8 +64,8 @@ flowchart TB
 | `GuestChannel` | The messages between the app and a guest agent, the jobs an agent does for `swiftvm`, and the keys of a Mac's keyboard by name |
 | `GuestAgentMac` | The guest agent for macOS |
 
-`VMCore` defines a backend protocol, and `VZEngine` is its only
-implementation today. A second engine for Windows guests would sit next to it.
+`VMCore` defines a backend protocol, which `VZEngine` and `QEMUEngine`
+implement. A router hands each machine to the engine its configuration names.
 
 ## A machine on disk
 
@@ -67,13 +76,15 @@ disk.
 | File | What it holds |
 | --- | --- |
 | `config.json` | The machine's configuration. Newer fields decode with defaults, so older machines keep opening |
-| `disk.img`, `disk.asif`, `disk.swiftvmdisk` | The disk: raw for Quick Create machines, ASIF for the rest, or [compressed](../features/disks.md#keeping-the-disk-compressed) |
-| `efi-vars.fd` | Linux: UEFI variables |
+| `disk.img`, `disk.asif`, `disk.swiftvmdisk` | The disk: raw for Quick Create and Windows machines, ASIF for the rest, or [compressed](../features/disks.md#keeping-the-disk-compressed) |
+| `efi-vars.fd` | Linux and Windows: UEFI variables |
 | `aux.img`, `hardware-model.bin`, `machine-identifier.bin` | macOS: firmware state and the machine's identity |
-| `seed.iso` | Linux Quick Create: the first-boot setup data, with the setup script if one was picked |
+| `seed.iso` | Linux Quick Create: the first-boot setup data, with the setup script if one was picked. Windows: the answer file and SwiftVM's setup, until setup is over |
+| `qemu.pid` | Windows, while it runs: QEMU's process ID, for ending one that a copy of the app left behind |
 | `state.vzvmsave` | Saved memory, while suspended |
 | `snapshots/` | One folder per snapshot |
 | `logs/console.log` | Serial console output |
+| `logs/qemu.log` | Windows: what QEMU said |
 
 New machines are built in a staging folder and moved into the library once
 they are complete, so a creation that is cut short leaves nothing behind. The
@@ -141,7 +152,13 @@ sequenceDiagram
   owns the clipboard, the screen, the mouse, and the keyboard, and reaches
   the daemon over a Unix socket.
 - The Linux agent also passes on how the machine's
-  [setup script](#setup-scripts) is doing, unasked, whenever that changes.
+  [setup script](#setup-scripts) is doing, unasked, whenever that changes. The
+  Windows agent does the same for SwiftVM's setup of Windows.
+- A Windows guest has no socket device: QEMU on a Mac has none. Its agent talks
+  over a serial port, `org.swiftvm.agent`, which only SYSTEM and administrators
+  may open in the guest. The port carries frames, each naming the connection it
+  belongs to, so the app opens connections to ports 717 and 718 over it as it
+  would over a socket device. See [D20](./decisions.md#d20-the-windows-agent-is-c-that-windows-compiles-itself).
 
 ## Jobs in the guest
 
@@ -179,12 +196,12 @@ sequenceDiagram
 - `swiftvm cp` is `exec` twice over: `tar` packs on one side and unpacks on
   the other. What a guest sends is unpacked in a folder of its own first.
 
-| Job | Linux guest | macOS guest |
-| --- | --- | --- |
-| Command | The agent: a process of the account it runs as, with the environment of that user's desktop session if there is one | The agent's own program, started as `run-as`: it becomes the account, then the command. Inside the user's session if they are logged in |
-| Screenshot | The agent: what the display shows, read from the kernel's mode setting | The app: the surface of the machine's display |
-| Mouse and keyboard | The agent: input devices of its own, made through `uinput` | The app: events for the machine's own mouse and keyboard. Text that a US keyboard has no keys for is typed by the agent's half in the session, with Core Graphics events |
-| Tree | The agent: AT-SPI, asked by the same script run as the user at the screen | The agent: the accessibility API, in the session's half, once [macOS allows it](#allowing-the-tree-in-a-macos-guest) |
+| Job | Linux guest | macOS guest | Windows guest |
+| --- | --- | --- | --- |
+| Command | The agent: a process of the account it runs as, with the environment of that user's desktop session if there is one | The agent's own program, started as `run-as`: it becomes the account, then the command. Inside the user's session if they are logged in | The agent: a process of the account logged in at the screen, in its session, or of SYSTEM for `--root` |
+| Screenshot | The agent: what the display shows, read from the kernel's mode setting | The app: the surface of the machine's display | The app: the picture its VNC client keeps |
+| Mouse and keyboard | The agent: input devices of its own, made through `uinput` | The app: events for the machine's own mouse and keyboard. Text that a US keyboard has no keys for is typed by the agent's half in the session, with Core Graphics events | The app: VNC's pointer, and keys by their place on a PC keyboard |
+| Tree | The agent: AT-SPI, asked by the same script run as the user at the screen | The agent: the accessibility API, in the session's half, once [macOS allows it](#allowing-the-tree-in-a-macos-guest) | Not offered |
 
 In a macOS guest, what a program may do with the screen belongs to whoever is
 logged in. The root daemon takes such a job, tells the session's half its
@@ -264,6 +281,13 @@ sequenceDiagram
 - **macOS.** Install the restore image onto an empty disk, then start with an
   account for macOS to create by itself. SwiftVM then installs the SSH key and
   the guest tools over SSH.
+- **Windows.** Ask Microsoft for a link to Windows 11 for Arm and download it,
+  or take an ISO; download the `virtio-win` drivers. Create an empty disk and a
+  setup disc with an answer file and SwiftVM's setup, and plug in all three.
+  Windows Setup installs Windows, SwiftVM's setup installs the drivers and the
+  guest tools as SYSTEM and sets up SSH at the first logon, and the guest
+  restarts. When its agent says setup has finished, the installer and the
+  drivers come out and the setup disc, which holds the password, is deleted.
 
 ## Setup scripts
 

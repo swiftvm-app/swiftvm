@@ -142,20 +142,26 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         os.family == .linux
     }
 
-    /// Whether there is an agent for this kind of guest that the app can talk to.
-    public var canHaveGuestAgent: Bool {
-        os.family == .linux || os.family == .macOS
-    }
-
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
 
     /// Whether the machine's disk can be kept compressed: that of a Linux machine, raw as Quick Create
-    /// makes it, ASIF as an installer disc gets it, or compressed already. A Mac's own files are stored
-    /// compressed already, so its disk would hardly shrink for what writing to such a disk costs.
+    /// makes it, ASIF as an installer disc gets it, or compressed already, and that of a Windows machine,
+    /// raw or compressed. A Mac's own files are stored compressed already, so its disk would hardly
+    /// shrink for what writing to such a disk costs.
     public var supportsDiskCompression: Bool {
-        guard os.family == .linux, let disk = systemDisk else { return false }
-        return [.raw, .asif, .compressed].contains(disk.format)
+        guard let disk = systemDisk else { return false }
+        switch os.family {
+        case .linux: return [.raw, .asif, .compressed].contains(disk.format)
+        case .windows: return [.raw, .compressed].contains(disk.format)
+        case .macOS: return false
+        }
+    }
+
+    /// The format a disk that stops being compressed is written out in: Apple's, which takes up only
+    /// what it holds on any file system, or raw for QEMU, which doesn't read Apple's.
+    public var uncompressedDiskFormat: DiskConfiguration.Format {
+        engine == .qemu ? .raw : .asif
     }
 
     /// The configuration of a copy of this machine: the same hardware and disks under a new identity.
@@ -268,18 +274,34 @@ public struct RemovableImage: Codable, Sendable, Hashable, Identifiable {
 
 // MARK: - Display
 
+/// What shows a machine's display, where its engine has a choice: QEMU does.
+public enum DisplayAdapter: String, Codable, Sendable, Hashable {
+    /// A framebuffer that the firmware sets up and every system draws on, at the one size it starts
+    /// with. Windows Setup has nothing else to draw with.
+    case framebuffer
+    /// A virtio GPU, which a driver in the guest makes the size of the window.
+    case virtioGPU
+}
+
 public struct DisplayConfiguration: Codable, Sendable, Hashable {
     public var widthInPixels: Int
     public var heightInPixels: Int
     public var pixelsPerInch: Int
     /// Resize the guest display to follow the window.
     public var automaticallyResizes: Bool
+    /// The adapter the guest last started with, and so the one any memory saved of it expects. `nil`
+    /// for an engine that has no choice.
+    public var adapter: DisplayAdapter?
 
-    public init(widthInPixels: Int = 1920, heightInPixels: Int = 1200, pixelsPerInch: Int = 144, automaticallyResizes: Bool = true) {
+    public init(
+        widthInPixels: Int = 1920, heightInPixels: Int = 1200, pixelsPerInch: Int = 144, automaticallyResizes: Bool = true,
+        adapter: DisplayAdapter? = nil
+    ) {
         self.widthInPixels = widthInPixels
         self.heightInPixels = heightInPixels
         self.pixelsPerInch = pixelsPerInch
         self.automaticallyResizes = automaticallyResizes
+        self.adapter = adapter
     }
 
     /// A Retina display the size of the default machine window, for macOS guests.
@@ -484,15 +506,23 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
     /// The user has been told that the guest's setup script failed. That is news once: until the
     /// script is seen at work or finished again, a guest that says so again is not.
     public var hasReportedSetupFailure: Bool
+    /// The guest has a driver for a display that can change its size, as its agent said. It starts with
+    /// one from then on, where its engine has a choice (``DisplayAdapter``).
+    public var hasDisplayDriver: Bool
+    /// The drives that were plugged in to install the system, by their identifiers: a Windows machine's
+    /// installer and drivers. They come out when the guest's setup has finished.
+    public var setupMedia: [UUID]
 
     public init(
         attachesSeedImage: Bool = false, isProvisioned: Bool = false, hasHostTimeZone: Bool = false,
-        hasReportedSetupFailure: Bool = false
+        hasReportedSetupFailure: Bool = false, hasDisplayDriver: Bool = false, setupMedia: [UUID] = []
     ) {
         self.attachesSeedImage = attachesSeedImage
         self.isProvisioned = isProvisioned
         self.hasHostTimeZone = hasHostTimeZone
         self.hasReportedSetupFailure = hasReportedSetupFailure
+        self.hasDisplayDriver = hasDisplayDriver
+        self.setupMedia = setupMedia
     }
 
     public init(from decoder: any Decoder) throws {
@@ -501,6 +531,8 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
         isProvisioned = try c.decode(.isProvisioned, default: false)
         hasHostTimeZone = try c.decode(.hasHostTimeZone, default: false)
         hasReportedSetupFailure = try c.decode(.hasReportedSetupFailure, default: false)
+        hasDisplayDriver = try c.decode(.hasDisplayDriver, default: false)
+        setupMedia = try c.decode(.setupMedia, default: [])
     }
 }
 

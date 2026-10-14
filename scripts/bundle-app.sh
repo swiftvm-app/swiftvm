@@ -9,6 +9,8 @@
 #   --output        the app to make. A copy of SwiftVM that is there is replaced, unless it is running
 #   --development   make the development copy, "SwiftVM Dev": an app of its own to macOS, which keeps
 #                   its machines apart from the app's (AppIdentity in Packages/SwiftVMKit)
+#   --qemu          the QEMU that scripts/build-qemu.sh made, which runs Windows guests. Without it the
+#                   app runs every other guest, and says so when a Windows one is to start
 #
 # For a release, which scripts/build-release.sh makes:
 #   --version             what the app calls its version, in place of the one in Config/Info.plist
@@ -34,7 +36,7 @@ set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
 
-products="" helpers="" output="" development=false
+products="" helpers="" output="" qemu="" development=false
 version="" build_number="" sparkle_feed_url="" sparkle_public_key="" timestamp=--timestamp=none
 while (( $# )); do
     case $1 in
@@ -42,6 +44,7 @@ while (( $# )); do
         --helpers) helpers=${2:?}; shift 2 ;;
         --output) output=${2:?}; shift 2 ;;
         --development) development=true; shift ;;
+        --qemu) qemu=${2:?}; shift 2 ;;
         --version) version=${2:?}; shift 2 ;;
         --build-number) build_number=${2:?}; shift 2 ;;
         --sparkle-feed-url) sparkle_feed_url=${2:?}; shift 2 ;;
@@ -57,6 +60,7 @@ done
 for built in "$products/SwiftVM" "$products/SwiftVMKit_Installers.bundle" "$products/Sparkle.framework" "$helpers/swiftvm" "$helpers/swiftvm-agent"; do
     [[ -e $built ]] || fail "$built isn't there. Build first: scripts/build.sh, or swift run SwiftVM."
 done
+[[ -z $qemu || -x $qemu/bin/qemu-system-aarch64 ]] || fail "$qemu isn't a QEMU that scripts/build-qemu.sh made."
 # The disk takes swiftvm and SwiftVM for one name. The swiftvm tool, built at the repository's root, lands
 # in the folder of the app's program and replaces it, and the next build of the app doesn't notice.
 built=("$products"/*(N:t))
@@ -86,6 +90,12 @@ mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources" "$contents/
 
 cp "$products/SwiftVM" "$contents/MacOS/SwiftVM"
 cp "$helpers/swiftvm" "$helpers/swiftvm-agent" "$contents/Helpers/"
+if [[ -n $qemu ]]; then
+    # Code in Helpers, where only code may be; the firmware and the licences with the resources.
+    mkdir -p "$contents/Helpers/QEMU" "$contents/Resources/QEMU"
+    cp -R "$qemu/bin" "$qemu/lib" "$contents/Helpers/QEMU/"
+    cp -R "$qemu/share" "$qemu/licenses" "$qemu/README.txt" "$contents/Resources/QEMU/"
+fi
 # The resources of the package's Installers module, where Bundle.module looks for them in an app.
 cp -R "$products/SwiftVMKit_Installers.bundle" "$contents/Resources/"
 # The build signed that bundle to run locally. Inside the app it is covered by the app's signature.
@@ -228,6 +238,18 @@ sign "$sparkle/Updater.app"
 sign "$contents/Frameworks/Sparkle.framework"
 sign --identifier com.swiftvm.app.swiftvm "$contents/Helpers/swiftvm"
 sign --identifier com.swiftvm.app.swiftvm-agent "$contents/Helpers/swiftvm-agent"
+if [[ -n $qemu ]]; then
+    for library in "$contents"/Helpers/QEMU/lib/*.dylib(N); do
+        sign "$library"
+    done
+    # QEMU runs guests on the Hypervisor framework, which takes an entitlement of its own. Its libraries
+    # are signed as the app's are, so the same holds for loading them.
+    print '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>' > "$stage/qemu-entitlements.plist"
+    if [[ $identity == - ]]; then
+        /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/qemu-entitlements.plist"
+    fi
+    sign --identifier com.swiftvm.app.qemu --entitlements "$stage/qemu-entitlements.plist" "$contents/Helpers/QEMU/bin/qemu-system-aarch64"
+fi
 sign --entitlements "$stage/entitlements.plist" "$app"
 codesign --verify --deep --strict "$app" || fail "The signature of $app doesn't hold."
 if $remember; then

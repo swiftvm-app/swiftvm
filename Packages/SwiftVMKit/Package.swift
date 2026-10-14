@@ -7,6 +7,8 @@ let package = Package(
     products: [
         .library(name: "VMCore", targets: ["VMCore"]),
         .library(name: "VZEngine", targets: ["VZEngine"]),
+        .library(name: "QEMUEngine", targets: ["QEMUEngine"]),
+        .library(name: "FileSharing", targets: ["FileSharing"]),
         .library(name: "VMNetworking", targets: ["VMNetworking"]),
         .library(name: "SSHIntegration", targets: ["SSHIntegration"]),
         .library(name: "DiskTools", targets: ["DiskTools"]),
@@ -32,6 +34,10 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .target(name: "VZEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools"]),
+        // Shares the Mac's folders with guests that have no device for it, over WebDAV.
+        .target(name: "FileSharing"),
+        // Runs Windows guests on QEMU, which the app carries in Contents/Helpers.
+        .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel"]),
         .target(name: "VMControl", dependencies: ["GuestChannel"]),
         .executableTarget(name: "swiftvm", dependencies: ["VMControl", "GuestChannel"]),
         .testTarget(name: "GuestChannelTests", dependencies: ["GuestChannel"]),
@@ -43,5 +49,7 @@ let package = Package(
         .testTarget(name: "VMNetworkingTests", dependencies: ["VMNetworking"]),
         .testTarget(name: "VMControlTests", dependencies: ["VMControl", "GuestChannel"]),
         .testTarget(name: "VZEngineTests", dependencies: ["VZEngine", "VMCore"]),
+        .testTarget(name: "QEMUEngineTests", dependencies: ["QEMUEngine", "VMCore", "GuestChannel"]),
+        .testTarget(name: "FileSharingTests", dependencies: ["FileSharing"]),
     ]
 )

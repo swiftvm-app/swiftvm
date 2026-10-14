@@ -11,8 +11,10 @@ Supported platforms, and lessons that shape the code.
 | Linux guests | ARM64. Quick Create: Ubuntu 26.04, Ubuntu 24.04, Debian 13 |
 | Linux guest tools | systemd and Python 3. [Automation](../features/automation.md) takes Python 3.9 or newer, and the screen as a tree also `python3-gi` and `gir1.2-atspi-2.0` |
 | Linux desktops | GNOME, KDE Plasma, Xfce, and Cinnamon, on each Quick Create system |
+| Windows guests | Windows 11 for Arm (Arm64), on the QEMU inside the app. Tried with 26H2 |
+| Windows guest tools | .NET Framework 4.8, which Windows 11 has, to build the agent; the drivers on `virtio-win` 0.1.302 |
 
-Not yet supported: Windows guests, and Intel Macs.
+Not supported: Intel Macs, and Windows for Intel and AMD processors.
 
 ## Signing
 
@@ -168,6 +170,68 @@ Not yet supported: Windows guests, and Intel Macs.
 - macOS doesn't let an app quit while one of its windows has a sheet open, and
   doesn't ask the app first. `swiftvm quit` refuses then, instead of waiting
   for a quit that never comes.
+
+## QEMU and Windows
+
+- The Virtualization framework doesn't start Windows. QEMU does, on the
+  Hypervisor framework, with no emulator built in.
+- QEMU's VNC server won't start without a keyboard layout, though the app
+  hands it keys by their place. The app ships `en-us`.
+- A virtio network card makes QEMU look for an option ROM, which the app doesn't
+  ship: the firmware has a driver of its own. It is started without one
+  (`romfile=`).
+- A block node's name is 31 characters at most.
+- A device with a place in the boot order (`bootindex`) makes the firmware look
+  at those devices only. An installer disc then isn't seen, and the machine
+  starts the firmware's shell. No device gets one; the firmware's own order,
+  which Windows Setup puts Windows at the top of, decides.
+- A disc image plugged in as a USB disk is a hard disk to Windows, which then
+  doesn't read its file system: Windows Setup finds no installation files and
+  asks for drivers. Discs are USB drives for discs (`usb-bot` with a `scsi-cd`).
+- QEMU's USB controller has four ports. More devices than that go behind a hub
+  that QEMU adds, which runs at USB 1.1 speed. The controller is given fifteen,
+  as many as it takes.
+- QEMU tells the USB devices of a saved machine apart by their port. A restore
+  only works with each device in the port it was in, which plugging drives in
+  and out while the machine runs shuffles. Every device has a port of its own,
+  and the saved state's file starts with the drives' ports: a snapshot copies
+  that one file.
+- QEMU can't save its USB sound card. It is unplugged for the moment saving
+  takes, and a restored machine has it plugged in again.
+- The firmware asks for a key before it starts an installer disc, and starts
+  the next device without one. The app presses the space bar for the first ten
+  seconds of a machine whose disk is still empty.
+- Windows Setup draws only on a framebuffer that the firmware set up (`ramfb`),
+  at the size the firmware picked: 800 by 600. With only a virtio GPU it shows
+  nothing. After setup the driver for the virtio GPU is there, and the machine
+  starts with that one, the size of its window.
+- The virtio GPU's driver offers the size the window asks for as a mode but
+  doesn't switch to it. A program at the screen has to. Red Hat's helper for
+  that looks at the first display device only, which is Windows' basic one, so
+  the agent's half in the session asks the driver for the size itself (its
+  private escape) and switches.
+- Changing a running machine's hardware isn't possible, so a guest restart ends
+  QEMU (`-no-reboot`), and the machine starts it again with the hardware it is
+  configured with by then.
+- Saved memory expects the hardware it was saved with. A machine is resumed
+  with the display adapter it last started with, whatever it would start with
+  now.
+- QEMU on macOS has no socket device. The agent's serial port in Windows is
+  open to SYSTEM and administrators only: a program of an account that isn't
+  elevated is refused.
+- A Windows disc's files are in UDF, with an ISO 9660 part that only holds a
+  note saying so. `tar` reads no further than that, so the disc is mounted to
+  look inside.
+- Microsoft hands out a link to Windows only to a session that its page's
+  fingerprint script has registered, and turns many VPNs away.
+- Windows' WebDAV client takes files of 50 MB at most until told otherwise in
+  its registry, which the guest tools do.
+- Windows has a write on a pipe handle that isn't overlapped wait for a read
+  that is pending on the same handle. The agent's service and its half in the
+  session talk over a pipe both ends open overlapped: otherwise what the Mac
+  sends waits until the session next says something.
+- Windows 11 calls itself Windows 10 in its registry. The build number says
+  which it is.
 
 ## Storage
 

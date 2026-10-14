@@ -9,16 +9,18 @@ Usage: swiftvm <command> [arguments]
   list                              List virtual machines
   info <machine>                    Show one machine in detail
   create <system> [options]         Create a machine and wait until it is ready
-      <system> is macos, or a Linux image such as ubuntu-26.04
+      <system> is macos, windows, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
       --user <name>  --password <password>  --no-start
       --location <folder>           Keep the machine in this folder, on an external disk for one, instead
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
       --rosetta                     Linux: run x86-64 programs with Rosetta
-      --compressed                  Linux: keep the disk compressed, which usually takes less than half
-                                    the space on this Mac and makes writing slower
+      --compressed                  Linux and Windows: keep the disk compressed, which usually takes less
+                                    than half the space on this Mac and makes writing slower
       --ipsw <file>                 macOS: install this restore image instead of downloading the latest
+      --iso <file>                  Windows: install from this Windows 11 Arm64 ISO instead of downloading
+                                    it from Microsoft. Windows needs a password
       --script <name>|<file>        Linux: run a setup script on the first start, a desktop for one.
                                     By its name in `swiftvm scripts`, or a file by its path (./mine.sh).
                                     Give it again for more scripts, which run in that order.
@@ -365,7 +367,7 @@ case "create":
     // What the machine is made from: a system to install, which comes first, or a template.
     let system = arguments.first.flatMap { $0.hasPrefix("--") ? nil : $0 }
     guard system != nil || arguments.contains("--template") else {
-        fail("Missing system: macos, or a Linux image such as ubuntu-26.04. Or a template, with --template <template>.")
+        fail("Missing system: macos, windows, or a Linux image such as ubuntu-26.04. Or a template, with --template <template>.")
     }
     var parameters = ControlRequest.CreateParameters(distribution: system ?? "")
     var options: [String] = []
@@ -395,6 +397,7 @@ case "create":
         case "--rosetta": parameters.rosetta = true
         case "--compressed": parameters.compressed = true
         case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
+        case "--iso": parameters.installerPath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--script":
             // A name is one from the list. What has a slash in it is a file: ./mine.sh, ~/scripts/mine.sh.
             // The app is told where the file is from the root, as it isn't in this folder.

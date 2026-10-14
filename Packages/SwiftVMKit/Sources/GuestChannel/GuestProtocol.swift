@@ -52,6 +52,10 @@ public enum GuestFeature {
     /// ``GuestJob/permission(_:)``. For systems that ask someone at the screen first.
     public static let permission = "permission"
 
+    /// The guest has a driver for a display whose size can change with the window. Said by agents in
+    /// guests whose engine gives them a choice of display: Windows guests on QEMU.
+    public static let resizableDisplay = "resizable-display"
+
     /// The features that are kinds of ``GuestJob``.
     public static let jobs = [exec, screen, input, accessibility]
 }

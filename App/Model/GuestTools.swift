@@ -21,13 +21,17 @@ extension AppModel {
         switch machine.configuration.os.family {
         case .linux: LinuxGuestAgent.version
         case .macOS: macGuestAgentURL == nil ? nil : MacGuestAgent.version
-        case .windows: nil
+        case .windows: WindowsGuestAgent.version
         }
     }
 
     /// What a person runs in `machine`'s guest to install from the guest tools disc.
     func guestToolsInstallCommand(for machine: VirtualMachine) -> String {
-        machine.configuration.os.family == .macOS ? MacGuestAgent.toolsInstallCommand : LinuxGuestAgent.toolsInstallCommand
+        switch machine.configuration.os.family {
+        case .macOS: MacGuestAgent.toolsInstallCommand
+        case .linux: LinuxGuestAgent.toolsInstallCommand
+        case .windows: WindowsGuestAgent.toolsInstallCommand
+        }
     }
 
     /// Whether there is something to install in `machine`: a running guest that can have the guest tools
@@ -44,6 +48,12 @@ extension AppModel {
     /// isn't to be had there is the disc: ``attachGuestToolsDisc(to:)``.
     func installGuestTools(on machine: VirtualMachine, password: String? = nil) async throws {
         try requireRunningGuest(machine)
+        guard machine.configuration.os.family != .windows else {
+            // Windows has no SSH until the guest tools have set it up. Its own setup installs them.
+            throw VMError.invalidConfiguration(
+                "The guest tools are installed in Windows from inside it. Use `swiftvm install-tools \(machine.configuration.ssh.alias) --disc`, then \(WindowsGuestAgent.toolsInstallCommand.prefix(1).lowercased() + WindowsGuestAgent.toolsInstallCommand.dropFirst())"
+            )
+        }
         guard canSignIn(to: machine) else {
             throw VMError.invalidConfiguration(
                 "“\(machine.name)” has no SSH name or no address, so the guest tools can't be installed over SSH. To install from inside the guest, use `swiftvm install-tools <machine> --disc`."
@@ -87,20 +97,31 @@ extension AppModel {
         let attached = Set(library.machines.flatMap { machine in
             ([machine.configuration] + machine.snapshots.map(\.configuration)).flatMap { $0.removableImages.map(\.path) }
         })
-        let isMac = machine.configuration.os.family == .macOS
+        let family = machine.configuration.os.family
         let program = macGuestAgentURL
         let disc = try await Task.detached(priority: .userInitiated) {
-            if isMac {
+            switch family {
+            case .macOS:
                 guard let program else { throw MacGuestAgent.AgentError.missingProgram }
                 return try MacGuestAgent.toolsImage(in: directory, inUse: attached, program: program)
+            case .linux:
+                return try LinuxGuestAgent.toolsImage(in: directory, inUse: attached)
+            case .windows:
+                return try WindowsGuestAgent.toolsImage(in: directory, inUse: attached)
             }
-            return try LinuxGuestAgent.toolsImage(in: directory, inUse: attached)
         }.value
         // An older disc that is still plugged in has the same label. The guest would find that one
         // under the name the command uses, and install what is on it.
         for image in machine.configuration.removableImages where image.path != disc.path {
-            if LinuxGuestAgent.isToolsImage(image.path) || MacGuestAgent.isToolsImage(image.path) {
+            if LinuxGuestAgent.isToolsImage(image.path) || MacGuestAgent.isToolsImage(image.path) || WindowsGuestAgent.isToolsImage(image.path) {
                 try await machine.ejectImage(image.id)
+            }
+        }
+        // Windows has no drivers of its own for the machine's devices: they come from a disc of their own.
+        if family == .windows {
+            let drivers = try await downloader.fetch(WindowsDownloads.drivers) { _ in }
+            if !machine.configuration.removableImages.contains(where: { $0.path == drivers.standardizedFileURL.path }) {
+                try await machine.attachImage(RemovableImage(url: drivers, readOnly: true))
             }
         }
         if let image = machine.configuration.removableImages.first(where: { $0.path == disc.path }) {
@@ -132,8 +153,9 @@ extension AppModel {
         Task {
             let failureTitle = "Couldn't install the guest tools in “\(machine.name)”"
             let isMac = machine.configuration.os.family == .macOS
+            let isWindows = machine.configuration.os.family == .windows
             do {
-                if canSignIn(to: machine) {
+                if canSignIn(to: machine), !isWindows {
                     do {
                         try await installGuestTools(on: machine)
                         machine.notice = VMErrorInfo(
@@ -155,6 +177,13 @@ extension AppModel {
                 }
                 try await attachGuestToolsDisc(to: machine)
                 let command = guestToolsInstallCommand(for: machine)
+                if isWindows {
+                    machine.notice = VMErrorInfo(
+                        title: "Install the guest tools in “\(machine.name)”",
+                        message: "The guest tools disc and the drivers for virtual machines are now plugged in. \(command) Restart Windows afterwards, so that its display follows the window."
+                    )
+                    return
+                }
                 let terminal = isMac ? "in Terminal in the virtual machine" : "in a terminal in the virtual machine"
                 machine.notice = VMErrorInfo(
                     title: "Install the guest tools in “\(machine.name)”",
