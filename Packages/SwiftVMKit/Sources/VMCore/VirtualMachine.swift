@@ -537,7 +537,7 @@ public final class VirtualMachine: Identifiable {
     }
 
     /// Says how far `activity` has come. Word that arrives after the work is over is dropped.
-    func reportProgress(_ fraction: Double, of activity: VMActivity) {
+    public func reportProgress(_ fraction: Double, of activity: VMActivity) {
         guard self.activity == activity else { return }
         activityProgress = fraction
     }

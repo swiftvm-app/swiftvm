@@ -76,6 +76,8 @@ final class AppModel {
     @ObservationIgnored var reservedAliases: Set<String> = []
     /// The moves to another folder that are under way, by machine, for calling one off.
     @ObservationIgnored var moves: [UUID: Task<Void, any Error>] = [:]
+    /// The disks that are being converted, by machine, for calling one off.
+    @ObservationIgnored var conversions: [UUID: Task<Void, any Error>] = [:]
     /// The templates that are being saved, by the machine each is saved from, for calling one off.
     @ObservationIgnored var templateSaves: [UUID: Task<VMTemplate, any Error>] = [:]
     /// Set once the app has agreed to quit for the command-line tool, where there is nobody to ask what

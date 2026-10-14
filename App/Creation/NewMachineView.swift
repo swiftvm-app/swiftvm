@@ -315,6 +315,7 @@ private struct LinuxMachineForm: View {
     @State private var password = ""
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
+    @State private var compressesDisk = false
     @State private var startsWhenReady = true
     /// The folder to keep the machine in, if one was chosen.
     @State private var location: URL?
@@ -448,12 +449,18 @@ private struct LinuxMachineForm: View {
                 }
             }
             DiskSizeRow(gigabytes: $diskGigabytes, range: Self.diskRange)
+            if method == .quickCreate {
+                // Only a disk that is made from a ready image here can be the app's own kind.
+                Toggle("Keep the disk compressed", isOn: $compressesDisk)
+            }
             LocationRow(location: $location)
         } header: {
             Text("Hardware")
         } footer: {
             if let diskProblem {
                 Text(diskProblem).foregroundStyle(.red)
+            } else if method == .quickCreate, compressesDisk {
+                Text("A compressed disk usually takes less than half the space on your Mac. Writing to it is slower, and a crash of your Mac can cost what the guest wrote in its last second.")
             }
         }
 
@@ -726,6 +733,7 @@ private struct LinuxMachineForm: View {
                 password: password,
                 installsSSHKey: chosenInstallsSSHKey,
                 rosetta: usesRosetta,
+                compressesDisk: compressesDisk,
                 setupScripts: selectedScripts,
                 location: chosenLocation
             ), onReady: ready)

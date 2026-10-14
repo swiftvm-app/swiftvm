@@ -150,6 +150,15 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
 
+    /// Whether the machine's disk can be kept compressed. For now that is the disk of a Linux machine
+    /// that is a raw image, as Quick Create makes it, or compressed already: other disks are in Apple's
+    /// format, which only the framework reads, and a Mac is yet to be seen starting from a disk of the
+    /// app's own.
+    public var supportsDiskCompression: Bool {
+        guard os.family == .linux, let disk = systemDisk else { return false }
+        return disk.format == .raw || disk.format == .compressed
+    }
+
     /// The configuration of a copy of this machine: the same hardware and disks under a new identity.
     ///
     /// The copy gets its own network card and no address yet. Forwarded ports stay with the original,
@@ -200,6 +209,8 @@ public struct DiskConfiguration: Codable, Sendable, Hashable, Identifiable {
         case asif
         /// Raw image; kept sparse by APFS.
         case raw
+        /// SwiftVM's own: compressed, and handed to the machine by the app itself.
+        case compressed
     }
 
     public var id: UUID

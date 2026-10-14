@@ -1,3 +1,4 @@
+import DiskTools
 import Foundation
 import VMCore
 import VMNetworking
@@ -46,15 +47,17 @@ public final class VZBackendProvider: VMBackendProvider {
             for interface in configuration.networkInterfaces where interface.isConnected {
                 attachments[interface.id] = VZVmnetNetworkDeviceAttachment(network: network.reference)
             }
+            var diskExports: [CompressedDiskExport] = []
             let vzConfiguration = try VZConfigurationBuilder(
                 bundle: machine.bundle,
                 configuration: configuration,
                 networkAttachments: attachments,
                 console: console
-            ).build()
+            ).build(diskExports: &diskExports)
             return VZBackend(
                 vzConfiguration: vzConfiguration,
                 machineConfiguration: configuration,
+                diskExports: diskExports,
                 attachmentProvider: { [weak self] _ in
                     // Plugging the cable back in: the machine is still registered, so the network is live.
                     guard let network = self?.networkManager.liveDefaultNetwork else {

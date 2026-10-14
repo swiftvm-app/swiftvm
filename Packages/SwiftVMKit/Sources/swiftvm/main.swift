@@ -16,6 +16,8 @@ Usage: swiftvm <command> [arguments]
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
       --rosetta                     Linux: run x86-64 programs with Rosetta
+      --compressed                  Linux: keep the disk compressed, which usually takes less than half
+                                    the space on this Mac and makes writing slower
       --ipsw <file>                 macOS: install this restore image instead of downloading the latest
       --script <name>|<file>        Linux: run a setup script on the first start, a desktop for one.
                                     By its name in `swiftvm scripts`, or a file by its path (./mine.sh).
@@ -44,6 +46,9 @@ Usage: swiftvm <command> [arguments]
   attach <machine> <image> [--read-only]   Plug in a disc or disk image as a USB drive
   eject <machine> <image>           Unplug it again
   resize <machine> <GB>             Grow the disk of a machine that is shut down
+  compression <machine> on|off      Keep the disk of a Linux machine that is shut down compressed, which
+                                    usually takes less than half the space on this Mac, or as it was before.
+                                    For machines made with Quick Create. Waits until the disk is converted
   forward <machine> <port>[:<guest port>] [--udp] [--allow-others]
                                     Make a port in the machine reachable as localhost:<port>
   unforward <machine> <port> [--udp]
@@ -388,6 +393,7 @@ case "create":
         case "--location": parameters.location = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--no-ssh-key": parameters.installsSSHKey = false
         case "--rosetta": parameters.rosetta = true
+        case "--compressed": parameters.compressed = true
         case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--script":
             // A name is one from the list. What has a slash in it is a file: ./mine.sh, ~/scripts/mine.sh.
@@ -572,6 +578,13 @@ case "resize":
     guard arguments.count >= 2, let gigabytes = Int(arguments[1]), gigabytes > 0 else { fail("Missing disk size in GB.") }
     rejectUnknownOptions(arguments.dropFirst(2), allowed: [])
     printTable(send(ControlRequest(command: .resize, machine: machine, diskGigabytes: gigabytes)).machines)
+
+case "compression":
+    let machine = requireMachine()
+    guard arguments.count == 2, ["on", "off"].contains(arguments[1]) else {
+        fail("Usage: swiftvm compression <machine> on|off")
+    }
+    printTable(send(ControlRequest(command: .compression, machine: machine, isOn: arguments[1] == "on")).machines)
 
 case "move":
     let machine = requireMachine()

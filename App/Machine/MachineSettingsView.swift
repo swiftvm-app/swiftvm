@@ -15,6 +15,7 @@ struct MachineSettingsView: View {
     /// What is wrong with the SSH name or port that was typed, while something is.
     @State private var sshProblem: String?
     @State private var isResizingDisk = false
+    @State private var isChangingCompression = false
 
     private var configuration: VMConfiguration { machine.configuration }
     private var isActive: Bool { machine.state != .stopped }
@@ -154,12 +155,42 @@ struct MachineSettingsView: View {
                         }
                 }
             }
+            if configuration.supportsDiskCompression {
+                LabeledContent("Compression") {
+                    HStack {
+                        Text(isDiskCompressed ? "On" : "Off")
+                        if machine.activity == .convertingDisk {
+                            // All of the disk is written out anew, which takes as long as there is on it.
+                            ProgressView(value: machine.activityProgress)
+                                .controlSize(.small)
+                                .frame(width: 64)
+                                .accessibilityLabel("Converting the disk")
+                            Button("Cancel") { model.cancelConversion(of: machine) }
+                                .accessibilityLabel("Cancel converting the disk")
+                        } else {
+                            Button(isDiskCompressed ? "Turn Off…" : "Turn On…") { isChangingCompression = true }
+                                .accessibilityLabel(isDiskCompressed ? "Turn off compression" : "Turn on compression")
+                                .disabled(machine.state != .stopped || machine.activity != nil)
+                                .help(machine.state == .stopped
+                                    ? (isDiskCompressed ? "Keep the disk as a plain image again, without compressing it" : "Keep the disk compressed, usually in less than half the space")
+                                    : "Shut down the virtual machine to change how its disk is kept")
+                                .popover(isPresented: $isChangingCompression, arrowEdge: .bottom) {
+                                    CompressDiskView(machine: machine)
+                                }
+                        }
+                    }
+                }
+            }
             RemovableDrivesEditor(machine: machine)
         } header: {
             Text("Storage")
         } footer: {
             Text("The disk only takes up what the guest has written to it. Disc and disk images are plugged in as USB drives and can be changed while the virtual machine runs.")
         }
+    }
+
+    private var isDiskCompressed: Bool {
+        configuration.systemDisk?.format == .compressed
     }
 
     private var sharingSection: some View {

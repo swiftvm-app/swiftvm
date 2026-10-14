@@ -91,7 +91,7 @@ extension AppModel {
                 return .failure("“\(saving.name)” is being saved as a template. Wait until that is done.")
             }
             guard !isWorkingOnMachineFiles else {
-                return .failure("A virtual machine is busy with a snapshot, a copy or a resize. Try again in a moment.")
+                return .failure("A virtual machine is busy with a snapshot, a copy, a resize or a conversion of its disk. Try again in a moment.")
             }
             // macOS doesn't let an app quit while one of its windows has a sheet open or a panel waits
             // for an answer, and there is nobody here to close it: what is being filled in there would
@@ -370,6 +370,15 @@ extension AppModel {
         case .discardState:
             guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
             machine.discardSavedState()
+        case .compression:
+            guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            do {
+                try await setDiskCompression(of: machine, enabled: isOn)
+            } catch is CancellationError {
+                return .failure("Converting the disk of “\(machine.name)” was called off. It is as it was.")
+            } catch {
+                return .failure(error.localizedDescription)
+            }
         case .resize:
             guard let gigabytes = request.diskGigabytes, gigabytes > 0 else { return .failure("Missing disk size.") }
             guard gigabytes <= HostResources.maximumDiskGigabytes else {
@@ -699,6 +708,11 @@ extension AppModel {
             }
         }
 
+        let compressesDisk = parameters.compressed ?? false
+        if compressesDisk, isMac {
+            return .failure("Only the disk of a Linux machine can be kept compressed for now.")
+        }
+
         let start: () -> MachineCreation
         if let distribution {
             // A name that was asked for has to be one Linux takes. Without one, the Mac user's is made to fit.
@@ -720,6 +734,7 @@ extension AppModel {
                 password: parameters.password ?? "",
                 installsSSHKey: installsSSHKey,
                 rosetta: usesRosetta,
+                compressesDisk: compressesDisk,
                 setupScripts: setupScripts,
                 location: location
             )
@@ -774,7 +789,8 @@ extension AppModel {
     /// in it. Its name, its hardware and where it is kept are the new machine's own.
     private func createMachine(fromTemplate identifier: String, _ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.user == nil, parameters.password == nil, parameters.restoreImagePath == nil,
-              parameters.scripts == nil, parameters.rosetta == nil, parameters.installsSSHKey == nil
+              parameters.scripts == nil, parameters.rosetta == nil, parameters.installsSSHKey == nil,
+              parameters.compressed == nil
         else {
             return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.")
         }

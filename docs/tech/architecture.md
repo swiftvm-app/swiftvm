@@ -49,7 +49,7 @@ flowchart TB
 | `VZEngine` | Runs machines on the Virtualization framework, installs macOS, and sees and uses a machine's display, mouse, and keyboard |
 | `VMNetworking` | The shared network, address reservations, and the port relay |
 | `SSHIntegration` | SSH names, keys, and the generated SSH configuration |
-| `DiskTools` | Creates, grows, and converts disk images, and builds small ISO images |
+| `DiskTools` | Creates, grows, and converts disk images, builds small ISO images, and holds the compressed disk with the server that hands it to a machine |
 | `Installers` | The distribution catalog, setup scripts, downloads, first-boot setup for Linux, and the guest agent installers |
 | `VMControl` | The messages between the app and `swiftvm`, and which copy of the app a program belongs to |
 | `GuestChannel` | The messages between the app and a guest agent, the jobs an agent does for `swiftvm`, and the keys of a Mac's keyboard by name |
@@ -67,7 +67,7 @@ disk.
 | File | What it holds |
 | --- | --- |
 | `config.json` | The machine's configuration. Newer fields decode with defaults, so older machines keep opening |
-| `disk.img`, `disk.asif` | The disk: raw for Quick Create machines, ASIF for the rest |
+| `disk.img`, `disk.asif`, `disk.swiftvmdisk` | The disk: raw for Quick Create machines, ASIF for the rest, or [compressed](../features/disks.md#keeping-the-disk-compressed) |
 | `efi-vars.fd` | Linux: UEFI variables |
 | `aux.img`, `hardware-model.bin`, `machine-identifier.bin` | macOS: firmware state and the machine's identity |
 | `seed.iso` | Linux Quick Create: the first-boot setup data, with the setup script if one was picked |
@@ -328,7 +328,7 @@ can be on another disk.
 | File | What it holds |
 | --- | --- |
 | `template.json` | The template's name, and the configuration of the machine it was saved from |
-| `disk.img`, `disk.asif` | The disk |
+| `disk.img`, `disk.asif`, `disk.swiftvmdisk` | The disk |
 | `efi-vars.fd`, `aux.img`, `hardware-model.bin` | Firmware state |
 | `seed.iso` | Linux Quick Create: the first-boot setup data |
 
