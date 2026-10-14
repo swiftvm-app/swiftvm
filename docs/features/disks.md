@@ -30,10 +30,9 @@ So pick a generous size when you create a Mac.
 
 ## Keeping the disk compressed
 
-The disk of a Linux machine that was made with Quick Create can be kept
-compressed. It then usually takes less than half the space on your Mac. Files
-that are compressed already, such as video and archives, stay as large as they
-are.
+The disk of a Linux machine can be kept compressed. It then usually takes less
+than half the space on your Mac. Files that are compressed already, such as
+video and archives, stay as large as they are.
 
 Shut the machine down, then choose **Turn On…** next to **Compression** under
 **Storage** in its settings, or run:
@@ -46,8 +45,8 @@ Everything on the disk is written out anew. That takes a while for a large
 disk, and needs room for the new disk next to the old one until it is done.
 
 A new machine can have a compressed disk from the start: turn on **Keep the
-disk compressed** under **Advanced** when you create it with Quick Create, or
-add `--compressed` to `swiftvm create`.
+disk compressed** under **Advanced** when you create it, or add `--compressed`
+to `swiftvm create`.
 
 What changes for the machine:
 
@@ -72,8 +71,8 @@ What changes for the machine:
 - Copies, templates and snapshots made afterwards share space with the disk,
   as before.
 
-macOS machines and Linux machines installed from a disc can't have a
-compressed disk yet.
+macOS machines can't have a compressed disk: a Mac's own files are stored
+compressed already, so its disk would hardly get smaller.
 
 ## Disc and disk images
 

@@ -150,13 +150,12 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
 
-    /// Whether the machine's disk can be kept compressed. For now that is the disk of a Linux machine
-    /// that is a raw image, as Quick Create makes it, or compressed already: other disks are in Apple's
-    /// format, which only the framework reads, and a Mac is yet to be seen starting from a disk of the
-    /// app's own.
+    /// Whether the machine's disk can be kept compressed: that of a Linux machine, raw as Quick Create
+    /// makes it, ASIF as an installer disc gets it, or compressed already. A Mac's own files are stored
+    /// compressed already, so its disk would hardly shrink for what writing to such a disk costs.
     public var supportsDiskCompression: Bool {
         guard os.family == .linux, let disk = systemDisk else { return false }
-        return disk.format == .raw || disk.format == .compressed
+        return [.raw, .asif, .compressed].contains(disk.format)
     }
 
     /// The configuration of a copy of this machine: the same hardware and disks under a new identity.

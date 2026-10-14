@@ -30,7 +30,7 @@ swiftvm info web-server      # one machine in detail
 | `clone <machine> [name]` | Copy a machine that is shut down |
 | `move <machine> <folder>` | Move a machine that is shut down to [another folder or disk](virtual-machines.md#where-machines-are-kept), and wait until it is there |
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
-| `compression <machine> on\|off` | Keep the disk of a Quick Create Linux machine that is shut down [compressed](disks.md#keeping-the-disk-compressed), or as it was before |
+| `compression <machine> on\|off` | Keep the disk of a Linux machine that is shut down [compressed](disks.md#keeping-the-disk-compressed), or not |
 | `open <machine>` | Show the machine's window |
 | `delete <machine>` | Move a stopped machine to the Trash |
 

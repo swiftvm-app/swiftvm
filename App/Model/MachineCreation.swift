@@ -66,6 +66,8 @@ struct LinuxInstallerRequest {
     var cpuCount: Int
     var memorySize: UInt64
     var diskCapacity: UInt64
+    /// Keep the machine's disk compressed from the start.
+    var compressesDisk = false
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
@@ -252,7 +254,9 @@ extension AppModel {
         try Task.checkCancellation()
 
         creation.update("Creating disk…")
-        let disk = DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
+        let disk = request.compressesDisk
+            ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .virtio, format: .compressed)
+            : DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
         let configuration = VMConfiguration(
             name: request.name,
             os: os,

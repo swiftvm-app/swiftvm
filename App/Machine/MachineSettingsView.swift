@@ -172,7 +172,7 @@ struct MachineSettingsView: View {
                                 .accessibilityLabel(isDiskCompressed ? "Turn off compression" : "Turn on compression")
                                 .disabled(machine.state != .stopped || machine.activity != nil)
                                 .help(machine.state == .stopped
-                                    ? (isDiskCompressed ? "Keep the disk as a plain image again, without compressing it" : "Keep the disk compressed, usually in less than half the space")
+                                    ? (isDiskCompressed ? "Keep the disk as an ordinary disk image again, without compressing it" : "Keep the disk compressed, usually in less than half the space")
                                     : "Shut down the virtual machine to change how its disk is kept")
                                 .popover(isPresented: $isChangingCompression, arrowEdge: .bottom) {
                                     CompressDiskView(machine: machine)

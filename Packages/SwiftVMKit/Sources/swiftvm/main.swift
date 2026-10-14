@@ -47,8 +47,8 @@ Usage: swiftvm <command> [arguments]
   eject <machine> <image>           Unplug it again
   resize <machine> <GB>             Grow the disk of a machine that is shut down
   compression <machine> on|off      Keep the disk of a Linux machine that is shut down compressed, which
-                                    usually takes less than half the space on this Mac, or as it was before.
-                                    For machines made with Quick Create. Waits until the disk is converted
+                                    usually takes less than half the space on this Mac, or not. Waits until
+                                    the disk is converted
   forward <machine> <port>[:<guest port>] [--udp] [--allow-others]
                                     Make a port in the machine reachable as localhost:<port>
   unforward <machine> <port> [--udp]

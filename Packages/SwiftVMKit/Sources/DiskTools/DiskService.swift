@@ -114,8 +114,12 @@ public enum DiskService {
             switch (format, newFormat) {
             case (.raw, .compressed):
                 try compress(rawImageAt: source, to: destination, progress: progress, isCancelled: isCancelled)
+            case (.asif, .compressed):
+                try compress(asifImageAt: source, to: destination, progress: progress, isCancelled: isCancelled)
             case (.compressed, .raw):
                 try expand(compressedDiskAt: source, to: destination, progress: progress, isCancelled: isCancelled)
+            case (.compressed, .asif):
+                try expand(compressedDiskAt: source, toASIFImageAt: destination, progress: progress, isCancelled: isCancelled)
             default:
                 throw DiskError.cannotConvert(from: format, to: newFormat)
             }
@@ -155,7 +159,32 @@ public enum DiskService {
             position = hole
         }
 
-        try CompressedDisk.create(at: destination, capacity: roundedToBlocks(size))
+        try compress(ranges, of: descriptor, named: source.lastPathComponent, capacity: size, to: destination, progress: progress, isCancelled: isCancelled)
+    }
+
+    /// Only the system reads an ASIF image. It attaches the image as a disk of its own, read-only and
+    /// with nothing on it mounted, and the disk is read from beginning to end: it can't say where it
+    /// holds something. What is empty in it reads as zeros, which take up nothing compressed.
+    private static func compress(
+        asifImageAt source: URL, to destination: URL, progress: (@Sendable (Double) -> Void)?, isCancelled: @Sendable () -> Bool
+    ) throws {
+        let size = try capacity(of: source, format: .asif)
+        let device = try attach(source, size: size, readOnly: true)
+        defer { detach(device) }
+        let descriptor = open("/dev/r\(device)", O_RDONLY)
+        guard descriptor >= 0 else {
+            throw DiskError.io("Couldn't read \(source.lastPathComponent): \(String(cString: strerror(errno)))")
+        }
+        defer { close(descriptor) }
+        try compress([0..<size], of: descriptor, named: source.lastPathComponent, capacity: size, to: destination, progress: progress, isCancelled: isCancelled)
+    }
+
+    /// Writes `ranges` of what `descriptor` reads into a new compressed disk of `capacity` bytes.
+    private static func compress(
+        _ ranges: [Range<UInt64>], of descriptor: Int32, named name: String, capacity: UInt64, to destination: URL,
+        progress: (@Sendable (Double) -> Void)?, isCancelled: @Sendable () -> Bool
+    ) throws {
+        try CompressedDisk.create(at: destination, capacity: roundedToBlocks(capacity))
         let disk = try CompressedDisk(url: destination)
         do {
             try copy(pieces(of: ranges), progress: progress, isCancelled: isCancelled) { piece, buffer in
@@ -165,7 +194,7 @@ public enum DiskService {
                     let got = pread(descriptor, buffer + done, count - done, off_t(piece.lowerBound) + off_t(done))
                     if got < 0, errno == EINTR { continue }
                     guard got > 0 else {
-                        throw DiskError.io("Couldn't read \(source.lastPathComponent): \(got < 0 ? String(cString: strerror(errno)) : "it is cut short")")
+                        throw DiskError.io("Couldn't read \(name): \(got < 0 ? String(cString: strerror(errno)) : "it is cut short")")
                     }
                     done += got
                 }
@@ -176,6 +205,79 @@ public enum DiskService {
             throw error
         }
         try disk.close()
+    }
+
+    /// Writes what a compressed disk holds into a new ASIF image, through the system: it attaches the image
+    /// as a disk of its own, with nothing on it mounted. What the compressed disk doesn't hold is left
+    /// alone, and reads as zeros.
+    private static func expand(
+        compressedDiskAt source: URL, toASIFImageAt destination: URL, progress: (@Sendable (Double) -> Void)?, isCancelled: @Sendable () -> Bool
+    ) throws {
+        let disk = try CompressedDisk(url: source, readOnly: true)
+        defer { try? disk.close() }
+        try createBlankDisk(at: destination, capacity: disk.capacity, format: .asif)
+        let device = try attach(destination, size: disk.capacity, readOnly: false)
+        do {
+            let descriptor = open("/dev/r\(device)", O_WRONLY)
+            guard descriptor >= 0 else {
+                throw DiskError.io("Couldn't write \(destination.lastPathComponent): \(String(cString: strerror(errno)))")
+            }
+            defer { close(descriptor) }
+            try copy(pieces(of: disk.storedRanges()), progress: progress, isCancelled: isCancelled) { piece, buffer in
+                let count = Int(piece.upperBound - piece.lowerBound)
+                try disk.read(at: piece.lowerBound, into: UnsafeMutableRawBufferPointer(start: buffer, count: count))
+                var done = 0
+                while done < count {
+                    let put = pwrite(descriptor, buffer + done, count - done, off_t(piece.lowerBound) + off_t(done))
+                    if put < 0, errno == EINTR { continue }
+                    guard put > 0 else {
+                        throw DiskError.io("Couldn't write \(destination.lastPathComponent): \(String(cString: strerror(errno)))")
+                    }
+                    done += put
+                }
+            }
+        } catch {
+            detach(device)
+            throw error
+        }
+        // Detached, the image has what was written to the disk in its file. Until then it may not.
+        guard detach(device) else {
+            throw DiskError.io("Couldn't finish \(destination.lastPathComponent): the system didn't let go of it.")
+        }
+        // The original is about to be removed, so this has to be on the Mac's disk.
+        let file = open(destination.path, O_RDONLY)
+        guard file >= 0 else { throw DiskError.io("Couldn't finish \(destination.lastPathComponent): \(String(cString: strerror(errno)))") }
+        defer { close(file) }
+        guard fcntl(file, F_FULLFSYNC) == 0 || fsync(file) == 0 else {
+            throw DiskError.io("Couldn't finish \(destination.lastPathComponent): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    /// Attaches the image as a disk, and returns the name of that disk, such as `disk7`.
+    private static func attach(_ image: URL, size: UInt64, readOnly: Bool) throws -> String {
+        let output = try ProcessRunner.run(
+            "/usr/sbin/diskutil", ["image", "attach", "--noMount"] + (readOnly ? ["--readOnly"] : []) + ["--plist", image.path]
+        )
+        let plist = try? PropertyListSerialization.propertyList(from: Data(output.standardOutput.utf8), format: nil) as? [String: Any]
+        let entities = (plist?["system-entities"] as? [[String: Any]]) ?? []
+        // A Mac's disk comes with its partitions and the container that APFS makes of one of them, each
+        // a disk of its own. The image itself is the one that is as large as the image.
+        let disks = entities.compactMap { entity -> (name: String, size: UInt64)? in
+            guard let name = entity["dev-entry"] as? String, name.wholeMatch(of: /disk[0-9]+/) != nil else { return nil }
+            return (name, (entity["size"] as? NSNumber)?.uint64Value ?? 0)
+        }
+        guard let whole = disks.first(where: { $0.size == size }) ?? disks.first else {
+            for match in output.standardOutput.matches(of: /<string>(disk[0-9]+)<\/string>/) { detach(String(match.1)) }
+            throw DiskError.io("Couldn't attach \(image.lastPathComponent): the system named no disk for it.")
+        }
+        return whole.name
+    }
+
+    /// Says whether the disk is gone.
+    @discardableResult
+    private static func detach(_ device: String) -> Bool {
+        if (try? ProcessRunner.run("/usr/sbin/diskutil", ["eject", "/dev/\(device)"])) != nil { return true }
+        return (try? ProcessRunner.run("/usr/bin/hdiutil", ["detach", "-force", "/dev/\(device)"])) != nil
     }
 
     private static func expand(

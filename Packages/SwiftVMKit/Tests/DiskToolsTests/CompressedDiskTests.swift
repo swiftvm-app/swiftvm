@@ -439,6 +439,56 @@ private final class BlockDeviceClient {
         try disk.close()
     }
 
+    /// The disks of Linux machines installed from a disc are ASIF images, and so is what turning
+    /// compression off gives.
+    @Test func convertsAnASIFImageAndBack() throws {
+        let megabyte = 1 << 20
+        let fixture = try Fixture(capacity: cluster)
+        let image = fixture.folder.appending(path: "disk.asif")
+        try DiskService.createBlankDisk(at: image, capacity: UInt64(16 * megabyte), format: .asif)
+        var expected = [UInt8](repeating: 0, count: 16 * megabyte)
+        let text = fixture.text(300 * 512, tag: 1)
+        let noise = fixture.noise(140 * 512)
+        expected.replaceSubrange(megabyte..<(megabyte + text.count), with: text)
+        expected.replaceSubrange((9 * megabyte + 123 * 512)..<(9 * megabyte + 123 * 512 + noise.count), with: noise)
+
+        // Filled through the system, the only one that writes the format.
+        let attached = try ProcessRunner.run("/usr/sbin/diskutil", ["image", "attach", "--noMount", "--plist", image.path]).standardOutput
+        let device = try #require(attached.firstMatch(of: /<string>(disk[0-9]+)<\/string>/)?.1)
+        var ejected = false
+        defer { if !ejected { _ = try? ProcessRunner.run("/usr/sbin/diskutil", ["eject", "/dev/\(device)"]) } }
+        do {
+            let descriptor = open("/dev/r\(device)", O_RDWR)
+            try #require(descriptor >= 0)
+            defer { close(descriptor) }
+            for (offset, bytes) in [(megabyte, text), (9 * megabyte + 123 * 512, noise)] {
+                #expect(bytes.withUnsafeBytes { pwrite(descriptor, $0.baseAddress, $0.count, off_t(offset)) } == bytes.count)
+            }
+        }
+        try ProcessRunner.run("/usr/sbin/diskutil", ["eject", "/dev/\(device)"])
+        ejected = true
+
+        func contents(of url: URL) throws -> [UInt8] {
+            let disk = try CompressedDisk(url: url, readOnly: true)
+            defer { try? disk.close() }
+            #expect(disk.capacity == UInt64(16 * megabyte))
+            var read = [UInt8](repeating: 0xAA, count: expected.count)
+            try read.withUnsafeMutableBytes { try disk.read(at: 0, into: $0) }
+            return read
+        }
+        let compressed = fixture.folder.appending(path: "converted.\(CompressedDisk.fileExtension)")
+        try DiskService.convertDisk(at: image, format: .asif, to: compressed, format: .compressed)
+        #expect(try contents(of: compressed) == expected)
+
+        // Back into an ASIF image, which is what turning compression off gives, and in again.
+        let back = fixture.folder.appending(path: "back.asif")
+        try DiskService.convertDisk(at: compressed, format: .compressed, to: back, format: .asif)
+        #expect(try DiskService.capacity(of: back, format: .asif) == UInt64(16 * megabyte))
+        let again = fixture.folder.appending(path: "again.\(CompressedDisk.fileExtension)")
+        try DiskService.convertDisk(at: back, format: .asif, to: again, format: .compressed)
+        #expect(try contents(of: again) == expected)
+    }
+
     @Test func convertsARawImageAndBack() throws {
         let megabyte = 1 << 20
         let fixture = try Fixture(capacity: cluster)

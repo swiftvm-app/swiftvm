@@ -40,8 +40,8 @@ struct CompressDiskView: View {
         let used = Formatting.bytes(machine.allocatedDiskSize)
         if isCompressed {
             return """
-                The disk is written out anew as it was before it was compressed. That takes a while, and \
-                needs room for all of it next to the \(used) it takes up now, until it is done.
+                The disk is written out anew as an ordinary disk image, without compression. That takes a \
+                while, and needs room for all of it next to the \(used) it takes up now, until it is done.
                 """
         }
         return """

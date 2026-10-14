@@ -202,7 +202,7 @@ extension AppModel {
         }
     }
 
-    /// Keeps the disk of a machine that is shut down compressed, or as a raw image again. Everything
+    /// Keeps the disk of a machine that is shut down compressed, or as an ASIF image again. Everything
     /// on the disk is written out anew, which takes a while, and can be called off with
     /// ``cancelConversions()``: the machine goes by its old disk until the new one is whole. The
     /// machine's snapshots stay as they are: going back to one brings back the disk it was taken with,
@@ -255,14 +255,17 @@ extension AppModel {
             guard let disk = machine.configuration.systemDisk else {
                 throw VMError.invalidConfiguration("“\(machine.name)” has no disk.")
             }
-            let format: DiskConfiguration.Format = compressed ? .compressed : .raw
-            guard disk.format != format else { return }
+            // Back to Apple's format, whatever the disk was made as: that takes up only what it holds,
+            // on any file system, as a raw image only does on APFS.
+            let format: DiskConfiguration.Format = compressed ? .compressed : .asif
+            // On is for a disk that isn't compressed yet, off for one that is. Anything else is as asked already.
+            guard compressed ? disk.format != .compressed : disk.format == .compressed else { return }
             guard machine.configuration.supportsDiskCompression else {
-                throw VMError.invalidConfiguration("Only the disk of a Linux virtual machine that was made with Quick Create can be kept compressed for now.")
+                throw VMError.invalidConfiguration("Only the disk of a Linux virtual machine can be kept compressed.")
             }
             var converted = disk
             converted.format = format
-            converted.fileName = compressed ? "disk.\(CompressedDisk.fileExtension)" : "disk.img"
+            converted.fileName = compressed ? "disk.\(CompressedDisk.fileExtension)" : "disk.asif"
             let bundle = machine.bundle
             let source = bundle.diskURL(for: disk)
             let destination = bundle.diskURL(for: converted)

@@ -449,17 +449,14 @@ private struct LinuxMachineForm: View {
                 }
             }
             DiskSizeRow(gigabytes: $diskGigabytes, range: Self.diskRange)
-            if method == .quickCreate {
-                // Only a disk that is made from a ready image here can be the app's own kind.
-                Toggle("Keep the disk compressed", isOn: $compressesDisk)
-            }
+            Toggle("Keep the disk compressed", isOn: $compressesDisk)
             LocationRow(location: $location)
         } header: {
             Text("Hardware")
         } footer: {
             if let diskProblem {
                 Text(diskProblem).foregroundStyle(.red)
-            } else if method == .quickCreate, compressesDisk {
+            } else if compressesDisk {
                 Text("A compressed disk usually takes less than half the space on your Mac. Writing to it is slower, and a crash of your Mac can cost what the guest wrote in its last second.")
             }
         }
@@ -751,6 +748,7 @@ private struct LinuxMachineForm: View {
                 cpuCount: cpuCount,
                 memorySize: memorySize,
                 diskCapacity: diskCapacity,
+                compressesDisk: compressesDisk,
                 location: chosenLocation
             ), onReady: ready)
         }
