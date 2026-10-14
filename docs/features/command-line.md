@@ -30,6 +30,7 @@ swiftvm info web-server      # one machine in detail
 | `clone <machine> [name]` | Copy a machine that is shut down |
 | `move <machine> <folder>` | Move a machine that is shut down to [another folder or disk](virtual-machines.md#where-machines-are-kept), and wait until it is there |
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
+| `compression <machine> on\|off` | Keep the disk of a Linux machine that is shut down [compressed](disks.md#keeping-the-disk-compressed), or not |
 | `open <machine>` | Show the machine's window |
 | `delete <machine>` | Move a stopped machine to the Trash |
 
@@ -52,6 +53,7 @@ SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 | `--location <folder>` | Keep the machine in this folder instead of the one for new machines |
 | `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs `--password`; macOS leaves Remote Login off |
 | `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta) |
+| `--compressed` | Linux: keep the disk [compressed](disks.md#keeping-the-disk-compressed) from the start |
 | `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |
 | `--script <name>` | Linux: run a [setup script](setup-scripts.md) on the first start, by its name in `swiftvm scripts`. A desktop needs `--password` |
 | `--script <file>` | The same with a file, by its path: `./mine.sh` |

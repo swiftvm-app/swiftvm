@@ -28,6 +28,52 @@ what the guest does with the new space depends on the guest:
 
 So pick a generous size when you create a Mac.
 
+## Keeping the disk compressed
+
+The disk of a Linux machine can be kept compressed. It then usually takes less
+than half the space on your Mac. Files that are compressed already, such as
+video and archives, stay as large as they are.
+
+Shut the machine down, then choose **Turn On…** next to **Compression** under
+**Storage** in its settings, or run:
+
+```bash
+swiftvm compression web-server on     # off to go back
+```
+
+Everything on the disk is written out anew. That takes a while for a large
+disk, and needs room for the new disk next to the old one until it is done.
+
+A new machine can have a compressed disk from the start: turn on **Keep the
+disk compressed** under **Advanced** when you create it, or add `--compressed`
+to `swiftvm create`.
+
+What changes for the machine:
+
+- **Reading is as fast or faster, writing is slower.** A machine that mostly
+  reads, such as one that starts programs and builds, hardly notices. One that
+  writes a lot, such as a busy database, does: copying files in takes about
+  one and a half times as long, and many small writes at once get through at
+  about a third of the speed.
+- **A crash of your Mac can cost the last second.** If the Mac loses power or
+  crashes while the machine runs, the disk comes back whole, as it was at one
+  moment in its last second. What the guest wrote after that moment is gone,
+  also what it was told was safe. A crash of the guest or of SwiftVM loses
+  nothing.
+- **Snapshots stay as they are.** Going back to a snapshot from before brings
+  back the disk as it was then, not compressed.
+- **Space is only won once earlier copies are gone.** Snapshots, templates and
+  duplicates made before share their space with the disk as it was. They keep
+  all of it when the disk is written out anew, so delete the ones you no longer
+  need.
+- Space that the guest frees is given back to your Mac, as before. On a disk
+  that isn't APFS it is kept for the machine to use again.
+- Copies, templates and snapshots made afterwards share space with the disk,
+  as before.
+
+macOS machines can't have a compressed disk: a Mac's own files are stored
+compressed already, so its disk would hardly get smaller.
+
 ## Disc and disk images
 
 Disc images (ISO) and disk images (raw or ASIF) plug into a machine as USB

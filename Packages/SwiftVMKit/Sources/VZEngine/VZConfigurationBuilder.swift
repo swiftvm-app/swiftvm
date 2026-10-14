@@ -1,4 +1,5 @@
 import DiskImageKit
+import DiskTools
 import Foundation
 import VMCore
 import Virtualization
@@ -50,7 +51,23 @@ public struct VZConfigurationBuilder {
         self.console = console
     }
 
-    public func build() throws -> VZVirtualMachineConfiguration {
+    /// Puts the machine together.
+    ///
+    /// - Parameter diskExports: Is given the compressed disks of the machine, which the app serves to
+    ///   it itself. They have to be closed once the machine is gone, and not before.
+    public func build(diskExports: inout [CompressedDiskExport]) throws -> VZVirtualMachineConfiguration {
+        var exports: [CompressedDiskExport] = []
+        do {
+            let vz = try makeConfiguration(serving: &exports)
+            diskExports = exports
+            return vz
+        } catch {
+            for export in exports { try? export.close() }
+            throw error
+        }
+    }
+
+    private func makeConfiguration(serving exports: inout [CompressedDiskExport]) throws -> VZVirtualMachineConfiguration {
         let vz = VZVirtualMachineConfiguration()
         vz.cpuCount = Self.clampedCPUCount(configuration.cpuCount)
         vz.memorySize = Self.clampedMemorySize(configuration.memorySize)
@@ -65,7 +82,7 @@ public struct VZConfigurationBuilder {
             throw BuildError.unsupportedGuest(.windows)
         }
 
-        vz.storageDevices = try makeStorageDevices()
+        vz.storageDevices = try makeStorageDevices(serving: &exports)
         let usbController = VZXHCIControllerConfiguration()
         usbController.usbDevices = try configuration.removableImages.map(Self.makeRemovableDrive)
         vz.usbControllers = [usbController]
@@ -190,15 +207,23 @@ public struct VZConfigurationBuilder {
 
     // MARK: Storage
 
-    private func makeStorageDevices() throws -> [VZStorageDeviceConfiguration] {
+    private func makeStorageDevices(serving exports: inout [CompressedDiskExport]) throws -> [VZStorageDeviceConfiguration] {
         var devices: [VZStorageDeviceConfiguration] = []
         for disk in configuration.disks {
             let url = bundle.diskURL(for: disk)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw BuildError.missingFile(disk.fileName)
             }
-            let attachment: VZDiskImageStorageDeviceAttachment
+            let attachment: VZStorageDeviceAttachment
             switch disk.format {
+            case .compressed:
+                // The framework reads no format but its own. It is given the address of a server in
+                // this app instead, which reads and writes the disk for it.
+                let export = try CompressedDiskExport(diskAt: url, readOnly: disk.readOnly)
+                exports.append(export)
+                attachment = try VZNetworkBlockDeviceStorageDeviceAttachment(
+                    url: export.url, timeout: 60, isForcedReadOnly: disk.readOnly, synchronizationMode: .full
+                )
             case .asif:
                 let image = try DiskImage(opening: .open(url: url, mode: disk.readOnly ? .readOnly : .readWrite))
                 attachment = try VZDiskImageStorageDeviceAttachment(diskImage: image)

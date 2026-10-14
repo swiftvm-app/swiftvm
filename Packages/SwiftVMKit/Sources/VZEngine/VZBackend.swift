@@ -1,5 +1,6 @@
 import AccessoryAccess
 import AppKit
+import DiskTools
 import GuestChannel
 import VMCore
 import Virtualization
@@ -24,10 +25,13 @@ public final class VZBackend: NSObject, VMBackend {
     private let usbAccessory: @MainActor (USBDevice.ID) -> AAUSBAccessory?
     /// The USB devices of this Mac that the guest has.
     private var passthroughDevices: [USBDevice.ID: VZUSBPassthroughDevice] = [:]
+    /// The compressed disks of the machine, which the app serves to it for as long as it is there.
+    private var diskExports: [CompressedDiskExport]
 
     init(
         vzConfiguration: VZVirtualMachineConfiguration,
         machineConfiguration: VMConfiguration,
+        diskExports: [CompressedDiskExport] = [],
         attachmentProvider: @escaping @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment,
         usbAccessory: @escaping @MainActor (USBDevice.ID) -> AAUSBAccessory? = { _ in nil }
     ) {
@@ -37,6 +41,7 @@ public final class VZBackend: NSObject, VMBackend {
         self.unpluggedInterfaces = Set(machineConfiguration.networkInterfaces.filter { !$0.isConnected }.map(\.id))
         self.attachmentProvider = attachmentProvider
         self.usbAccessory = usbAccessory
+        self.diskExports = diskExports
         // Without an explicit queue the machine uses the main queue, matching this class's isolation.
         self.virtualMachine = VZVirtualMachine(configuration: vzConfiguration)
         super.init()
@@ -174,6 +179,10 @@ public final class VZBackend: NSObject, VMBackend {
         view = nil
         desk?.invalidate()
         desk = nil
+        // The machine has stopped, so nothing is being written any more. What a disk can't commit
+        // now stays in its journal and is brought back when it is opened again.
+        for export in diskExports { try? export.close() }
+        diskExports = []
     }
 
     public func setSharedFolders(_ folders: [SharedFolder]) throws {

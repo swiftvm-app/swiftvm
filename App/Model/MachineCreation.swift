@@ -46,6 +46,8 @@ struct LinuxQuickCreateRequest {
     var password: String
     var installsSSHKey: Bool
     var rosetta: Bool
+    /// Keep the machine's disk compressed from the start.
+    var compressesDisk = false
     /// What to set the system up with on its first start, such as a desktop.
     var setupScripts: [SetupScript] = []
     /// The folder to keep the machine in. `nil` is the folder for new machines.
@@ -64,6 +66,8 @@ struct LinuxInstallerRequest {
     var cpuCount: Int
     var memorySize: UInt64
     var diskCapacity: UInt64
+    /// Keep the machine's disk compressed from the start.
+    var compressesDisk = false
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
@@ -182,7 +186,9 @@ extension AppModel {
         let alias = reserveAlias(for: request.name)
         defer { reservedAliases.remove(alias) }
         let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
-        let disk = DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
+        let disk = request.compressesDisk
+            ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .virtio, format: .compressed)
+            : DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
         let interface = NetworkInterfaceConfiguration()
         let configuration = VMConfiguration(
             name: request.name,
@@ -211,11 +217,23 @@ extension AppModel {
         do {
             let diskURL = bundle.diskURL(for: disk)
             let progress = ProgressRelay { fraction in creation.fraction = fraction }
+            // The image is unpacked as the plain disk it is. A compressed disk is made from that one,
+            // which then goes again.
+            let unpacked = request.compressesDisk ? bundle.url.appending(path: ".unpacked-disk.img") : diskURL
             try await Task.detached(priority: .userInitiated) {
-                try LinuxImageInstaller.install(image: imageURL, to: diskURL, capacity: disk.capacity) { progress.report($0) }
+                try LinuxImageInstaller.install(image: imageURL, to: unpacked, capacity: disk.capacity) { progress.report($0) }
                 try seed.writeImage(to: bundle.seedImageURL)
             }.value
             try Task.checkCancellation()
+            if request.compressesDisk {
+                creation.update("Compressing disk…", fraction: 0)
+                try await Task.detached(priority: .userInitiated) {
+                    try DiskService.convertDisk(at: unpacked, format: .raw, to: diskURL, format: .compressed) { progress.report($0) }
+                    // Not left to chance: it is as large as the image, and nobody would see it in the package.
+                    try FileManager.default.removeItem(at: unpacked)
+                }.value
+                try Task.checkCancellation()
+            }
             sshWriter.forgetHostKey(for: alias)
             return try addToLibrary(staged: bundle)
         } catch {
@@ -236,7 +254,9 @@ extension AppModel {
         try Task.checkCancellation()
 
         creation.update("Creating disk…")
-        let disk = DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
+        let disk = request.compressesDisk
+            ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .virtio, format: .compressed)
+            : DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
         let configuration = VMConfiguration(
             name: request.name,
             os: os,

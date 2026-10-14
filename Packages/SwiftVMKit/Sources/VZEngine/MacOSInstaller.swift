@@ -1,3 +1,4 @@
+import DiskTools
 import Foundation
 import VMCore
 import Virtualization
@@ -52,7 +53,9 @@ public enum MacOSInstaller {
         guard !image.isRemote else { throw InstallError.imageNotDownloaded }
 
         // The installer needs no network, so the machine is built without attachments.
-        let vzConfiguration = try VZConfigurationBuilder(bundle: bundle, configuration: configuration).build()
+        var diskExports: [CompressedDiskExport] = []
+        let vzConfiguration = try VZConfigurationBuilder(bundle: bundle, configuration: configuration).build(diskExports: &diskExports)
+        defer { for export in diskExports { try? export.close() } }
         let virtualMachine = VZVirtualMachine(configuration: vzConfiguration)
         let installer = VZMacOSInstaller(virtualMachine: virtualMachine, restoringFromImageAt: image.url)
 

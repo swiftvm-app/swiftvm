@@ -32,6 +32,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case eject
         /// Grow the machine's disk.
         case resize
+        /// Keep the disk of a machine that is shut down compressed or not, as ``ControlRequest/isOn`` says.
+        case compression
         /// Make a copy of a machine that is shut down.
         case clone
         /// Move a machine that is shut down into the folder ``ControlRequest/location``, which may be on
@@ -150,6 +152,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var location: String?
         /// Linux: let the guest run x86-64 programs with Rosetta. `nil` is no.
         public var rosetta: Bool?
+        /// Linux: keep the machine's disk compressed from the start. `nil` is no.
+        public var compressed: Bool?
         /// Whether this Mac's SSH key lets into the account. `nil` is yes.
         public var installsSSHKey: Bool?
         /// Name or UUID of the template to make the machine from, instead of installing a system. It
@@ -164,8 +168,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public init(
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
-            scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, installsSSHKey: Bool? = nil,
-            template: String? = nil, start: Bool = true
+            scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, compressed: Bool? = nil,
+            installsSSHKey: Bool? = nil, template: String? = nil, start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -178,6 +182,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.scripts = scripts
             self.location = location
             self.rosetta = rosetta
+            self.compressed = compressed
             self.installsSSHKey = installsSSHKey
             self.template = template
             self.start = start

@@ -4,7 +4,8 @@ import Installers
 import VMCore
 import VZEngine
 
-/// Operations on a machine's disks: making a copy of the machine, moving it and growing its disk.
+/// Operations on a machine's disks: making a copy of the machine, moving it, growing its disk and
+/// keeping it compressed.
 extension AppModel {
     /// A name for a copy of `machine` that nothing else uses: `Name copy`, `Name copy 2`, …
     func nameForCopy(of machine: VirtualMachine) -> String {
@@ -198,6 +199,108 @@ extension AppModel {
                 guard let index = configuration.disks.firstIndex(where: { $0.id == disk.id }) else { return }
                 configuration.disks[index].capacity = capacity
             }
+        }
+    }
+
+    /// Keeps the disk of a machine that is shut down compressed, or as an ASIF image again. Everything
+    /// on the disk is written out anew, which takes a while, and can be called off with
+    /// ``cancelConversions()``: the machine goes by its old disk until the new one is whole. The
+    /// machine's snapshots stay as they are: going back to one brings back the disk it was taken with,
+    /// in the format it had.
+    func setDiskCompression(of machine: VirtualMachine, enabled: Bool) async throws {
+        if conversions[machine.id] != nil {
+            throw VMError.busy(name: machine.name, .convertingDisk)
+        }
+        // A task of its own, so that the conversion can be called off whoever is waiting for it.
+        let task = Task { try await convertDisk(of: machine, compressed: enabled) }
+        conversions[machine.id] = task
+        defer { conversions[machine.id] = nil }
+        try await task.value
+    }
+
+    /// Calls off the conversions that are still writing. Each machine keeps the disk it had.
+    func cancelConversions() {
+        conversions.values.forEach { $0.cancel() }
+    }
+
+    /// Calls off the conversion of one machine's disk.
+    func cancelConversion(of machine: VirtualMachine) {
+        conversions[machine.id]?.cancel()
+    }
+
+    /// Converts a machine's disk for a button in its settings. A failure is shown wherever the machine's
+    /// errors are.
+    func setDiskCompressionReportingErrors(of machine: VirtualMachine, enabled: Bool) {
+        Task {
+            do {
+                try await setDiskCompression(of: machine, enabled: enabled)
+            } catch is CancellationError {
+                // Called off by whoever started it.
+            } catch {
+                machine.lastError = VMErrorInfo(
+                    title: enabled ? "Couldn't compress the disk of “\(machine.name)”" : "Couldn't turn off compression for “\(machine.name)”",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// The machines whose disk is being converted, which like a move can take a long time.
+    var machinesBeingConverted: [VirtualMachine] {
+        library.machines.filter { conversions[$0.id] != nil }
+    }
+
+    private func convertDisk(of machine: VirtualMachine, compressed: Bool) async throws {
+        try await machine.whileStopped(.convertingDisk) {
+            guard let disk = machine.configuration.systemDisk else {
+                throw VMError.invalidConfiguration("“\(machine.name)” has no disk.")
+            }
+            // Back to Apple's format, whatever the disk was made as: that takes up only what it holds,
+            // on any file system, as a raw image only does on APFS.
+            let format: DiskConfiguration.Format = compressed ? .compressed : .asif
+            // On is for a disk that isn't compressed yet, off for one that is. Anything else is as asked already.
+            guard compressed ? disk.format != .compressed : disk.format == .compressed else { return }
+            guard machine.configuration.supportsDiskCompression else {
+                throw VMError.invalidConfiguration("Only the disk of a Linux virtual machine can be kept compressed.")
+            }
+            var converted = disk
+            converted.format = format
+            converted.fileName = compressed ? "disk.\(CompressedDisk.fileExtension)" : "disk.asif"
+            let bundle = machine.bundle
+            let source = bundle.diskURL(for: disk)
+            let destination = bundle.diskURL(for: converted)
+            // Under a name of its own until it is whole, so that what a crash leaves behind is never
+            // taken for the disk.
+            let unfinished = bundle.url.appending(path: ".converting-\(converted.fileName)")
+            try? FileManager.default.removeItem(at: unfinished)
+            let converting = Task.detached(priority: .userInitiated) {
+                try DiskService.convertDisk(
+                    at: source, format: disk.format, to: unfinished, format: format,
+                    progress: { fraction in Task { @MainActor in machine.reportProgress(fraction, of: .convertingDisk) } },
+                    isCancelled: { Task.isCancelled }
+                )
+            }
+            try await withTaskCancellationHandler {
+                try await converting.value
+            } onCancel: {
+                converting.cancel()
+            }
+            do {
+                try Task.checkCancellation()
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: unfinished, to: destination)
+                try machine.updateConfiguration { configuration in
+                    guard let index = configuration.disks.firstIndex(where: { $0.id == disk.id }) else { return }
+                    configuration.disks[index] = converted
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: unfinished)
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+            // Only now that the machine goes by the new disk.
+            try? FileManager.default.removeItem(at: source)
+            machine.refreshDiskUsage()
         }
     }
 }

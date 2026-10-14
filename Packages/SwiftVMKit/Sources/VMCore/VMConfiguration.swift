@@ -150,6 +150,14 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     /// The disk the guest boots from.
     public var systemDisk: DiskConfiguration? { disks.first }
 
+    /// Whether the machine's disk can be kept compressed: that of a Linux machine, raw as Quick Create
+    /// makes it, ASIF as an installer disc gets it, or compressed already. A Mac's own files are stored
+    /// compressed already, so its disk would hardly shrink for what writing to such a disk costs.
+    public var supportsDiskCompression: Bool {
+        guard os.family == .linux, let disk = systemDisk else { return false }
+        return [.raw, .asif, .compressed].contains(disk.format)
+    }
+
     /// The configuration of a copy of this machine: the same hardware and disks under a new identity.
     ///
     /// The copy gets its own network card and no address yet. Forwarded ports stay with the original,
@@ -200,6 +208,8 @@ public struct DiskConfiguration: Codable, Sendable, Hashable, Identifiable {
         case asif
         /// Raw image; kept sparse by APFS.
         case raw
+        /// SwiftVM's own: compressed, and handed to the machine by the app itself.
+        case compressed
     }
 
     public var id: UUID

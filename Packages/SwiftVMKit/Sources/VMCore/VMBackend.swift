@@ -313,6 +313,8 @@ public enum VMActivity: Sendable, Hashable {
     case reverting
     case duplicating
     case resizingDisk
+    /// Its disk is being written out in another format, compressed or not.
+    case convertingDisk
     /// Its bundle is on its way to another folder, which takes a while when that is on another disk.
     case moving
     /// Its disks and firmware are being copied into a template, which takes a while when the templates
@@ -325,6 +327,7 @@ public enum VMActivity: Sendable, Hashable {
         case .reverting: "Reverting"
         case .duplicating: "Duplicating"
         case .resizingDisk: "Resizing Disk"
+        case .convertingDisk: "Converting Disk"
         case .moving: "Moving"
         case .savingTemplate: "Saving Template"
         }

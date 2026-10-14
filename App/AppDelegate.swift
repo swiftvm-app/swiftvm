@@ -56,8 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel.shared
         let moving = model.machinesBeingMoved
         if !moving.isEmpty, !model.isQuittingUnattended {
-            // Copying a machine to another disk is the one piece of work on its files that isn't over in
-            // a moment. It can be called off at no cost: the machine is where it was until it has arrived.
+            // Copying a machine to another disk is work on its files that isn't over in a moment. It
+            // can be called off at no cost: the machine is where it was until it has arrived.
             let alert = NSAlert()
             alert.messageText = moving.count == 1
                 ? "“\(moving[0].name)” is still being moved."
@@ -67,6 +67,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return stayOpen() }
             model.cancelMoves()
+        }
+        let converting = model.machinesBeingConverted
+        if !converting.isEmpty, !model.isQuittingUnattended {
+            // Writing a disk out in another format takes as long as there is on it, and can be called
+            // off at no cost as well: the machine goes by the disk it had until the new one is whole.
+            let alert = NSAlert()
+            alert.messageText = converting.count == 1
+                ? "The disk of “\(converting[0].name)” is still being converted."
+                : "The disks of \(converting.count) virtual machines are still being converted."
+            alert.informativeText = "If you quit now, the conversion is cancelled and the disk stays as it was."
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return stayOpen() }
+            model.cancelConversions()
         }
         let saving = model.machinesBeingSavedAsTemplates
         if !saving.isEmpty, !model.isQuittingUnattended {
@@ -83,8 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.cancelTemplateSaves()
         }
         if model.isWorkingOnMachineFiles {
-            // A snapshot, a copy or a resize is over in a moment, and so is a move or a template
-            // that was called off.
+            // A snapshot, a copy or a resize is over in a moment, and so is a move, a conversion or
+            // a template that was called off.
             // Let it finish, then ask again.
             Task {
                 await model.waitForWorkOnMachineFiles()

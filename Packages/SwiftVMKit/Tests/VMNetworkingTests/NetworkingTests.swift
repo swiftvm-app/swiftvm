@@ -116,7 +116,10 @@ import VMCore
     @Test func detectsListeningAndClosedPorts() async throws {
         // Listen on an ephemeral loopback port.
         let listener = socket(AF_INET, SOCK_STREAM, 0)
-        defer { close(listener) }
+        // Closed halfway through, on purpose. Closed once more, its number could belong to another test's
+        // socket or file by then, in this same process, and that one would be closed instead.
+        var isOpen = true
+        defer { if isOpen { close(listener) } }
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
@@ -136,6 +139,7 @@ import VMCore
 
         #expect(await Reachability.canConnect(to: loopback, port: port))
         close(listener)
+        isOpen = false
         #expect(await Reachability.canConnect(to: loopback, port: port) == false)
     }
 }
