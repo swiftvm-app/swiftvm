@@ -6,3 +6,4 @@ Spikes/**/build/
 *.swiftvm/
 .plans/
 .env
+.muxy/

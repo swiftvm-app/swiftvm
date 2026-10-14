@@ -7,3 +7,7 @@ SwiftVM is a virtual machine software for macOS 27 that lets user to boot up vir
 - Only test critical paths
 - Don't test obvious code, defaults, or UI details like pixels, layout, colors, and titles.
 - Do not test the scripts.
+
+## Working / Investigation / Researching
+
+- Never only-rely on docs/, they might be outdated or in-accurate. Consider studying the codebase instead.
