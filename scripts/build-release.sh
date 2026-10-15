@@ -13,6 +13,9 @@
 # A release is signed with a Developer ID Application certificate and carries the provisioning profile
 # that goes with it, for USB devices: scripts/bundle-app.sh finds both, or is told with
 # SWIFTVM_SIGN_IDENTITY and SWIFTVM_PROVISIONING_PROFILE. Notarizing is the workflow's part.
+#
+# A release always carries the QEMU that runs Windows guests: scripts/build-qemu.sh says what building
+# it takes.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
@@ -46,8 +49,9 @@ check_replaceable "$app"
 swift build -c release --product SwiftVM
 swift build -c release --package-path Packages/SwiftVMKit --product swiftvm
 swift build -c release --package-path Packages/SwiftVMKit --product swiftvm-agent
+qemu=$("$root/scripts/build-qemu.sh")
 
-bundle_options=(--version "$version" --build-number "$build_number" --timestamp)
+bundle_options=(--version "$version" --build-number "$build_number" --timestamp --qemu "$qemu")
 if [[ -n $sparkle_public_key || -n $sparkle_feed_url ]]; then
     bundle_options+=(--sparkle-public-key "$sparkle_public_key" --sparkle-feed-url "$sparkle_feed_url")
 fi

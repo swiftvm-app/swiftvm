@@ -31,6 +31,8 @@ jobs:
         env:
           SWIFTVM_SIGN_IDENTITY: "-"
           SWIFTVM_PROVISIONING_PROFILE: "-"
+          # The QEMU for Windows guests takes Homebrew's libraries and a few minutes, and no check runs a guest.
+          SWIFTVM_QEMU: "-"
         run: scripts/build.sh --output "$RUNNER_TEMP/SwiftVM.app"
 
       - name: Test

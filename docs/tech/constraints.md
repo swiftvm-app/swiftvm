@@ -11,8 +11,10 @@ Supported platforms, and lessons that shape the code.
 | Linux guests | ARM64. Quick Create: Ubuntu 26.04, Ubuntu 24.04, Debian 13 |
 | Linux guest tools | systemd and Python 3. [Automation](../features/automation.md) takes Python 3.9 or newer, and the screen as a tree also `python3-gi` and `gir1.2-atspi-2.0` |
 | Linux desktops | GNOME, KDE Plasma, Xfce, and Cinnamon, on each Quick Create system |
+| Windows guests | Windows 11 for Arm (Arm64) |
+| Windows guest tools | Included during setup; see [installing or updating](../features/guest-tools.md#windows) |
 
-Not yet supported: Windows guests, and Intel Macs.
+Not supported: Intel Macs, and Windows for Intel and AMD processors.
 
 ## Signing
 

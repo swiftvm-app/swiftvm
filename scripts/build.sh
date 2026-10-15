@@ -6,6 +6,9 @@
 #
 # This is the app with your machines in it. For a copy to try changes in, with machines of its own,
 # use `swift run SwiftVM`. How the app is signed is described in scripts/bundle-app.sh.
+#
+# The QEMU that runs Windows guests is built too, by scripts/build-qemu.sh, which says what it needs.
+# SWIFTVM_QEMU=- builds the app without it.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
@@ -30,7 +33,12 @@ check_replaceable "$app"
 swift build -c $configuration --product SwiftVM
 swift build -c $configuration --package-path Packages/SwiftVMKit --product swiftvm
 swift build -c $configuration --package-path Packages/SwiftVMKit --product swiftvm-agent
-"$root/scripts/bundle-app.sh" --output "$app" \
+qemu=()
+if [[ ${SWIFTVM_QEMU:-} != - ]]; then
+    qemu_folder=$("$root/scripts/build-qemu.sh")
+    qemu=(--qemu "$qemu_folder")
+fi
+"$root/scripts/bundle-app.sh" --output "$app" $qemu \
     --products "$(swift build -c $configuration --show-bin-path)" \
     --helpers "$(swift build -c $configuration --package-path Packages/SwiftVMKit --show-bin-path)" > /dev/null
 

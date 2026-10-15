@@ -190,6 +190,15 @@ public struct ImageDownloader: Sendable {
     // MARK: Verification
 
     private func verify(_ file: URL, against image: RemoteImage) async throws {
+        if let expected = image.sha256 {
+            let actual = try await Task.detached(priority: .userInitiated) {
+                try Self.digest(of: file, algorithm: .sha256)
+            }.value
+            guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
+                throw DownloadError.checksumMismatch(fileName: image.fileName)
+            }
+            return
+        }
         guard let checksumsURL = image.checksumsURL, let algorithm = image.checksumAlgorithm else { return }
         let (data, response) = try await URLSession.shared.data(from: checksumsURL)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {

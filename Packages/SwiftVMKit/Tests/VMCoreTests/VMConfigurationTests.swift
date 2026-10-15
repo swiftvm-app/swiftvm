@@ -47,15 +47,6 @@ import Testing
         #expect(!configuration.installation.hasHostTimeZone)
     }
 
-    @Test func knowsWhichGuestsCanHaveAnAgent() {
-        var configuration = sample()
-        #expect(configuration.canHaveGuestAgent)
-        configuration.os = GuestOS(family: .macOS)
-        #expect(configuration.canHaveGuestAgent)
-        configuration.os = GuestOS(family: .windows)
-        #expect(!configuration.canHaveGuestAgent)
-    }
-
     @Test func remembersWhatWasDecidedAboutTheClipboardAndTheTimeZone() throws {
         var configuration = sample()
         configuration.clipboard.isShared = false

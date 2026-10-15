@@ -256,16 +256,16 @@ extension AppModel {
                 throw VMError.invalidConfiguration("“\(machine.name)” has no disk.")
             }
             // Back to Apple's format, whatever the disk was made as: that takes up only what it holds,
-            // on any file system, as a raw image only does on APFS.
-            let format: DiskConfiguration.Format = compressed ? .compressed : .asif
+            // on any file system, as a raw image only does on APFS. QEMU reads no format of Apple's.
+            let format: DiskConfiguration.Format = compressed ? .compressed : machine.configuration.uncompressedDiskFormat
             // On is for a disk that isn't compressed yet, off for one that is. Anything else is as asked already.
             guard compressed ? disk.format != .compressed : disk.format == .compressed else { return }
             guard machine.configuration.supportsDiskCompression else {
-                throw VMError.invalidConfiguration("Only the disk of a Linux virtual machine can be kept compressed.")
+                throw VMError.invalidConfiguration("Only the disk of a Linux or Windows virtual machine can be kept compressed.")
             }
             var converted = disk
             converted.format = format
-            converted.fileName = compressed ? "disk.\(CompressedDisk.fileExtension)" : "disk.asif"
+            converted.fileName = compressed ? "disk.\(CompressedDisk.fileExtension)" : format == .raw ? "disk.img" : "disk.asif"
             let bundle = machine.bundle
             let source = bundle.diskURL(for: disk)
             let destination = bundle.diskURL(for: converted)

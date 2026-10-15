@@ -10,7 +10,7 @@ struct NewMachineRequest: Identifiable {
     enum Source {
         /// No file. The form opens for the kind of system that was made last.
         case unspecified
-        /// A Linux installer disc image, for example one that was dropped on the window.
+        /// An installer disc image, for example one that was dropped on the window: Linux's, or Windows'.
         case installerDisc(URL)
         /// A macOS restore image (IPSW).
         case restoreImage(URL)
@@ -43,7 +43,7 @@ struct NewMachineView: View {
     let onReady: (VirtualMachine, Bool) -> Void
 
     /// The kinds of system a machine can be made for, in the order they are offered.
-    static let families: [GuestFamily] = [.macOS, .linux]
+    static let families: [GuestFamily] = [.macOS, .linux, .windows]
     private static let familyKey = "newMachineFamily"
 
     /// The kind of system that was picked here last, which the window opens on the next time.
@@ -71,7 +71,7 @@ struct NewMachineView: View {
             // What is remembered may be from a build that could make what this one can't.
             let remembered = UserDefaults.standard.string(forKey: Self.familyKey).flatMap(GuestFamily.init(rawValue:))
             _family = State(initialValue: remembered.flatMap { Self.families.contains($0) ? $0 : nil } ?? .linux)
-        case .installerDisc: _family = State(initialValue: .linux)
+        case .installerDisc(let url): _family = State(initialValue: WindowsInstaller.looksLikeWindows(url) ? .windows : .linux)
         case .restoreImage: _family = State(initialValue: .macOS)
         }
     }
@@ -84,9 +84,10 @@ struct NewMachineView: View {
                 switch family {
                 case .macOS:
                     MacMachineForm(source: sourceBinding, mode: modeBinding, initialImage: initialImage, onReady: onReady)
-                case .linux, .windows:
-                    // Windows can't be picked yet.
+                case .linux:
                     LinuxMachineForm(source: sourceBinding, mode: modeBinding, initialDisc: initialDisc, onReady: onReady)
+                case .windows:
+                    WindowsMachineForm(source: sourceBinding, mode: modeBinding, initialDisc: initialDisc, onReady: onReady)
                 }
             }
         }

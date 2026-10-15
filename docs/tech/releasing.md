@@ -55,10 +55,9 @@ macOS 27 SDK.
 
 ## What a release build does
 
-1. `scripts/build-release.sh` builds the app, gives it its version and build
-   number, tells it where its updates are, and signs it with the Developer ID
-   certificate and the USB provisioning profile. Then it packs the app into a
-   disk image.
+1. `scripts/build-release.sh` builds the app, including QEMU for Windows guests,
+   sets its version and update feed, and signs it with the Developer ID
+   certificate and the USB provisioning profile. It then creates the disk image.
 2. The workflow has Apple notarize the disk image and staples the ticket to
    it.
 3. `scripts/generate-appcast.sh` signs the disk image with the update key and

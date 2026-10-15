@@ -1,6 +1,8 @@
 import AppKit
+import FileSharing
 import Installers
 import Observation
+import QEMUEngine
 import SSHIntegration
 import VMControl
 import VMCore
@@ -25,12 +27,17 @@ final class AppModel {
     let clipboardSharing = ClipboardSharing()
     /// Hands the USB devices this Mac has given the app to guests.
     let usb = USBPassthrough()
+    /// Serves shared folders to guests on QEMU, which map them as a drive over WebDAV.
+    let sharedFolderServer = SharedFolderServer()
     /// Hears from macOS which USB devices those are.
     private let usbAccessories = USBAccessoryService()
 
     /// `nil` if the virtual network couldn't be set up; machines then can't start.
     private(set) var networkManager: NetworkManager?
-    private(set) var backendProvider: VZBackendProvider?
+    /// Hands each machine to its engine. The library only holds on to it weakly.
+    private(set) var backendProvider: BackendRouter?
+    /// Runs Windows guests, with the QEMU inside the app.
+    private(set) var qemuProvider: QEMUBackendProvider?
 
     /// Machines that are still being downloaded or prepared.
     var creations: [MachineCreation] = []
@@ -107,10 +114,15 @@ final class AppModel {
             networkManager.onDefaultSubnetChange = { [weak self] previous, current in
                 self?.remapReservedAddresses(from: previous, to: current)
             }
-            let provider = VZBackendProvider(networkManager: networkManager, usbAccessories: usbAccessories)
+            let qemu = QEMUBackendProvider(networkManager: networkManager, installation: QEMUInstallation.inApp())
+            let router = BackendRouter(providers: [
+                .virtualization: VZBackendProvider(networkManager: networkManager, usbAccessories: usbAccessories),
+                .qemu: qemu,
+            ])
             self.networkManager = networkManager
-            self.backendProvider = provider
-            library.backendProvider = provider
+            self.qemuProvider = qemu
+            self.backendProvider = router
+            library.backendProvider = router
         } catch {
             generalError = VMErrorInfo(title: "Virtual networking isn't available", message: error.localizedDescription)
         }
@@ -118,12 +130,14 @@ final class AppModel {
         library.onChange = { [weak self] in
             self?.syncSSHConfiguration()
             self?.syncPortForwards()
+            self?.syncSharedFolderServer()
             // Clipboard sharing may have been turned on or off for one of them.
             self?.syncClipboardSharing()
         }
         library.onGuestAgentChange = { [weak self] machine in self?.clipboardSharing.update(machine) }
         library.onGuestClipboard = { [weak self] machine, text in self?.clipboardSharing.guest(machine, didCopy: text) }
         library.onGuestClipboardRequest = { [weak self] machine in self?.clipboardSharing.guestWantsClipboard(machine) }
+        library.sharedFoldersPlace = { [weak self] machine in self?.sharedFoldersPlace(for: machine) }
         library.onMachineResume = { [weak self] machine in self?.correctClock(of: machine) }
         library.onMachineStart = { [weak self] machine in self?.usb.machineDidStart(machine) }
         usb.machines = { [weak self] in self?.library.machines ?? [] }
@@ -134,6 +148,14 @@ final class AppModel {
         // Whatever was being created when the app last quit can't be finished.
         library.removeStagedBundles()
         library.load()
+        // Nothing is shown of a machine that an app before this one left running on QEMU as it crashed,
+        // and its disk would be copied while it writes to it.
+        let leftovers = library.machines.filter { $0.configuration.engine == .qemu }
+        Task {
+            for machine in leftovers where !machine.state.isActive {
+                await QEMUBackend.endLeftover(of: machine.configuration, in: machine.bundle)
+            }
+        }
         templates.removeUnfinished()
         templates.load()
         watchVolumes()

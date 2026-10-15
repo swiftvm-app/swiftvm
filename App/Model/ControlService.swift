@@ -1,6 +1,7 @@
 import AppKit
 import GuestChannel
 import Installers
+import QEMUEngine
 import VMControl
 import VMCore
 import VZEngine
@@ -266,6 +267,12 @@ extension AppModel {
                     let disc = try await attachGuestToolsDisc(to: machine)
                     var response = details(machine)
                     let alias = machine.configuration.ssh.alias
+                    if machine.configuration.os.family == .windows {
+                        response.note = """
+                            The guest tools disc and the drivers for virtual machines are plugged into “\(machine.name)”. \(guestToolsInstallCommand(for: machine)) Restart Windows afterwards, so that its display follows the window.
+                            """
+                        return response
+                    }
                     response.note = """
                         The guest tools disc is plugged into “\(machine.name)”. To install from it, run this in the guest:
 
@@ -299,8 +306,9 @@ extension AppModel {
         case .shareClipboard:
             guard let isOn = request.isOn else { return .failure("Missing on or off.") }
             // A Linux guest shares the clipboard through a device, which like all hardware is there
-            // from the start or not at all. A macOS guest's agent is simply told, or no longer told.
-            guard machine.configuration.os.family == .macOS || machine.state == .stopped
+            // from the start or not at all. The agent of a macOS or Windows guest is simply told, or no
+            // longer told.
+            guard machine.configuration.os.family != .linux || machine.state == .stopped
                 || machine.configuration.clipboard.isShared == isOn
             else {
                 return .failure("Shut down “\(machine.name)” first: this guest shares the clipboard through a device, which can't be added or taken away while it is up or suspended.")
@@ -509,8 +517,9 @@ extension AppModel {
                 exec.user = machine.configuration.ssh.user
                 job = .exec(exec)
             }
-            // The screen, the mouse and the keyboard of a macOS guest are the machine's own, and the app
-            // has those: no agent is asked, and nothing in the guest has to allow it.
+            // The screen, the mouse and the keyboard of a macOS guest, or of a guest on QEMU, are the
+            // machine's own, and the app has those: no agent is asked, and nothing in the guest has to
+            // allow it.
             if machine.doesItself(job) {
                 guard machine.configuration.automation.isAllowed else {
                     return (.failure(Self.explanation(of: GuestJobError.notAllowed(name: machine.name), for: machine)), nil)
@@ -645,11 +654,17 @@ extension AppModel {
         if let template = parameters.template {
             return await createMachine(fromTemplate: template, parameters)
         }
+        if parameters.distribution == ControlRequest.CreateParameters.windows {
+            return await createWindowsMachine(parameters)
+        }
         let isMac = parameters.distribution == ControlRequest.CreateParameters.macOS
         let distribution = DistributionCatalog.quickCreate.first { $0.id == parameters.distribution }
         guard isMac || distribution != nil else {
-            let available = ([ControlRequest.CreateParameters.macOS] + DistributionCatalog.quickCreate.map(\.id)).joined(separator: ", ")
-            return .failure("Unknown system “\(parameters.distribution)”. Available: \(available).")
+            let systems = [ControlRequest.CreateParameters.macOS, ControlRequest.CreateParameters.windows] + DistributionCatalog.quickCreate.map(\.id)
+            return .failure("Unknown system “\(parameters.distribution)”. Available: \(systems.joined(separator: ", ")).")
+        }
+        if parameters.installerPath != nil {
+            return .failure("--iso is for Windows. Linux installs from its image, and macOS from a restore image (--ipsw).")
         }
         let family: GuestFamily = isMac ? .macOS : .linux
         var setupScripts: [SetupScript] = []
@@ -710,7 +725,7 @@ extension AppModel {
 
         let compressesDisk = parameters.compressed ?? false
         if compressesDisk, isMac {
-            return .failure("Only the disk of a Linux machine can be kept compressed for now.")
+            return .failure("The disk of a macOS machine can't be kept compressed: its files are compressed already.")
         }
 
         let start: () -> MachineCreation
@@ -785,12 +800,74 @@ extension AppModel {
         return await finishCreating(named: name, starting: parameters.start, start)
     }
 
+    /// Installs Windows into a new machine, from Microsoft's download or the disc that `--iso` names.
+    private func createWindowsMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
+        guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.") }
+        guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.") }
+        guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.") }
+        guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription) }
+        var name = parameters.name ?? "Windows 11"
+        if parameters.name == nil {
+            let base = name
+            var counter = 2
+            while isNameTaken(name) {
+                name = "\(base) \(counter)"
+                counter += 1
+            }
+        } else if isNameTaken(name) {
+            return .failure("A virtual machine named “\(name)” already exists.")
+        }
+        if let memory = parameters.memoryGigabytes, !(4...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
+            return .failure("Windows needs 4 GB of memory or more, and no more than this Mac has. The size is in GB.")
+        }
+        if let disk = parameters.diskGigabytes, !(64...HostResources.maximumDiskGigabytes).contains(disk) {
+            return .failure("A Windows disk can be from 64 GB to \(HostResources.maximumDiskGigabytes) GB. The size is in GB.")
+        }
+        let userName = parameters.user ?? (WindowsSetup.problem(withUserName: NSUserName()) == nil ? NSUserName() : "user")
+        if let problem = WindowsSetup.problem(withUserName: userName) {
+            return .failure("“\(userName)” can't be the account name. \(problem)")
+        }
+        guard let password = parameters.password, WindowsSetup.problem(withPassword: password) == nil else {
+            return .failure("Windows needs a password for the account. Add --password <password>.")
+        }
+        var media = WindowsInstallRequest.Media.download
+        if let path = parameters.installerPath {
+            let url = URL(fileURLWithPath: path)
+            do {
+                _ = try await Task.detached(priority: .userInitiated) { try WindowsInstaller.inspect(url) }.value
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            media = .localFile(url)
+        }
+        let location: URL?
+        do {
+            location = try creationFolder(at: parameters.location)
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let request = WindowsInstallRequest(
+            name: name,
+            media: media,
+            cpuCount: parameters.cpuCount ?? HostResources.recommendedCPUCount(for: .windows),
+            memorySize: parameters.memoryGigabytes.map { UInt64($0) * HostResources.gibibyte } ?? HostResources.recommendedMemorySize(for: .windows),
+            diskCapacity: parameters.diskGigabytes.map { UInt64($0) * HostResources.gibibyte } ?? HostResources.recommendedDiskCapacity(for: .windows),
+            userName: userName,
+            fullName: NSFullUserName(),
+            password: password,
+            installsSSHKey: parameters.installsSSHKey ?? true,
+            compressesDisk: parameters.compressed ?? false,
+            location: location
+        )
+        return await finishCreating(named: name, starting: parameters.start) { self.create(request) }
+    }
+
     /// Makes a machine from a template, which brings its system, its account and whatever was set up
     /// in it. Its name, its hardware and where it is kept are the new machine's own.
     private func createMachine(fromTemplate identifier: String, _ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.user == nil, parameters.password == nil, parameters.restoreImagePath == nil,
-              parameters.scripts == nil, parameters.rosetta == nil, parameters.installsSSHKey == nil,
-              parameters.compressed == nil
+              parameters.installerPath == nil, parameters.scripts == nil, parameters.rosetta == nil,
+              parameters.installsSSHKey == nil, parameters.compressed == nil
         else {
             return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.")
         }
@@ -1006,8 +1083,7 @@ extension AppModel {
                 )
             },
             snapshotCount: machine.snapshots.count,
-            guestTools: configuration.canHaveGuestAgent
-                ? MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel) : nil,
+            guestTools: MachineDetails.GuestTools(version: machine.agent.version, kernel: machine.agent.kernel),
             sharesClipboard: configuration.clipboard.isShared,
             usbDevices: machine.usbDevices.map { self.summary(of: $0) },
             usbAutoConnect: configuration.usb.autoConnect.map { "\($0.name) (\($0.id))" },
@@ -1015,11 +1091,10 @@ extension AppModel {
             setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) },
             // Of what the agent says it does, the kinds of job this app knows: no other word of a
             // guest's is passed on. And what the app does itself, with or without an agent.
-            automation: configuration.canHaveGuestAgent
-                ? MachineDetails.Automation(
-                    isAllowed: configuration.automation.isAllowed,
-                    features: GuestFeature.jobs.filter(machine.does)
-                ) : nil
+            automation: MachineDetails.Automation(
+                isAllowed: configuration.automation.isAllowed,
+                features: GuestFeature.jobs.filter(machine.does)
+            )
         )
         return ControlResponse(ok: true, machines: [summary])
     }
@@ -1049,6 +1124,7 @@ extension AppModel {
             name: machine.name,
             state: machine.state.rawValue,
             system: configuration.os.summary,
+            family: configuration.os.family.rawValue,
             address: address(for: machine),
             sshAlias: configuration.ssh.alias.isEmpty ? nil : configuration.ssh.alias,
             cpuCount: configuration.cpuCount,

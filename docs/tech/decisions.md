@@ -10,7 +10,7 @@ in git history as
 | | Decision | In short |
 | --- | --- | --- |
 | D1 | The Virtualization framework runs macOS and Linux guests | In the app's process, without root |
-| D2 | Windows guests will use QEMU | The Virtualization framework can't boot Windows |
+| D2 | Windows guests use QEMU | The Virtualization framework can't boot Windows |
 | D3 | One NAT network, created with the first machine | Fixed addresses without root |
 | D4 | The app relays forwarded ports | Forwards change while machines run |
 | D5 | Snapshots are copies, not layers | Any snapshot can be deleted |
@@ -34,11 +34,12 @@ and no root. It installs macOS, and from macOS 27 on a guest creates its own
 account on first start, so a Mac is ready over SSH about half a minute after it
 is installed.
 
-## D2. Windows guests will use QEMU
+## D2. Windows guests use QEMU
 
-The Virtualization framework can't boot Windows without private API. Windows
-on ARM will run on QEMU with the Hypervisor framework, in a helper process
-bundled with the app. The model already names the engine per machine.
+SwiftVM includes QEMU to run Windows 11 for Arm with Apple's Hypervisor
+framework. Windows machines use the same app interface and virtual network
+as macOS and Linux machines. See [Windows guests](../features/windows-guests.md)
+for setup and limitations.
 
 ## D3. One NAT network, created with the first machine
 

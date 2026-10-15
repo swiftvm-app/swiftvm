@@ -28,16 +28,15 @@ struct MachineSettingsView: View {
                 storageSection
                 sharingSection
                 clipboardSection
-                if configuration.canHaveGuestAgent {
-                    automationSection
-                }
+                automationSection
                 networkSection
                 if !configuration.networkInterfaces.isEmpty {
                     portForwardingSection
                 }
                 // A copy that isn't signed for USB devices has none to show, but a machine may have been
                 // told elsewhere to take some by itself, and that can be taken back here.
-                if model.usb.availability != .notSigned || !configuration.usb.autoConnect.isEmpty {
+                // QEMU isn't handed USB devices: only the Virtualization framework's machines take them.
+                if configuration.engine == .virtualization, model.usb.availability != .notSigned || !configuration.usb.autoConnect.isEmpty {
                     usbSection
                 }
                 devicesSection
@@ -207,14 +206,14 @@ struct MachineSettingsView: View {
         Section {
             Toggle("Share Clipboard", isOn: binding(\.clipboard.isShared))
                 // Linux guests share it through a device, which like all hardware is there from the start
-                // or not at all.
-                .disabled(configuration.os.family != .macOS && isActive)
+                // or not at all. macOS and Windows guests share it through their agent.
+                .disabled(configuration.os.family == .linux && isActive)
         } header: {
             Text("Clipboard")
         } footer: {
-            Text(configuration.os.family == .macOS
-                ? "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs the guest tools in the virtual machine."
-                : "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs spice-vdagent in the guest, which most desktop systems bring along.")
+            Text(configuration.os.family == .linux
+                ? "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs spice-vdagent in the guest, which most desktop systems bring along."
+                : "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs the guest tools in the virtual machine.")
         }
     }
 
@@ -224,7 +223,7 @@ struct MachineSettingsView: View {
         } header: {
             Text("Automation")
         } footer: {
-            Text(configuration.os.family == .macOS
+            Text(configuration.os.family == .macOS || configuration.engine == .qemu
                 ? "The swiftvm command can see the virtual machine's screen and use its mouse and keyboard. With the guest tools in the virtual machine it can also run commands there and copy files."
                 : "The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
         }
@@ -289,7 +288,10 @@ struct MachineSettingsView: View {
     private var devicesSection: some View {
         Section("Devices") {
             Toggle("Sound Output", isOn: binding(\.audio.outputEnabled))
-            Toggle("Microphone", isOn: binding(\.audio.inputEnabled))
+            // QEMU's sound card only plays.
+            if configuration.engine != .qemu {
+                Toggle("Microphone", isOn: binding(\.audio.inputEnabled))
+            }
             Toggle("Resize Display with Window", isOn: binding(\.display.automaticallyResizes))
             if !configuration.display.automaticallyResizes {
                 // A display that doesn't follow the window has a size of its own.

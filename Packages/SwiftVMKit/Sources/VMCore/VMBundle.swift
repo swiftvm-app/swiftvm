@@ -253,6 +253,12 @@ public struct VMBundle: Sendable, Hashable {
         FileManager.default.fileExists(atPath: savedStateURL.path)
     }
 
+    /// Deletes the setup disc of a guest that has no more use for it. A Windows machine's holds the
+    /// account's password.
+    public func removeSeedImage() {
+        try? FileManager.default.removeItem(at: seedImageURL)
+    }
+
     public func removeSavedState() {
         try? FileManager.default.removeItem(at: savedStateURL)
     }

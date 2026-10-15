@@ -185,6 +185,18 @@ private final class FakeProvider: VMBackendProvider {
         }
     }
 
+    @Test func startsAgainWhenTheGuestRestartsItself() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeRunningMachine(family: .windows)
+
+        // QEMU ends when the guest restarts, so that the next run gets the hardware configured by then.
+        provider.backend.eventHandler?(.guestDidRestart)
+        await wait(for: machine, toBe: .running)
+        #expect(machine.state == .running)
+        #expect(provider.backend.starts.count == 2)
+        #expect(machine.lastError == nil)
+    }
+
     @Test func goesBackToRunningWhenTheGuestDoesNotShutDown() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try await makeRunningMachine()

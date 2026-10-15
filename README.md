@@ -4,19 +4,20 @@
 
 <h1 align="center">SwiftVM</h1>
 
-<p align="center">Native macOS app for running virtual machines, built with Swift and Apple's Virtualization framework.</p>
+<p align="center">Native macOS app for running macOS, Linux, and Windows virtual machines.</p>
 
 ## Supported guests
 
 - Mac
 - Linux
-- Windows (Coming soon)
+- Windows 11 for Arm
 
 ## Top level features
 
 - macOS guests that install and set themselves up
 - Linux guests from a cloud image, ready in seconds
 - Linux desktops that install themselves: GNOME, KDE Plasma, Xfce, Cinnamon
+- Windows 11 that downloads from Microsoft and installs itself, logged in and with its drivers
 - Setup scripts for everything else a new machine needs, in one file you write
 - `ssh <machine>` from your Mac
 - Snapshots and instant duplicates
@@ -28,8 +29,6 @@
 - Lives in the menu bar
 - `swiftvm` command-line tool
 - Automation for scripts and AI agents: run commands in a guest, copy files, see its screen, use its mouse and keyboard
-
-Windows guests are planned.
 
 ## Install
 

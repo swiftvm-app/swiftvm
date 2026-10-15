@@ -1,24 +1,25 @@
 # Guest Tools
 
-The guest tools are a small agent that runs inside a virtual machine. It talks
-to SwiftVM over the machine's own socket device, so it works even when the
-guest has no network.
+The guest tools run inside a virtual machine and connect directly to SwiftVM.
+Features such as commands and clipboard sharing work without SSH or a network
+connection.
 
 ## What they add
 
-| | Linux | macOS |
-| --- | --- | --- |
-| SwiftVM knows the guest's system, kernel, and address | Yes | Yes |
-| The clock is set the moment the guest resumes | Yes | Yes |
-| **Shut Down** works at once, without a question on the guest's screen | Yes | Yes |
-| SwiftVM shows what a [setup script](setup-scripts.md) is doing | Yes | No |
-| [Shared folders](sharing.md) are mounted | Yes | macOS mounts them by itself |
-| [Shared clipboard](sharing.md#clipboard) | Uses `spice-vdagent` instead | Yes |
-| The time zone follows your Mac's, once | No | Yes |
-| [SSH without a network](ssh.md#without-a-network) on older systems | Yes | No |
-| `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes |
-| `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Works without the guest tools |
-| `swiftvm` [reads the screen as a tree](automation.md#what-is-on-the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests): `swiftvm allow-accessibility` |
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| SwiftVM knows the guest's system, kernel, and address | Yes | Yes | Yes |
+| The clock is set the moment the guest resumes | Yes | Yes | Yes |
+| **Shut Down** works at once, without a question on the guest's screen | Yes | Yes | Yes |
+| SwiftVM shows what a [setup script](setup-scripts.md) is doing | Yes | No | SwiftVM's own setup |
+| [Shared folders](sharing.md) are mounted | Yes | macOS mounts them by itself | As drive Z: |
+| [Shared clipboard](sharing.md#clipboard) | Uses `spice-vdagent` instead | Yes | Yes |
+| The time zone follows your Mac's, once | No | Yes | Yes |
+| [SSH without a network](ssh.md#without-a-network) on older systems | Yes | No | No |
+| `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes | Yes |
+| `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Works without the guest tools | Works without the guest tools |
+| `swiftvm` [reads the screen as a tree](automation.md#what-is-on-the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests): `swiftvm allow-accessibility` | No |
+| The display follows the window | Works without the guest tools | Works without the guest tools | Yes, with the driver they bring |
 
 ## Which machines have them
 
@@ -27,6 +28,7 @@ Machines that SwiftVM sets up come with the guest tools:
 - Linux machines made with [Quick Create](linux-guests.md#quick-create).
 - [macOS](macos-guests.md) 27 or newer, created with **Sign in over SSH with
   my key** on.
+- [Windows](windows-guests.md) machines that SwiftVM installed.
 
 `swiftvm info <machine>` shows the installed version.
 
@@ -68,6 +70,13 @@ sudo sh /Volumes/SWIFTVM/install.sh
 macOS then says that a background item was added: that is the agent. The guest
 needs macOS 27 or newer.
 
+### Windows
+
+Choose **Install Guest Tools…**, or run `swiftvm install-tools <machine> --disc`.
+In Windows, open the **SWIFTVM** disc in File Explorer and run `install.cmd`.
+Approve the administrator prompt and restart Windows afterwards. SwiftVM also
+attaches the drivers disc needed by the installer.
+
 ## Removing
 
 In the guest, Linux or macOS:
@@ -76,13 +85,16 @@ In the guest, Linux or macOS:
 sudo sh /usr/local/lib/swiftvm/install.sh --remove
 ```
 
+In a Windows guest, stop and delete the service (`sc.exe stop SwiftVMAgent` and
+`sc.exe delete SwiftVMAgent` in an administrator's terminal), and delete
+`C:\Program Files\SwiftVM`.
+
 ## What is installed
 
 | Guest | What |
 | --- | --- |
 | Linux | One Python script and its systemd units |
 | macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard and for reading the screen as a tree |
+| Windows | The SwiftVM guest agent in `C:\Program Files\SwiftVM`, its background service, and device drivers |
 
-The agent only takes orders from your Mac, and only over the machine's socket
-device. What `swiftvm` may have it do in a guest can be
-[turned off](automation.md#turning-it-off) for each machine.
+You can [turn off automation](automation.md#turning-it-off) for each machine.

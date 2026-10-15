@@ -134,8 +134,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     }
 
     public struct CreateParameters: Codable, Sendable, Equatable {
-        /// What to install: `macos`, or a Linux catalog identifier such as `ubuntu-26.04`. Empty for a
-        /// machine that is made from a ``template``.
+        /// What to install: `macos`, `windows`, or a Linux catalog identifier such as `ubuntu-26.04`.
+        /// Empty for a machine that is made from a ``template``.
         public var distribution: String
         public var name: String?
         public var cpuCount: Int?
@@ -145,6 +145,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var password: String?
         /// macOS: absolute path of a restore image (IPSW) to install instead of downloading the latest.
         public var restoreImagePath: String?
+        /// Windows: absolute path of an installer disc image (ISO) to install instead of downloading
+        /// Windows from Microsoft.
+        public var installerPath: String?
         /// Linux: the setup scripts to run on the first start, in this order. Each is a name from the
         /// list of `scripts`, or the absolute path of a file: what starts with a `/`.
         public var scripts: [String]?
@@ -164,10 +167,13 @@ public struct ControlRequest: Codable, Sendable, Equatable {
 
         /// The `distribution` value that installs macOS.
         public static let macOS = "macos"
+        /// The `distribution` value that installs Windows.
+        public static let windows = "windows"
 
         public init(
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
+            installerPath: String? = nil,
             scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, compressed: Bool? = nil,
             installsSSHKey: Bool? = nil, template: String? = nil, start: Bool = true
         ) {
@@ -179,6 +185,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.user = user
             self.password = password
             self.restoreImagePath = restoreImagePath
+            self.installerPath = installerPath
             self.scripts = scripts
             self.location = location
             self.rosetta = rosetta
@@ -283,6 +290,8 @@ public struct MachineSummary: Codable, Sendable, Equatable {
     public var name: String
     public var state: String
     public var system: String
+    /// The kind of system: `macOS`, `linux` or `windows`. Missing from an app older than this.
+    public var family: String?
     public var address: String?
     public var sshAlias: String?
     public var cpuCount: Int
@@ -293,13 +302,14 @@ public struct MachineSummary: Codable, Sendable, Equatable {
     public var details: MachineDetails?
 
     public init(
-        id: UUID, name: String, state: String, system: String, address: String?, sshAlias: String?,
+        id: UUID, name: String, state: String, system: String, family: String? = nil, address: String?, sshAlias: String?,
         cpuCount: Int, memorySize: UInt64, diskAllocated: UInt64, diskCapacity: UInt64, details: MachineDetails? = nil
     ) {
         self.id = id
         self.name = name
         self.state = state
         self.system = system
+        self.family = family
         self.address = address
         self.sshAlias = sshAlias
         self.cpuCount = cpuCount

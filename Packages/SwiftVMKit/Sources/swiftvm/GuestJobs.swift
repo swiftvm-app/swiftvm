@@ -95,9 +95,12 @@ enum GuestJobs {
         let descriptor = open(job, in: machine)
         // These take a moment, not minutes. A guest that took the job on and then says nothing
         // would keep whoever asked waiting for good, and a script has nobody to press Control-C.
-        DispatchQueue.global().asyncAfter(deadline: .now() + collectTimeout) {
+        let watchdog = DispatchWorkItem {
             fail("The guest tools took this on and didn't finish in \(Int(collectTimeout)) seconds.")
         }
+        DispatchQueue.global().asyncAfter(deadline: .now() + collectTimeout, execute: watchdog)
+        // What comes after, a copy for one, may take as long as it takes.
+        defer { watchdog.cancel() }
         let end = run(descriptor) { data in
             // A picture of a screen is a few megabytes. A guest that sends without end isn't sending one.
             guard collected.count + data.count <= longestCollectedOutput else {
@@ -248,14 +251,155 @@ enum GuestJobs {
         guard places.count == 2 else { fail(copyUsage) }
         switch (CopyEndpoint(places[0]), CopyEndpoint(places[1])) {
         case (.local(let source), .guest(let machine, let destination)):
+            if isWindows(machine) {
+                copyIntoWindows(source, to: destination, in: machine, as: account.name)
+            }
             copyIn(source, to: destination, in: machine, as: account.name)
         case (.guest(let machine, let source), .local(let destination)):
+            if isWindows(machine) {
+                copyOutOfWindows(source, in: machine, to: destination, as: account.name)
+            }
             copyOut(source, in: machine, to: destination, as: account.name)
         case (.local, .local):
             fail("Neither is in a virtual machine. \(copyUsage)")
         case (.guest, .guest):
             fail("Copying from one virtual machine to another isn't done in one step: copy to this Mac first.")
         }
+    }
+
+    // MARK: cp in Windows
+
+    /// Whether `machine` runs Windows, which has `tar` but no shell to say where it unpacks.
+    private static func isWindows(_ machine: String) -> Bool {
+        send(ControlRequest(command: .info, machine: machine)).machines.first?.family == "windows"
+    }
+
+    /// What a path in a Windows guest is, as PowerShell there says: whether it is a folder, and where
+    /// what would be put there goes. Only text comes back, which PowerShell passes on intact; the
+    /// archive itself goes straight to `tar`, which PowerShell would turn into text.
+    private struct WindowsPlace {
+        var isFolder: Bool
+        /// The whole path, with `~` and a relative path resolved.
+        var full: String
+        /// Empty for the root of a drive.
+        var parent: String
+        var leaf: String
+    }
+
+    private static func windowsPlace(of path: String, creatingFolder: Bool, in machine: String, as user: String?) -> WindowsPlace {
+        // The path comes in the environment: in the script PowerShell would read quotes of several
+        // kinds in it, also the curly ones a Mac types.
+        // Without a console to draw it on, PowerShell writes the progress of loading its modules to
+        // errors, as XML, and what it prints in the code page of DOS.
+        let script = """
+            $ProgressPreference = 'SilentlyContinue'
+            [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+            $p = $env:SWIFTVM_PLACE
+            if ($\(creatingFolder ? "true" : "false")) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
+            $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
+            if (Test-Path -LiteralPath $full -PathType Container) { 'folder' } elseif (Test-Path -LiteralPath $full) { 'file' } else { 'none' }
+            $full
+            Split-Path -Parent $full
+            Split-Path -Leaf $full
+            """
+        // As UTF-16 in Base64: nothing in it is read by a shell on its way.
+        var encoded = Data()
+        for unit in script.utf16 {
+            encoded.append(UInt8(unit & 0xFF))
+            encoded.append(UInt8(unit >> 8))
+        }
+        let job = GuestJob.exec(.init(
+            arguments: ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded.base64EncodedString()], user: user,
+            environment: ["SWIFTVM_PLACE": path]
+        ))
+        // Every line counts, also the empty one that is the parent of a drive's root.
+        let lines = String(decoding: collect(job, in: machine), as: UTF8.self)
+            .replacingOccurrences(of: "\r", with: "").split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard lines.count >= 4, !lines[1].isEmpty else { fail("“\(path)” isn't a place in “\(machine)”.") }
+        return WindowsPlace(isFolder: lines[0] == "folder", full: lines[1], parent: lines[2], leaf: lines[3])
+    }
+
+    /// `text` as a pattern for the `-s` of this Mac's tar, which reads basic regular expressions: only
+    /// what is special in those is escaped.
+    static func tarPattern(_ text: String) -> String {
+        var pattern = ""
+        for character in text {
+            if "\\.[]*^$".contains(character) { pattern.append("\\") }
+            pattern.append(character)
+        }
+        return pattern
+    }
+
+    /// `text` as what `-s` puts in place of a match, where `~` stands for the match.
+    static func tarReplacement(_ text: String) -> String {
+        var replacement = ""
+        for character in text {
+            if "\\~".contains(character) { replacement.append("\\") }
+            replacement.append(character)
+        }
+        return replacement
+    }
+
+    private static func copyIntoWindows(_ source: String, to destination: String, in machine: String, as user: String?) -> Never {
+        guard !destination.isEmpty else { fail("Missing where to put it in “\(machine)”.") }
+        let isContents = source == "." || source.hasSuffix("/.")
+        let url = URL(fileURLWithPath: source).standardizedFileURL
+        var information = stat()
+        guard lstat(url.path, &information) == 0 else { fail("“\(source)” isn't there.") }
+        let (parent, name) = isContents ? (url.path, ".") : (url.deletingLastPathComponent().path, url.lastPathComponent)
+        let place = windowsPlace(of: destination, creatingFolder: isContents, in: machine, as: user)
+
+        // Into a folder that is there it goes under its own name; anywhere else under the name given.
+        var arguments = ["--no-xattrs", "--no-mac-metadata", "-cf", "-", "-C", parent]
+        let folder: String
+        if place.isFolder {
+            folder = place.full
+        } else {
+            guard !place.parent.isEmpty else { fail("“\(destination)” isn't a place for a file in “\(machine)”.") }
+            folder = place.parent
+            // `/` is in no name, on this Mac or in Windows.
+            arguments += ["-s", "/^\(tarPattern(name))/\(tarReplacement(place.leaf))/"]
+        }
+        arguments += ["--", name]
+        let archive = Pipe()
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = arguments
+        tar.environment = ProcessInfo.processInfo.environment.merging(archiveEnvironment) { _, new in new }
+        tar.standardInput = FileHandle.nullDevice
+        tar.standardOutput = archive
+        let job = GuestJob.exec(.init(arguments: ["tar.exe", "-xf", "-", "-C", folder], user: user))
+        let descriptor = open(job, in: machine)
+        do {
+            try tar.run()
+        } catch {
+            fail("tar couldn't be run: \(error.localizedDescription)")
+        }
+        let packed = archive.fileHandleForReading.fileDescriptor
+        let end = run(descriptor, input: .from(packed)) { _ in true }
+        if end.error != nil || end.status != 0 {
+            tar.terminate()
+        } else {
+            var rest = [UInt8](repeating: 0, count: 64 * 1024)
+            while read(packed, &rest, rest.count) > 0 {}
+        }
+        tar.waitUntilExit()
+        finishCopy(end, archiver: tar)
+    }
+
+    private static func copyOutOfWindows(_ source: String, in machine: String, to destination: String, as user: String?) -> Never {
+        guard !source.isEmpty else { fail("Missing what to copy from “\(machine)”.") }
+        let isContents = source == "." || source.hasSuffix("/.") || source.hasSuffix("\\.")
+        let folderPath = source == "." ? "." : String(source.dropLast(2))
+        let place = windowsPlace(of: isContents ? folderPath : source, creatingFolder: false, in: machine, as: user)
+        guard place.isFolder || !isContents else { fail("“\(source)” isn't a folder in “\(machine)”.") }
+        // The whole of a drive is its contents.
+        guard isContents || !place.parent.isEmpty else { fail("To copy all of “\(source)”, copy “\(source).”: what is in it.") }
+        // `tar` itself, with no shell around it, so that the archive reaches this Mac as it is.
+        let folder = isContents ? place.full : place.parent
+        let name = isContents ? "." : place.leaf
+        copyOut(name, in: machine, to: destination, as: user, packing: ["tar.exe", "-cf", "-", "-C", folder, "--", name])
     }
 
     /// What the commands that pack and unpack in the guest run with: macOS keeps its tar from adding
@@ -304,7 +448,10 @@ enum GuestJobs {
         finishCopy(end, archiver: tar)
     }
 
-    private static func copyOut(_ source: String, in machine: String, to destination: String, as user: String?) -> Never {
+    /// - Parameter packing: The command that packs `source` in the guest, where that isn't the shell's.
+    private static func copyOut(
+        _ source: String, in machine: String, to destination: String, as user: String?, packing: [String]? = nil
+    ) -> Never {
         guard !source.isEmpty else { fail("Missing what to copy from “\(machine)”.") }
         let isContents = source == "." || source.hasSuffix("/.")
         // The last part of a path in the guest, read as text: this Mac's folders have no say in it.
@@ -339,7 +486,9 @@ enum GuestJobs {
         tar.arguments = ["-xf", "-", "-C", work.path]
         tar.standardInput = archive
         tar.standardOutput = FileHandle.nullDevice
-        let job = GuestJob.exec(.init(arguments: ["/bin/sh", "-c", packScript, "swiftvm-cp", source], user: user, environment: archiveEnvironment))
+        let job = GuestJob.exec(.init(
+            arguments: packing ?? ["/bin/sh", "-c", packScript, "swiftvm-cp", source], user: user, environment: archiveEnvironment
+        ))
         let descriptor = open(job, in: machine)
         do {
             try tar.run()

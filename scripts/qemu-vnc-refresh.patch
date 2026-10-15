@@ -1,0 +1,45 @@
+--- a/ui/vnc.c
++++ b/ui/vnc.c
+@@ -58,7 +58,8 @@
+ #include "hw/virtio/virtio-gpu.h"
+ #include "ui/input.h"
+ 
+-#define VNC_REFRESH_INTERVAL_BASE GUI_REFRESH_INTERVAL_DEFAULT
++/* SwiftVM's local display should keep up with a 60 Hz screen. */
++#define VNC_REFRESH_INTERVAL_BASE 16
+ #define VNC_REFRESH_INTERVAL_INC  50
+ #define VNC_REFRESH_INTERVAL_MAX  GUI_REFRESH_INTERVAL_IDLE
+ static const struct timeval VNC_REFRESH_STATS = { 0, 500000 };
+@@ -657,6 +658,11 @@
+     struct VncSurface *s = &vd->guest;
+ 
+     vnc_set_area_dirty(s->dirty, vd, x, y, w, h);
++    /* A virtio GPU reports damage itself. Wake an idle display when it does. */
++    if (!QTAILQ_EMPTY(&vd->clients)) {
++        qemu_console_listener_set_refresh(&vd->dcl,
++                                           VNC_REFRESH_INTERVAL_BASE);
++    }
+ }
+ 
+ void vnc_framebuffer_update(VncState *vs, int x, int y, int w, int h,
+@@ -818,6 +824,10 @@
+ 
+     vnc_abort_display_jobs(vd);
+     vd->ds = surface;
++    if (!QTAILQ_EMPTY(&vd->clients)) {
++        qemu_console_listener_set_refresh(&vd->dcl,
++                                           VNC_REFRESH_INTERVAL_BASE);
++    }
+ 
+     /* guest surface */
+     qemu_pixman_image_unref(vd->guest.fb);
+@@ -2054,6 +2064,9 @@
+             vnc_desktop_resize_ext(vs, 0);
+         }
+     }
++    /* A client that has caught up must not wait for the idle polling interval. */
++    qemu_console_listener_set_refresh(&vs->vd->dcl,
++                                       VNC_REFRESH_INTERVAL_BASE);
+ }
+ 
+ static void send_ext_key_event_ack(VncState *vs)

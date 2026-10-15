@@ -2,6 +2,7 @@ import DiskTools
 import Foundation
 import Installers
 import Observation
+import QEMUEngine
 import SSHIntegration
 import VMCore
 import VMNetworking
@@ -89,6 +90,32 @@ struct MacInstallRequest {
     var location: URL?
 }
 
+/// Everything needed to install Windows, from Microsoft's download or a disc of the user's, without
+/// anyone sitting through its setup.
+struct WindowsInstallRequest {
+    enum Media: Equatable {
+        /// Asks Microsoft for today's Windows 11 for Arm.
+        case download
+        /// A Windows installer disc image for Arm.
+        case localFile(URL)
+    }
+
+    var name: String
+    var media: Media
+    var cpuCount: Int
+    var memorySize: UInt64
+    var diskCapacity: UInt64
+    var userName: String
+    var fullName: String
+    var password: String
+    /// Let this Mac's key sign in over SSH, once Windows has set SSH up.
+    var installsSSHKey: Bool
+    /// Keep the machine's disk compressed from the start.
+    var compressesDisk = false
+    /// The folder to keep the machine in. `nil` is the folder for new machines.
+    var location: URL?
+}
+
 /// Everything needed to make a machine from a template.
 struct TemplateCreateRequest {
     var name: String
@@ -131,6 +158,15 @@ extension AppModel {
         let os = request.image?.guestOS ?? GuestOS(family: .macOS)
         return run(MachineCreation(name: request.name, os: os), onReady: onReady) { creation in
             try await self.performMacInstall(request, creation: creation)
+        }
+    }
+
+    /// Starts installing Windows into a new machine.
+    @discardableResult
+    func create(_ request: WindowsInstallRequest, onReady: @escaping (VirtualMachine) -> Void = { _ in }) -> MachineCreation {
+        let os = GuestOS(family: .windows, productName: "Windows 11")
+        return run(MachineCreation(name: request.name, os: os), onReady: onReady) { creation in
+            try await self.performWindowsInstall(request, os: os, creation: creation)
         }
     }
 
@@ -340,6 +376,69 @@ extension AppModel {
                 finishSetup(of: machine, account: account, keyPair: keyPair)
             }
             return machine
+        } catch {
+            library.discard(staged: bundle)
+            throw error
+        }
+    }
+
+    private func performWindowsInstall(_ request: WindowsInstallRequest, os: GuestOS, creation: MachineCreation) async throws -> VirtualMachine {
+        guard qemuProvider?.isAvailable == true else { throw QEMUError.notInstalled }
+        try prepareLocation(request.location)
+        if let problem = WindowsSetup.problem(withUserName: request.userName) ?? WindowsSetup.problem(withPassword: request.password) {
+            throw VMError.invalidConfiguration(problem)
+        }
+
+        let installer: URL
+        switch request.media {
+        case .localFile(let url):
+            installer = url
+        case .download:
+            creation.update("Asking Microsoft for Windows…")
+            let release = try await WindowsDownloads.latest()
+            installer = try await download(release.image, named: "Windows 11", creation: creation)
+        }
+        try Task.checkCancellation()
+        creation.update("Checking the Windows installer…")
+        let language = try await Task.detached(priority: .userInitiated) { try WindowsInstaller.inspect(installer) }.value
+        let drivers = try await download(WindowsDownloads.drivers, named: "drivers for Windows", creation: creation)
+        try Task.checkCancellation()
+
+        let alias = reserveAlias(for: request.name)
+        defer { reservedAliases.remove(alias) }
+        let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
+        // NVMe, which Windows Setup has a driver for. Windows doesn't read Apple's sparse format.
+        let disk = request.compressesDisk
+            ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .nvme, format: .compressed)
+            : DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .nvme, format: .raw)
+        let installerDisc = RemovableImage(url: installer, readOnly: true)
+        let driversDisc = RemovableImage(url: drivers, readOnly: true)
+        let configuration = VMConfiguration(
+            name: request.name,
+            os: os,
+            cpuCount: request.cpuCount,
+            memorySize: request.memorySize,
+            disks: [disk],
+            removableImages: [installerDisc, driversDisc],
+            display: DisplayConfiguration(widthInPixels: 1920, heightInPixels: 1080, adapter: .framebuffer),
+            networkInterfaces: [NetworkInterfaceConfiguration()],
+            ssh: SSHConfiguration(alias: alias, user: request.userName, identityFile: keyPair?.privateKeyPath),
+            installation: InstallationConfiguration(attachesSeedImage: true, setupMedia: [installerDisc.id, driversDisc.id])
+        )
+        let fullName = request.fullName.trimmingCharacters(in: .whitespaces)
+        let setup = WindowsSetup(
+            computerName: WindowsSetup.computerName(from: alias), userName: request.userName,
+            fullName: fullName.isEmpty ? nil : fullName, password: request.password, language: language,
+            authorizedKeys: keyPair.map { [$0.publicKey] } ?? []
+        )
+
+        creation.update("Creating disk…")
+        let bundle = try VMBundle.create(at: library.makeStagingBundleURL(in: request.location), configuration: configuration)
+        do {
+            try DiskService.createBlankDisk(at: bundle.diskURL(for: disk), capacity: disk.capacity, format: disk.format)
+            try await Task.detached(priority: .userInitiated) { try setup.writeDisc(to: bundle.seedImageURL) }.value
+            sshWriter.forgetHostKey(for: alias)
+            return try addToLibrary(staged: bundle)
         } catch {
             library.discard(staged: bundle)
             throw error

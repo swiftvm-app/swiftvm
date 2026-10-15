@@ -11,11 +11,15 @@ public struct RemoteImage: Codable, Sendable, Hashable {
     /// A `SHA256SUMS`-style file listing the expected digest of `url`'s file name.
     public var checksumsURL: URL?
     public var checksumAlgorithm: ChecksumAlgorithm?
+    /// The SHA-256 digest of the file, where its publisher lists none to check it against and the app
+    /// knows the one it expects.
+    public var sha256: String?
 
-    public init(url: URL, checksumsURL: URL? = nil, checksumAlgorithm: ChecksumAlgorithm? = nil) {
+    public init(url: URL, checksumsURL: URL? = nil, checksumAlgorithm: ChecksumAlgorithm? = nil, sha256: String? = nil) {
         self.url = url
         self.checksumsURL = checksumsURL
         self.checksumAlgorithm = checksumAlgorithm
+        self.sha256 = sha256
     }
 
     public var fileName: String { url.lastPathComponent }
