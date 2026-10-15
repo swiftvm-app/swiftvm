@@ -82,8 +82,10 @@ The app updates itself with [Sparkle](https://sparkle-project.org).
   the update key. Other builds carry neither and don't update.
 - The app only installs updates that are signed with the update key. If the
   key is lost, the apps that are out there can't be updated any more.
-- The app has no Dock icon, so an update that is found in the background is
-  announced in the panel and not in a window.
+- Updates found automatically are announced in the menu bar panel, including
+  those being downloaded automatically. **Update…** opens Sparkle's dialog
+  when asked; scheduled checks don't open it on their own, even just after
+  launch.
 - Installing an update quits the app the usual way, with the usual question
   about running machines.
 

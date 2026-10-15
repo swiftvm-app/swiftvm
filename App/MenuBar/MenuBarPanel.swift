@@ -32,6 +32,7 @@ struct MenuBarPanel: View {
                     UpdateService.shared.checkForUpdates()
                     dismiss()
                 }
+                .disabled(!UpdateService.shared.canCheckForUpdates)
             }
             if model.library.machines.isEmpty, model.library.unavailableMachines.isEmpty, model.creations.isEmpty {
                 emptyState

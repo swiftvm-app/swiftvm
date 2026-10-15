@@ -16,9 +16,12 @@ Choose **Settings…** in the panel, or press `Cmd+,`.
 
 ## Updates
 
-SwiftVM checks for updates by itself and tells you in the panel when one is
-ready.
+SwiftVM checks for updates by itself and shows the available version in the
+menu bar panel, without opening an update window on its own.
 
+- Choose **Update…** next to the version to open the update dialog and decide
+  whether to install. While an automatic download is in progress, the button
+  is unavailable; it becomes available when Sparkle is ready.
 - **Check for Updates…** is in **Settings → Updates** and in the panel's
   **…** menu.
 - **Automatically download and install updates** installs an update the next
