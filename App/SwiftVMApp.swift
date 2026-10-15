@@ -23,6 +23,7 @@ struct SwiftVMApp: App {
         WindowGroup(id: WindowID.machine, for: UUID.self) { $machineID in
             MachineWindow(machineID: machineID)
                 .environment(model)
+                .background(WindowSpaceBehavior())
         }
         .defaultSize(width: 1280, height: 832)
         .restorationBehavior(.disabled)
@@ -34,24 +35,28 @@ struct SwiftVMApp: App {
         Window("New Virtual Machine", id: WindowID.newMachine) {
             NewMachineWindow()
                 .environment(model)
+                .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
 
         WindowGroup(id: WindowID.machineSettings, for: UUID.self) { $machineID in
             MachineSettingsWindow(machineID: machineID)
                 .environment(model)
+                .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
 
         WindowGroup(id: WindowID.snapshots, for: UUID.self) { $machineID in
             SnapshotsWindow(machineID: machineID)
                 .environment(model)
+                .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
 
         Window("Templates", id: WindowID.templates) {
             TemplatesView()
                 .environment(model)
+                .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
 
@@ -60,6 +65,7 @@ struct SwiftVMApp: App {
         Window("\(AppIdentity.current.name) Settings", id: WindowID.settings) {
             AppSettingsView()
                 .environment(model)
+                .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
     }

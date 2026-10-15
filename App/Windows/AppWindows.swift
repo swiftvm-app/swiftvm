@@ -95,3 +95,19 @@ extension AppModel {
         Task { await machine.start() }
     }
 }
+
+/// Configure the window as soon as SwiftUI attaches its content, before it is brought forward.
+/// Opening it from the menu bar should bring it to the current desktop, including when it already
+/// exists on another one. It stays on one desktop at a time.
+struct WindowSpaceBehavior: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowView { WindowView() }
+
+    func updateNSView(_ view: WindowView, context: Context) {}
+
+    final class WindowView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.collectionBehavior.insert(.moveToActiveSpace)
+        }
+    }
+}

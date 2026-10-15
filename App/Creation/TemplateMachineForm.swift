@@ -22,15 +22,18 @@ struct TemplateSourceForm: View {
                 VStack(spacing: 0) {
                     Form {
                         Section { NewMachineSourcePicker(selection: $source) }
-                        ContentUnavailableView(
-                            model.templates.isDirectoryMissing ? "Templates Folder Unavailable" : "No Templates Yet",
-                            systemImage: "square.stack.3d.up",
-                            description: Text(model.templates.isDirectoryMissing
-                                ? "The folder for templates, \(model.templates.directory.abbreviatedPath), isn't there. If it is on an external disk, connect the disk."
-                                : "Set up a virtual machine, shut it down, and choose Save as Template in its menu. Your saved templates will appear here.")
-                        )
                     }
                     .formStyle(.grouped)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    ContentUnavailableView(
+                        model.templates.isDirectoryMissing ? "Templates Folder Unavailable" : "No Templates Yet",
+                        systemImage: "square.stack.3d.up",
+                        description: Text(model.templates.isDirectoryMissing
+                            ? "The folder for templates, \(model.templates.directory.abbreviatedPath), isn't there. If it is on an external disk, connect the disk."
+                            : "Set up a virtual machine, shut it down, and choose Save as Template in its menu. Your saved templates will appear here.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     Divider()
                     FormButtons(problem: nil, canCreate: false, create: {})
