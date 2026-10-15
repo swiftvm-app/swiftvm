@@ -30,8 +30,9 @@ public struct HTTPResponse: Sendable, Hashable {
     public var headers: [(String, String)]
     public enum Body: Sendable, Hashable {
         case data(Data)
-        /// Part of a file, read as it is sent.
-        case file(URL, offset: UInt64, length: UInt64)
+        /// Part of a file, read as it is sent. The file is open already: what the handler looked at is
+        /// what is sent, whatever is put at its path in the meantime.
+        case file(FileHandle, offset: UInt64, length: UInt64)
     }
     public var body: Body
 
@@ -230,7 +231,8 @@ public struct WebDAVHandler: Sendable {
             return HTTPResponse(status: 416, headers: [("Content-Range", "bytes */\(size)")])
         }
         headers.append(("Content-Length", String(length)))
-        return HTTPResponse(status: status, headers: headers, body: includingBody ? .file(url, offset: offset, length: length) : .data(Data()))
+        guard includingBody else { return HTTPResponse(status: status, headers: headers) }
+        return HTTPResponse(status: status, headers: headers, body: .file(try FileHandle(forReadingFrom: url), offset: offset, length: length))
     }
 
     private func put(_ request: HTTPRequest) throws -> HTTPResponse {

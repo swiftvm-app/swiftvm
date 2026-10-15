@@ -41,7 +41,13 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let response = try handler().handle(HTTPRequest(method: "GET", path: "/abc123/Projects/notes.txt", headers: ["range": "bytes=2-4"]))
         #expect(response.status == 206)
-        #expect(response.body == .file(directory.appending(path: "Projects/notes.txt"), offset: 2, length: 3))
+        guard case .file(let file, offset: 2, length: 3) = response.body else {
+            Issue.record("Expected bytes 2-4 of the file, got \(response.body)")
+            return
+        }
+        defer { try? file.close() }
+        try file.seek(toOffset: 2)
+        #expect(try file.read(upToCount: 3) == Data("234".utf8))
         #expect(response.headers.contains { $0.0 == "Content-Range" && $0.1 == "bytes 2-4/10" })
     }
 
@@ -60,11 +66,16 @@ import Testing
         #expect(handler.handle(HTTPRequest(method: "PROPFIND", path: "/other/Projects")).status == 404)
     }
 
-    @Test func writesNothingOutsideTheFolderByAnyWay() throws {
+    @Test func nothingOutsideTheFolderIsReachedByAnyWay() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let handler = try handler()
         let elsewhere = directory.appending(path: "Elsewhere")
         try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appending(path: "Projects/Outside"), withDestinationURL: directory.appending(path: "outside.txt")
+        )
+        // A link that leads out of the folder isn't read through.
+        #expect(handler.handle(HTTPRequest(method: "GET", path: "/abc123/Projects/Outside")).status == 403)
         try FileManager.default.createSymbolicLink(at: directory.appending(path: "Projects/Link"), withDestinationURL: elsewhere)
         try FileManager.default.createSymbolicLink(
             at: directory.appending(path: "Projects/Dangling"), withDestinationURL: elsewhere.appending(path: "made.txt")

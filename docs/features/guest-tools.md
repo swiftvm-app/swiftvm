@@ -1,8 +1,8 @@
 # Guest Tools
 
-The guest tools are a small agent that runs inside a virtual machine. It talks
-to SwiftVM over the machine's own socket device, or a serial line of its own in
-Windows guests, so it works even when the guest has no network.
+The guest tools run inside a virtual machine and connect directly to SwiftVM.
+Features such as commands and clipboard sharing work without SSH or a network
+connection.
 
 ## What they add
 
@@ -73,10 +73,9 @@ needs macOS 27 or newer.
 ### Windows
 
 Choose **Install Guest Tools…**, or run `swiftvm install-tools <machine> --disc`.
-SwiftVM plugs in the guest tools disc and the drivers for virtual machines. In
-the guest, open the SWIFTVM disc in File Explorer and run `install.cmd`, which
-asks to run as an administrator. Restart Windows afterwards, so that its
-display follows the window.
+In Windows, open the **SWIFTVM** disc in File Explorer and run `install.cmd`.
+Approve the administrator prompt and restart Windows afterwards. SwiftVM also
+attaches the drivers disc needed by the installer.
 
 ## Removing
 
@@ -96,9 +95,6 @@ In a Windows guest, stop and delete the service (`sc.exe stop SwiftVMAgent` and
 | --- | --- |
 | Linux | One Python script and its systemd units |
 | macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard and for reading the screen as a tree |
-| Windows | One program, `C:\Program Files\SwiftVM\swiftvm-agent.exe`, built in the guest from its source by the C# compiler that comes with Windows. It runs as a service, `SwiftVMAgent`, and in the session of whoever logs in, for the clipboard and the shared folders' drive. Also the drivers for the machine's devices |
+| Windows | The SwiftVM guest agent in `C:\Program Files\SwiftVM`, its background service, and device drivers |
 
-The agent only takes orders from your Mac, and only over the machine's socket
-device, or in Windows over a serial port that only SYSTEM and administrators
-may open. What `swiftvm` may have it do in a guest can be
-[turned off](automation.md#turning-it-off) for each machine.
+You can [turn off automation](automation.md#turning-it-off) for each machine.

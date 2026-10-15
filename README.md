@@ -4,7 +4,7 @@
 
 <h1 align="center">SwiftVM</h1>
 
-<p align="center">Native macOS app for running virtual machines, built with Swift, Apple's Virtualization framework, and QEMU for Windows.</p>
+<p align="center">Native macOS app for running macOS, Linux, and Windows virtual machines.</p>
 
 ## Supported guests
 

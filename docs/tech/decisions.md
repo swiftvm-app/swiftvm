@@ -10,7 +10,7 @@ in git history as
 | | Decision | In short |
 | --- | --- | --- |
 | D1 | The Virtualization framework runs macOS and Linux guests | In the app's process, without root |
-| D2 | Windows guests run on QEMU, inside the app | The Virtualization framework can't boot Windows |
+| D2 | Windows guests use QEMU | The Virtualization framework can't boot Windows |
 | D3 | One NAT network, created with the first machine | Fixed addresses without root |
 | D4 | The app relays forwarded ports | Forwards change while machines run |
 | D5 | Snapshots are copies, not layers | Any snapshot can be deleted |
@@ -26,10 +26,6 @@ in git history as
 | D15 | A template is a copy of its own, apart from the machines | It never changes, and outlives its machine |
 | D16 | The app sees and uses a macOS guest's screen itself | No question on the guest's screen, and no guest tools |
 | D17 | `swiftvm` answers a macOS guest's question when it is told to | One command and the password, instead of a person at the screen |
-| D18 | The app shows a QEMU machine's display itself, over VNC | One window, automation, and the way to single Windows apps |
-| D19 | A QEMU machine joins the app's own network | The same addresses, forwards and SSH as every machine |
-| D20 | The Windows agent is C# that Windows compiles itself | Nothing extra to build the app, as with Linux |
-| D21 | Windows gets shared folders over WebDAV | Windows has no driver for the folders the others share |
 
 ## D1. The Virtualization framework runs macOS and Linux guests
 
@@ -38,32 +34,12 @@ and no root. It installs macOS, and from macOS 27 on a guest creates its own
 account on first start, so a Mac is ready over SSH about half a minute after it
 is installed.
 
-## D2. Windows guests run on QEMU, inside the app
+## D2. Windows guests use QEMU
 
-The Virtualization framework can't boot Windows without private API. Windows
-on Arm runs on QEMU with the Hypervisor framework, a process of its own per
-machine, which the app starts and talks to over its machine protocol (QMP).
-Each machine's configuration names its engine, and a router hands it to that
-one.
-
-QEMU is built from its source by `scripts/build-qemu.sh`, with nothing but what
-Windows needs: the one machine for 64-bit ARM, no emulator, a VNC server, and
-CoreAudio. With its four libraries (glib, pixman, PCRE2 and libintl) and its
-firmware that is 26 MB, 5 MB compressed, and it goes into every app.
-
-- **Its lines are open descriptors.** The app makes a socket pair for each,
-  QEMU's machine protocol, its serial console, the agent's line and each
-  network card, and hands QEMU its ends when it starts it. Nothing on disk
-  leads to a machine.
-- **It starts held**, and runs once the app has its lines in place.
-- **A guest that restarts ends it**, and the machine starts it anew with the
-  hardware it is configured with by then. See [Constraints](./constraints.md#qemu-and-windows).
-- **A copy of the app that ends leaves its QEMUs running.** Each writes down its
-  process ID, and the next start of its machine ends the QEMU whose arguments
-  name that machine.
-
-Turned down: Homebrew's QEMU, 730 MB and not on every Mac. Downloading QEMU on
-demand, which ties a machine to a server. QEMU's own window (D18).
+SwiftVM includes QEMU to run Windows 11 for Arm with Apple's Hypervisor
+framework. Windows machines use the same app interface and virtual network
+as macOS and Linux machines. See [Windows guests](../features/windows-guests.md)
+for setup and limitations.
 
 ## D3. One NAT network, created with the first machine
 
@@ -298,67 +274,3 @@ holds the password while it sets one up. Writing the answer into the guest's
 privacy database, which macOS protects from everything in the guest, root
 included. Clicking where the switch was the last time, without looking: a list
 with other programs on it has it elsewhere.
-
-## D18. The app shows a QEMU machine's display itself, over VNC
-
-QEMU's VNC server listens nowhere. The app hands it one end of a socket pair
-over its machine protocol (`add_client`) and is the client at the other: the
-picture goes into an `IOSurface` that a layer shows as it is, and keys go by
-their place on a PC keyboard, so that the guest's own layout decides what they
-type. The pointer is the guest's, as a cursor of the Mac's.
-
-- **One window for every machine.** A Windows machine has the window, toolbar
-  and menus every machine has.
-- **Automation without the guest's say-so.** Screenshots, clicks and keys are the
-  machine's own display, mouse and keyboard, as for macOS guests (D16).
-- **The way to single Windows apps.** A view shows a region of the display, and
-  passes on places in that region. A window of one Windows app on the Mac
-  would be such a view, of where that app's window is, next to the agent
-  saying where that is.
-
-Turned down: QEMU's own Cocoa window, a window of another process. SPICE, a
-client library of its own. QEMU's D-Bus display, which needs D-Bus.
-
-## D19. A QEMU machine joins the app's own network
-
-vmnet lets the app start an interface on a network it created, for any
-process. The app starts one for each network card of a QEMU machine and passes
-frames between it and QEMU, one frame to a datagram. The guest keeps its MAC
-address, so its reservation applies, and forwarded ports and SSH reach it as
-they reach every machine.
-
-Turned down: QEMU's user-mode network, which no other machine and not the Mac
-can reach. QEMU's vmnet backend, which takes root.
-
-## D20. The Windows agent is C# that Windows compiles itself
-
-Every Windows 11 has .NET Framework 4.8 and its C# compiler. The agent is one
-source file, built in the guest when the guest tools are installed: the Mac
-that builds the app needs nothing for it, as with the Python agent for Linux
-(D8). The compiler reads C# 5, which the source keeps to; `mcs -langversion:5`
-checks that on a Mac.
-
-- **It runs twice**, as the macOS agent does (D9): as a service, as SYSTEM,
-  which talks to the Mac, and in the session of whoever is logged in, for the
-  clipboard and the shared folders' drive.
-- **Its line is a serial port with connections on it.** QEMU on a Mac has no
-  socket device. The port carries frames that name the connection they belong
-  to (`ChannelFrame`), and the app opens connections over it as it would over a
-  socket device. Each way of a connection ends by itself, as a job needs. Both
-  ends say hello when they open the line, so that a guest that was resumed
-  drops what it believed was open.
-- **Screen, mouse and keyboard are the app's** (D18), not the agent's.
-
-Turned down: an agent written in Swift, which needs a toolchain for Windows. A
-PowerShell agent, which can't be a service and is slow for a job's bytes.
-
-## D21. Windows gets shared folders over WebDAV
-
-Windows has no driver for virtio-fs over QEMU on a Mac. Every Windows has a
-WebDAV client, which maps a location to a drive. The app serves each machine's
-folders on the Mac's address on the virtual network, under a path that is a
-secret of that machine's, and the agent maps them as drive Z: for whoever logs
-in.
-
-Turned down: SMB, which takes macOS's file sharing and an account's password.
-Copying with `swiftvm cp`, which is no shared folder.

@@ -16,7 +16,7 @@ let package = Package(
         .library(name: "VMControl", targets: ["VMControl"]),
         .library(name: "GuestChannel", targets: ["GuestChannel"]),
         .library(name: "GuestAgentMac", targets: ["GuestAgentMac"]),
-        .executable(name: "swiftvm", targets: ["swiftvm"]),
+        .executable(name: "swiftvm", targets: ["SwiftVMCLI"]),
         .executable(name: "swiftvm-agent", targets: ["swiftvm-agent"]),
     ],
     targets: [
@@ -39,7 +39,10 @@ let package = Package(
         // Runs Windows guests on QEMU, which the app carries in Contents/Helpers.
         .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel"]),
         .target(name: "VMControl", dependencies: ["GuestChannel"]),
-        .executableTarget(name: "swiftvm", dependencies: ["VMControl", "GuestChannel"]),
+        // Not named `swiftvm`: a target's build folder is named after it, and on a disk that doesn't tell
+        // upper case from lower, that of the app's `SwiftVM` target would be the same folder. Builds that
+        // have both, such as SourceKit-LSP's, then compile the app with this tool's file map.
+        .executableTarget(name: "SwiftVMCLI", dependencies: ["VMControl", "GuestChannel"], path: "Sources/swiftvm"),
         .testTarget(name: "GuestChannelTests", dependencies: ["GuestChannel"]),
         .testTarget(name: "GuestAgentMacTests", dependencies: ["GuestAgentMac", "GuestChannel"]),
         .testTarget(name: "VMCoreTests", dependencies: ["VMCore", "GuestChannel"]),

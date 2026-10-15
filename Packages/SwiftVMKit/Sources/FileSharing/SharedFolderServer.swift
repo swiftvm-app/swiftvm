@@ -28,6 +28,10 @@ public final class SharedFolderServer: @unchecked Sendable {
     /// The secret path of each machine that shares folders, by the machine.
     private var paths: [String: String] = [:]
     private var connectionCount = 0
+    /// Held while a request looks at the shared folders and acts on them. A guest changes them only
+    /// through requests, so between a request's check that a path stays in its folder and the use it
+    /// makes of it, no other request can move a link of the folder's into that path.
+    private let filesLock = NSLock()
 
     /// How many connections are served at once. Windows opens a few.
     static let connectionLimit = 64
@@ -185,7 +189,7 @@ public final class SharedFolderServer: @unchecked Sendable {
             guard reader.readBody(of: &request) else { return }
             // Windows asks the server's root whether it speaks WebDAV before it looks any further. The
             // root says so, and holds nothing: what is shared is only under a machine's secret.
-            var response = (handler ?? WebDAVHandler(locations: [])).handle(request)
+            var response = filesLock.withLock { (handler ?? WebDAVHandler(locations: [])).handle(request) }
             if let body = request.bodyFile {
                 try? FileManager.default.removeItem(at: body)
             }
@@ -210,8 +214,7 @@ public final class SharedFolderServer: @unchecked Sendable {
         switch response.body {
         case .data(let data):
             return data.isEmpty || writeAll(data, to: connection)
-        case .file(let url, let offset, let length):
-            guard let file = try? FileHandle(forReadingFrom: url) else { return false }
+        case .file(let file, let offset, let length):
             defer { try? file.close() }
             try? file.seek(toOffset: offset)
             var left = length

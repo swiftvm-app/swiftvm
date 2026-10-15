@@ -21,10 +21,8 @@ Folders can be added and removed while the machine runs.
 | Linux | `/mnt/shared`, one folder each |
 | Windows | Drive **Z:**, one folder each, with the [guest tools](guest-tools.md) |
 
-Windows has no driver for the file sharing the others use, so SwiftVM serves
-the folders to it over WebDAV, only on the virtual network, under an address
-that only that machine is told. See
-[Windows guests](windows-guests.md#shared-folders).
+Windows shared folders require a connection to SwiftVM's virtual network.
+See [Windows guests](windows-guests.md#shared-folders).
 
 ### Linux guests you installed yourself
 
