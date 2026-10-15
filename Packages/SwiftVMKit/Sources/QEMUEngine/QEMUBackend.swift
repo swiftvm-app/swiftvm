@@ -67,6 +67,11 @@ public final class QEMUBackend: VMBackend {
         self.console = console
         self.pressesKeyToBootInstaller = pressesKeyToBootInstaller
         let (app, engine) = try Self.socketPair(SOCK_STREAM)
+        // macOS gives a local stream just 8 KB by default. A frame is several MB: give QEMU's
+        // outgoing pixels room at both ends so each scanline doesn't require a reader/writer handoff.
+        var pixelBufferSize: Int32 = 1 << 20
+        _ = setsockopt(app, SOL_SOCKET, SO_RCVBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(engine, SOL_SOCKET, SO_SNDBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
         screen = RFBClient(descriptor: app)
         screenEnd = engine
         view = GuestScreenView(client: screen)

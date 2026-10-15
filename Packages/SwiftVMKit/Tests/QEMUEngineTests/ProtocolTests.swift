@@ -4,8 +4,8 @@ import Testing
 @testable import QEMUEngine
 
 /// Waits a few seconds at most for `signal`, on a thread that may wait.
-private func waitBriefly(for signal: DispatchSemaphore) -> Bool {
-    signal.wait(timeout: .now() + 5) == .success
+private func waitBriefly(for signal: DispatchSemaphore, timeout: DispatchTime = .now() + 5) -> Bool {
+    signal.wait(timeout: timeout) == .success
 }
 
 /// The other end of a socket pair, played by a test: QEMU, its VNC server, or a guest's agent.
@@ -130,6 +130,113 @@ private final class EventLog: @unchecked Sendable {
         _ = server.read(20)
         let encodings = server.read(4)
         _ = server.read((Int(encodings[2]) << 8 | Int(encodings[3])) * 4)
+    }
+
+    private func rectangle(x: UInt16 = 0, y: UInt16 = 0, width: UInt16, height: UInt16, encoding: RFBClient.Encoding = .raw, payload: Data = Data()) -> Data {
+        var data = Data()
+        for value in [x, y, width, height] { data.append(bigEndian: value) }
+        data.append(bigEndian: UInt32(bitPattern: encoding.rawValue))
+        data.append(payload)
+        return data
+    }
+
+    /// Reads the protocol payload back without IOSurface's row padding.
+    private func pixels(in picture: RFBClient.Picture) -> Data {
+        let surface = picture.surface
+        surface.lock(options: .readOnly, seed: nil)
+        defer { surface.unlock(options: .readOnly, seed: nil) }
+        var data = Data()
+        for row in 0..<picture.height {
+            data.append(Data(bytes: surface.baseAddress + row * surface.bytesPerRow, count: picture.width * 4))
+        }
+        return data
+    }
+
+    @Test func requestsNextFrameWhileReceivingFragmentedPixels() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        // Larger than the reader's buffer, with rows that need padding in IOSurface.
+        let payload = Data((0..<(257 * 80 * 4)).map { UInt8(truncatingIfNeeded: $0 >> 4) })
+        let thread = Thread {
+            self.greet(server, width: 257, height: 80)
+            _ = server.read(10)
+            let header = Data([0, 0, 0, 1]) + self.rectangle(width: 257, height: 80)
+            for byte in header { server.write(Data([byte])) }
+            // Withhold the payload until the next request: waiting until the previous frame has
+            // finished would stall here. This request must be incremental, to preserve dirty tracking.
+            #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 1, 1, 0, 80]))
+            for start in stride(from: 0, to: payload.count, by: 997) {
+                server.write(payload.subdata(in: start..<min(start + 997, payload.count)))
+            }
+        }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: updated) }.value)
+        #expect(pixels(in: try #require(client.picture)) == payload)
+    }
+
+    @Test func keepsBufferedFramesAlignedAcrossResizeDiscardAndOverlappingCopy() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        let requested = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        let payload = Data((0..<(7 * 5 * 4)).map { UInt8($0) })
+        let lastPixel = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        let thread = Thread {
+            self.greet(server, width: 4, height: 2)
+            _ = server.read(10)
+            var frames = Data([0, 0, 0, 4])
+            frames += self.rectangle(width: 7, height: 5, encoding: .desktopSize)
+            // A stale rectangle outside the new bounds must be consumed without losing the next
+            // header, even when its payload is larger than the receive buffer.
+            frames += self.rectangle(x: 10, width: 2, height: 9000, payload: Data(count: 72_000))
+            frames += self.rectangle(width: 7, height: 5, payload: payload)
+            frames += self.rectangle(x: 1, y: 1, width: 6, height: 4, encoding: .copyRect, payload: Data([0, 0, 0, 0]))
+            frames += Data([0, 0, 0, 1])
+            frames += self.rectangle(x: 6, y: 4, width: 1, height: 1, payload: lastPixel)
+            server.write(frames)
+            #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 0, 4, 0, 2]))
+            // Resizing needs a full refresh with the new bounds, including the newly exposed area.
+            #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 0, 7, 0, 5]))
+            #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 0, 7, 0, 5]))
+            requested.signal()
+        }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: updated) && waitBriefly(for: updated) && waitBriefly(for: requested) }.value)
+        var expected = payload
+        for row in 1..<5 {
+            let destination = (row * 7 + 1) * 4
+            let source = (row - 1) * 7 * 4
+            expected.replaceSubrange(destination..<(destination + 24), with: payload[source..<(source + 24)])
+        }
+        expected.replaceSubrange(136..<140, with: lastPixel)
+        #expect(pixels(in: try #require(client.picture)) == expected)
+    }
+
+    @Test func disconnectsWithoutPublishingAnIncompleteRectangle() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let closed = DispatchSemaphore(value: 0)
+        let updated = DispatchSemaphore(value: 0)
+        client.onClose = { closed.signal() }
+        client.onUpdate = { _ in updated.signal() }
+        let thread = Thread {
+            self.greet(server, width: 8, height: 8)
+            _ = server.read(10)
+            server.write(Data([0, 0, 0, 1]) + self.rectangle(width: 8, height: 8, payload: Data(count: 17)))
+            shutdown(server.descriptor, SHUT_WR)
+        }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: closed) }.value)
+        #expect(!waitBriefly(for: updated, timeout: .now()))
     }
 
     @Test func drawsWhatTheServerSendsIntoThePicture() async throws {

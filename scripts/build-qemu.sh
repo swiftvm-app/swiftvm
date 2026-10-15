@@ -23,6 +23,7 @@ version=11.1.2
 export MACOSX_DEPLOYMENT_TARGET=27.0
 checksum=731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016
 source_url=https://download.qemu.org/qemu-$version.tar.xz
+display_patch=$root/scripts/qemu-vnc-refresh.patch
 # Everything that isn't asked for here is left out.
 configure_options=(
     --target-list=aarch64-softmmu --without-default-features
@@ -46,8 +47,8 @@ for candidate in ${HOMEBREW_PREFIX:-/opt/homebrew}/bin/python3 /usr/bin/python3 
 done
 [[ -n $python ]] || fail "Building QEMU takes Python 3.11 or newer: brew install python"
 
-# What the result depends on: QEMU's version, this script, and the libraries that go in with it.
-key=$( { print -r -- "$version ${configure_options[*]}"; cat "${0:A}"; pkg-config --modversion glib-2.0 pixman-1; } | shasum -a 256 | cut -c1-12)
+# What the result depends on: QEMU's version, this script, its display patch, and its libraries.
+key=$( { print -r -- "$version ${configure_options[*]}"; cat "${0:A}" "$display_patch"; pkg-config --modversion glib-2.0 pixman-1; } | shasum -a 256 | cut -c1-12)
 cache=$root/.build/qemu
 result=$cache/$version-$key/QEMU
 if [[ -x $result/bin/qemu-system-aarch64 && -f $result/share/keymaps/en-us ]]; then
@@ -72,6 +73,8 @@ if [[ ! -f $tarball ]] || [[ $(shasum -a 256 "$tarball" | cut -d' ' -f1) != $che
 fi
 tar -xf "$tarball" -C "$work"
 source_dir=$work/qemu-$version
+patch --batch -d "$source_dir" -p1 < "$display_patch" >&2 \
+    || fail "The display refresh patch no longer applies to QEMU $version."
 
 print -u2 "Building QEMU $version…"
 mkdir "$source_dir/build"
@@ -149,6 +152,7 @@ cp "$source_dir/COPYING" "$out/licenses/QEMU-COPYING"
 cp "$source_dir/COPYING.LIB" "$out/licenses/QEMU-COPYING.LIB"
 cp "$source_dir/LICENSE" "$out/licenses/QEMU-LICENSE"
 cp "$source_dir/pc-bios/edk2-licenses.txt" "$out/licenses/edk2-licenses.txt"
+cp "$display_patch" "$out/licenses/"
 brew_prefix=${HOMEBREW_PREFIX:-/opt/homebrew}
 # gettext's own licence is the GPL of its tools. Its libintl is under the LGPL 2.1 or later, as glib is.
 for license in glib/LGPL-2.1-or-later.txt pixman/COPYING pcre2/LICENCE.md; do
@@ -163,6 +167,8 @@ $source_url (SHA-256 $checksum),
 and it was configured with:
   ${configure_options[*]}
 The script that builds it is scripts/build-qemu.sh in SwiftVM's repository.
+The included licenses/qemu-vnc-refresh.patch adjusts VNC's refresh timing for a local
+display and wakes it when the guest draws or the client is ready for a frame.
 
 The libraries in lib/ are Homebrew's builds of glib $(pkg-config --modversion glib-2.0), pixman $(pkg-config --modversion pixman-1),
 PCRE2 and gettext's libintl, which is under the GNU Lesser General Public License 2.1 or later, as

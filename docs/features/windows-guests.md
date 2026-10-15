@@ -114,7 +114,8 @@ any machine.
 ## Good to know
 
 - USB devices of your Mac can't be handed to a Windows guest yet.
-- Windows draws without graphics acceleration. Video and games are slow.
+- Windows draws without graphics acceleration. Desktop animations, video and
+  games can be slow even though its processor runs with hardware acceleration.
 - The display follows the window while someone is logged in. At Windows'
   sign-in screen it keeps the size it had.
 - A [duplicate](virtual-machines.md) or a machine made from a

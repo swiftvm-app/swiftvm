@@ -56,7 +56,7 @@ public final class RFBClient: @unchecked Sendable {
     private let descriptor: Int32
     private let lock = NSLock()
     /// Writes go out one at a time, and never on the thread that reads.
-    private let writer = DispatchQueue(label: "app.swiftvm.rfb.write")
+    private let writer = DispatchQueue(label: "app.swiftvm.rfb.write", qos: .userInteractive)
     private var updateHandler: (@Sendable (CGRect) -> Void)?
     private var resizeHandler: (@Sendable (Picture) -> Void)?
     private var cursorHandler: (@Sendable (Cursor?) -> Void)?
@@ -69,6 +69,8 @@ public final class RFBClient: @unchecked Sendable {
     private var takesSizeRequests = false
     private var screenID: UInt32 = 0
     private var buttons: UInt8 = 0
+    /// Reused by the reader thread. Socket reads must finish before locking the displayed surface.
+    private var rectanglePixels = [UInt8]()
 
     /// Takes over `descriptor`, one end of a connected socket pair whose other end QEMU has.
     public init(descriptor: Int32) {
@@ -95,6 +97,7 @@ public final class RFBClient: @unchecked Sendable {
         lock.withLock { isReading = true }
         let thread = Thread { [self] in readLoop(reader) }
         thread.name = "app.swiftvm.rfb"
+        thread.qualityOfService = .userInteractive
         thread.start()
         requestUpdate(incremental: false)
     }
@@ -303,6 +306,10 @@ public final class RFBClient: @unchecked Sendable {
     private func readUpdate(_ reader: Reader) throws {
         _ = try reader.byte()
         let count = Int(try reader.uint16())
+        let previousPicture = picture
+        // Keep one update ahead while this one is received. Waiting until its pixels are copied can
+        // miss QEMU's next refresh and make it back off even while the guest is drawing continuously.
+        requestUpdate(incremental: true)
         var changed = CGRect.null
         rectangles: for _ in 0..<count {
             let x = Int(try reader.uint16())
@@ -359,24 +366,43 @@ public final class RFBClient: @unchecked Sendable {
             let handler = lock.withLock { updateHandler }
             handler?(changed)
         }
-        requestUpdate(incremental: true)
+        if let picture, picture.width != previousPicture?.width || picture.height != previousPicture?.height {
+            // The request above used the old bounds. Fetch the whole new display, including any part
+            // outside them; QEMU coalesces this with the pending incremental request.
+            requestUpdate(incremental: false)
+        }
     }
 
     private func readRaw(_ reader: Reader, x: Int, y: Int, width: Int, height: Int) throws {
+        let rowLength = width * 4
+        let byteCount = rowLength * height
         guard let picture, x + width <= picture.width, y + height <= picture.height else {
             // A rectangle off the picture, as one that was on its way while the size changed may be.
-            _ = try reader.bytes(width * height * 4)
+            try reader.skip(byteCount)
             return
         }
+        guard byteCount > 0 else { return }
+        if rectanglePixels.count < byteCount {
+            rectanglePixels = [UInt8](repeating: 0, count: byteCount)
+        }
+        try rectanglePixels.withUnsafeMutableBytes { buffer in
+            try reader.read(into: UnsafeMutableRawBufferPointer(rebasing: buffer[..<byteCount]))
+        }
         let surface = picture.surface
-        let rowLength = width * 4
-        var row = [UInt8](repeating: 0, count: rowLength)
-        for line in 0..<height {
-            try reader.read(into: &row, count: rowLength)
-            surface.lock(options: [], seed: nil)
-            let start = surface.baseAddress + (y + line) * surface.bytesPerRow + x * 4
-            row.withUnsafeBytes { start.copyMemory(from: $0.baseAddress!, byteCount: rowLength) }
-            surface.unlock(options: [], seed: nil)
+        let stride = surface.bytesPerRow
+        surface.lock(options: [], seed: nil)
+        defer { surface.unlock(options: [], seed: nil) }
+        let destination = surface.baseAddress + y * stride + x * 4
+        // Lock once for the rectangle, not once per scanline. Apart from the syscall overhead, each
+        // lock can wait for the compositor that is showing this same surface.
+        rectanglePixels.withUnsafeBytes { pixels in
+            if stride == rowLength {
+                destination.copyMemory(from: pixels.baseAddress!, byteCount: byteCount)
+            } else {
+                for line in 0..<height {
+                    (destination + line * stride).copyMemory(from: pixels.baseAddress! + line * rowLength, byteCount: rowLength)
+                }
+            }
         }
     }
 
@@ -481,45 +507,80 @@ public enum RFBError: Error, LocalizedError, Equatable {
 
 // MARK: - Reading and writing bytes
 
-/// Reads what the server sends, exactly as many bytes as asked for.
+/// Buffers protocol headers and reads large pixel payloads directly into their destination.
 private final class Reader: @unchecked Sendable {
     let descriptor: Int32
+    private var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+    private var position = 0
+    private var available = 0
 
     init(descriptor: Int32) {
         self.descriptor = descriptor
     }
 
-    func read(into buffer: inout [UInt8], count: Int) throws {
+    func read(into destination: UnsafeMutableRawBufferPointer) throws {
         var offset = 0
-        while offset < count {
-            let received = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress! + offset, count - offset) }
-            if received > 0 {
-                offset += received
-            } else if received == 0 || errno != EINTR {
-                throw RFBError.disconnected
+        while offset < destination.count {
+            if position < available {
+                let count = min(available - position, destination.count - offset)
+                buffer.withUnsafeBytes { bytes in
+                    (destination.baseAddress! + offset).copyMemory(from: bytes.baseAddress! + position, byteCount: count)
+                }
+                position += count
+                offset += count
+            } else if destination.count - offset >= buffer.count {
+                offset += try receive(into: destination.baseAddress! + offset, count: destination.count - offset)
+            } else {
+                try refill()
             }
+        }
+    }
+
+    private func receive(into destination: UnsafeMutableRawPointer, count: Int) throws -> Int {
+        while true {
+            let received = Darwin.read(descriptor, destination, count)
+            if received > 0 { return received }
+            if received == 0 || errno != EINTR { throw RFBError.disconnected }
+        }
+    }
+
+    private func refill() throws {
+        available = try buffer.withUnsafeMutableBytes { try receive(into: $0.baseAddress!, count: $0.count) }
+        position = 0
+    }
+
+    func skip(_ count: Int) throws {
+        var remaining = count
+        while remaining > 0 {
+            if position == available { try refill() }
+            let consumed = min(remaining, available - position)
+            position += consumed
+            remaining -= consumed
         }
     }
 
     func bytes(_ count: Int) throws -> Data {
         guard count > 0 else { return Data() }
-        var buffer = [UInt8](repeating: 0, count: count)
-        try read(into: &buffer, count: count)
-        return Data(buffer)
+        var data = Data(count: count)
+        try data.withUnsafeMutableBytes { try read(into: $0) }
+        return data
     }
 
     func byte() throws -> UInt8 {
-        try bytes(1)[0]
+        if position == available { try refill() }
+        let value = buffer[position]
+        position += 1
+        return value
     }
 
     func uint16() throws -> UInt16 {
-        let data = try bytes(2)
-        return UInt16(data[0]) << 8 | UInt16(data[1])
+        let high = try byte()
+        return try UInt16(high) << 8 | UInt16(byte())
     }
 
     func uint32() throws -> UInt32 {
-        let data = try bytes(4)
-        return data.reduce(0) { $0 << 8 | UInt32($1) }
+        let high = try uint16()
+        return try UInt32(high) << 16 | UInt32(uint16())
     }
 
     func string(_ count: Int) throws -> String {

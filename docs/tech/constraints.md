@@ -177,6 +177,15 @@ Not supported: Intel Macs, and Windows for Intel and AMD processors.
   Hypervisor framework, with no emulator built in.
 - QEMU's VNC server won't start without a keyboard layout, though the app
   hands it keys by their place. The app ships `en-us`.
+- QEMU's VNC refresh starts at 30 ms and backs off while idle. The bundled
+  build patches it to 16 ms and wakes it when the guest draws or the client
+  asks for another frame. The patch ships with QEMU and is part of its build
+  cache key. The client asks for the next update before reading this one's
+  pixels, and receives a rectangle before locking the displayed surface once
+  to copy it. Neither change adds graphics acceleration inside Windows.
+- A macOS local stream socket starts with 8 KB buffers, too small for display
+  frames of several MB. The display pair asks for a 1 MB send buffer at QEMU's
+  end and a 1 MB receive buffer at the app's end.
 - A virtio network card makes QEMU look for an option ROM, which the app doesn't
   ship: the firmware has a driver of its own. It is started without one
   (`romfile=`).
