@@ -28,8 +28,8 @@ final class UpdateService: NSObject {
 
     private(set) var canCheckForUpdates = false
     private(set) var automaticallyDownloadsUpdates = false
-    /// The version of an update that was found while nobody was looking at the app, and that is waiting
-    /// to be shown. The menu bar panel says so; an app without a Dock icon has no other place to.
+    /// The version of an update that is waiting to be shown, including one downloading automatically.
+    /// The menu bar panel says so; the update window opens only when someone asks.
     private(set) var waitingVersion: String?
 
     @ObservationIgnored private var controller: SPUStandardUpdaterController?
@@ -73,7 +73,7 @@ final class UpdateService: NSObject {
     /// Looks for an update because someone asked, and shows what comes of it. Also the way to an update
     /// that is waiting: Sparkle shows that one.
     func checkForUpdates() {
-        guard let controller else { return }
+        guard let controller, controller.updater.canCheckForUpdates else { return }
         // Sparkle's windows are windows of the app like any other, and the app isn't in front by itself.
         DockPresence.shared.windowWillOpen()
         AppModel.shared.windows.bringAppForward()
@@ -89,22 +89,29 @@ extension UpdateService: SPUUpdaterDelegate {
     func allowedChannels(for updater: SPUUpdater) -> Set<String> {
         UpdateChannel.channels(forVersion: version)
     }
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        // Automatic downloads need not show a scheduled reminder until much later. The panel should
+        // say there is an update as soon as it is found, whichever way it will be installed.
+        waitingVersion = item.displayVersionString
+    }
+
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        waitingVersion = nil
+    }
 }
 
-/// An update that is found while the app is in the background isn't put on the screen: the app has no
-/// Dock icon to bounce, and a window that comes up over what someone is doing in another app, or behind
-/// it where nobody looks, helps nobody. The panel says that there is one, and shows it when asked.
+/// Scheduled updates belong in the panel, even just after launch or while the app is in front.
+/// Sparkle still handles checks someone asks for, and brings a waiting update forward when asked.
 extension UpdateService: SPUStandardUserDriverDelegate {
     var supportsGentleScheduledUpdateReminders: Bool { true }
 
     func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
-        // In the first moment after a launch, with the app in front, Sparkle shows it as it is.
-        immediateFocus
+        false
     }
 
     func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
-        guard !handleShowingUpdate else { return }
-        waitingVersion = update.displayVersionString
+        waitingVersion = handleShowingUpdate ? nil : update.displayVersionString
     }
 
     func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {

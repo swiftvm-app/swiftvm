@@ -50,6 +50,7 @@ let package = Package(
             dependencies: [
                 "SwiftVM",
                 .product(name: "VMCore", package: "SwiftVMKit"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),
     ]
