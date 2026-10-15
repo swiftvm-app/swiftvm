@@ -269,11 +269,18 @@ private final class EventLog: @unchecked Sendable {
     @Test func pressesKeysByTheirPlaceOnAPCKeyboard() async throws {
         let (app, server) = Peer.pair()
         let client = RFBClient(descriptor: app)
-        let thread = Thread { self.greet(server, width: 8, height: 8) }
+        let greeted = DispatchSemaphore(value: 0)
+        // The server reads on one thread only: what the client sends while greeting would otherwise go
+        // to whichever thread reads first.
+        let thread = Thread {
+            self.greet(server, width: 8, height: 8)
+            // The request for the first picture.
+            _ = server.read(10)
+            greeted.signal()
+        }
         thread.start()
         try await Task.detached { try client.open() }.value
-        // The request for the first picture.
-        _ = server.read(10)
+        #expect(await Task.detached { waitBriefly(for: greeted) }.value)
 
         // The right arrow is 0xE0 0x4D on a PC, and QEMU numbers it 0xCD.
         client.key(PCKeys.scancode(forMacKey: 0x7C)!, down: true)
