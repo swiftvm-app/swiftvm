@@ -4,7 +4,7 @@ export const site = {
     url: 'https://swiftvm.app',
     tagline: 'Virtual machines that live in your menu bar',
     description:
-        "Native macOS app for running macOS and Linux virtual machines, built with Swift and Apple's Virtualization framework.",
+        'Native macOS app for running macOS, Linux, and Windows 11 for Arm virtual machines.',
     requirements: 'macOS 27 or newer, on Apple silicon',
     repository: 'https://github.com/swiftvm-app/swiftvm',
     branch: 'main',

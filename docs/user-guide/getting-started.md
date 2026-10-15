@@ -6,7 +6,7 @@
 | --- | --- |
 | Mac | Apple silicon |
 | macOS | 27 or newer |
-| Disk space | A Linux image is under 1 GB. The macOS restore image is about 25 GB. |
+| Disk space | Room for installer downloads, guest disks, snapshots, and saved memory. Needs vary by guest and workload. |
 
 ## Install
 
@@ -29,12 +29,8 @@ To build it from source instead, see [Building](../tech/building.md).
 
 ## The menu bar
 
-SwiftVM lives in the menu bar. There is no main window: click its item to see
-your virtual machines, start and stop them, and reach everything else. Each
-machine's display opens in a window of its own.
-
-Opening SwiftVM puts its item in the menu bar and nothing else: no window
-comes up until you ask for one.
+Click SwiftVM in the menu bar to see your machines, start or stop them, and
+open settings. Each machine's display opens in its own window.
 
 ## Your first virtual machine
 
@@ -48,10 +44,8 @@ A Linux machine is the quickest start:
    key, and starts the machine. A desktop installs itself in about ten minutes
    and the machine restarts into it.
 
-For macOS, pick **macOS** as the operating system and enter a password for the
-account. The
-download is large, and installing takes a few minutes. See
-[macOS guests](../features/macos-guests.md).
+For another system, see [macOS guests](../features/macos-guests.md) or
+[Windows guests](../features/windows-guests.md).
 
 ## Connect
 
@@ -68,6 +62,7 @@ Homebrew puts `swiftvm` on your `PATH`. If you installed from the DMG, choose
 
 ```bash
 swiftvm create ubuntu-26.04 --name "Web Server"
+swiftvm wait web-server
 swiftvm ssh web-server
 ```
 
@@ -84,8 +79,9 @@ updates to each new beta.
 
 - [Virtual machines](../features/virtual-machines.md): the panel, power, and
   hardware.
-- [Linux guests](../features/linux-guests.md) and
-  [macOS guests](../features/macos-guests.md).
+- [Linux guests](../features/linux-guests.md),
+  [macOS guests](../features/macos-guests.md), and
+  [Windows guests](../features/windows-guests.md).
 - [Networking](../features/networking.md), [SSH](../features/ssh.md), and
   [Shared folders and clipboard](../features/sharing.md).
 - [Snapshots](../features/snapshots.md) and

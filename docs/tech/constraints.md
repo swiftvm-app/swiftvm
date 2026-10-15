@@ -1,211 +1,68 @@
-# Constraints
-
-Supported platforms, and lessons that shape the code.
+# Requirements and limitations
 
 ## Platforms
 
-| Part | Supported |
+| Part | Requirement |
 | --- | --- |
-| The app and `swiftvm` | macOS 27 and later, on Apple silicon |
-| macOS guests | Unattended setup and guest tools need macOS 27 or later in the guest |
-| Linux guests | ARM64. Quick Create: Ubuntu 26.04, Ubuntu 24.04, Debian 13 |
-| Linux guest tools | systemd and Python 3. [Automation](../features/automation.md) takes Python 3.9 or newer, and the screen as a tree also `python3-gi` and `gir1.2-atspi-2.0` |
-| Linux desktops | GNOME, KDE Plasma, Xfce, and Cinnamon, on each Quick Create system |
-| Windows guests | Windows 11 for Arm (Arm64) |
-| Windows guest tools | Included during setup; see [installing or updating](../features/guest-tools.md#windows) |
+| SwiftVM and `swiftvm` | macOS 27 or newer on Apple silicon |
+| macOS guest setup and tools | macOS 27 or newer in the guest |
+| Linux guests | ARM64; Quick Create offers Ubuntu 26.04, Ubuntu 24.04, and Debian 13 |
+| Linux guest tools | systemd and Python 3; automation requires Python 3.9 or newer |
+| Windows guests | Windows 11 for Arm |
 
-Not supported: Intel Macs, and Windows for Intel and AMD processors.
-
-## Signing
-
-- The virtualization entitlement works with any signature, including one made
-  to run locally. No Apple Developer team is needed to run machines.
-- The USB entitlement only works together with a provisioning profile that
-  grants it. With the entitlement and no matching profile, macOS ends the app
-  the moment it starts. So both go into the app together or not at all.
-- The hardened runtime only loads frameworks signed by the app's own team. A
-  signature made to run locally names no team, so such builds turn library
-  validation off to load Sparkle. Releases keep it on.
+Intel Macs and Intel/AMD guest operating systems are unsupported. Linux
+[Rosetta](../features/linux-guests.md#rosetta) can run x86-64 applications
+inside an ARM64 guest.
 
 ## Networking
 
-- **Never kill the app while a machine is running.** macOS keeps that
-  network's address range blocked for every process, for a long time. Stop the
-  machines first, then quit.
-- A network is only released once every attachment to it is gone, including
-  those of machines that have stopped.
-- Address reservations match by MAC address. Linux guests must identify
-  themselves to DHCP by MAC, which first-boot setup arranges.
-- A lease on record is not an address. A guest's real address comes from its
-  agent, or from whichever candidate answers on the SSH port.
-- A connection that has finished can report failure before its last bytes are
-  read. The port relay reads to the end before it trusts the state.
-- A side that closes a connection while the other is still sending can take
-  down with it what it had sent itself and nobody had read yet. An agent ends
-  a [job](./architecture.md#jobs-in-the-guest) by closing its own direction
-  only, and waits for the Mac to hang up.
+SwiftVM provides one shared NAT network and one network card per machine.
+Bridged, host-only, and isolated networks are unavailable.
 
-## The Virtualization framework
+Address reservations apply when the network starts. A machine created while
+others are running may use a temporary address until all machines stop and
+the network is recreated. Stop machines before quitting SwiftVM; force-quitting
+can leave the address range temporarily unavailable.
 
-- A suspended guest can't be resumed while the Mac is locked. The app says so,
-  and won't suspend a running machine for a snapshot on a locked Mac.
-- A resumed guest thinks no time has passed. macOS corrects itself in seconds;
-  Linux needs the guest agent.
-- Saved memory only fits the machine it was saved in: the same hardware, down
-  to the address of its network card. A duplicate or a template is made from a
-  machine that is shut down, and leaves saved memory behind.
-- macOS guests answer the power button with a question on their screen. Only
-  the guest agent shuts them down unattended.
-- A shutdown request sent during startup is lost, so it is repeated for Linux
-  guests until the guest goes down.
-- A macOS guest can't grow its startup volume: its recovery partition sits
-  right behind it.
-- Disk images plugged in as USB drives can change while a guest runs, but not
-  while it is suspended: saved memory expects the drives it was saved with.
-- A USB device that a guest lets go of comes back to the Mac as a new device.
-  What identifies it across that is its make and serial number.
-- A guest keeps its USB devices through a suspend only in name: the restored
-  guest finds them unplugged.
+See [Networking](../features/networking.md) for addresses and port forwarding.
 
-## Guests
+## Storage and saved state
 
-- The framework has one public way to a guest's display and its input
-  devices: the view that shows a machine to its user. The view doesn't have to
-  be shown. In a window that is never put on the screen it still gets the
-  guest's picture, as a surface in the contents of one of its layers, and
-  still passes on the mouse and key events it is handed.
-- A view of the framework's asks nobody when it is given a second view of the
-  same machine. Only one of them may resize the display to fit itself, so the
-  one that is never shown doesn't.
-- A guest that has turned its display off has no picture: the view's layer
-  loses its surface until a key wakes the display.
-- AppKit makes every mouse event it is asked for with the first button,
-  whatever kind of event it is. An event for another button, or for the wheel,
-  is made as Core Graphics makes them. Such an event belongs to no window and
-  says where on the screen it happened, which the view takes for a place in
-  its own window.
-- The view only passes on a wheel that counts in points. One that counts in
-  lines is dropped.
-- A key event tells the view which of the two keys of a kind is held, left or
-  right, in bits that AppKit has no names for. Without them a held Shift isn't
-  held in the guest.
-- A wheel reaches a guest as its hardware turned it, and macOS turns that
-  around unless **Natural scrolling** is off. Which it is, only the guest
-  knows.
-- Inside a macOS guest there is no way around the question on its screen. A
-  program that runs as root is told that it isn't entitled when it makes a
-  keyboard or a mouse of its own, the events it posts are dropped, and the
-  screen isn't recorded for it either.
-- A program that macOS hasn't allowed to see the screen is still told where
-  every window is and whose it is, only not what it is called or what is in
-  it.
-- Asking macOS to be allowed is what puts a program on the list in System
-  Settings. The question that comes up with it only leads there, and lies over
-  the list: the agent ends the program that shows it.
-- The page of System Settings with that list opens by its address, whatever
-  macOS calls the page: **Accessibility** before, **Device Control and Data
-  Access** in macOS 27.
-- Turning a switch on that list on asks for the password, in a window of
-  System Settings' own. Turning it off asks for nothing.
-- That question is on the screen before it listens. What is typed in its
-  first second is lost, and the rest is no password.
-- A pointer that already rested where something new came up never moved onto
-  it, and macOS takes its click for one on what lies beneath: the line of a
-  list instead of the switch on it. A click arrives from a point beside.
-- A program that keeps its permission is not told when the permission is
-  taken away: it goes on being allowed until it starts anew.
-- The first time text is read from a picture, the system can take some twenty
-  seconds over it. Later readings take a fraction of one.
-- macOS asks whoever sits at the screen before a program may record it, use
-  the mouse and keyboard, or read what others show there, and nothing in the
-  guest can answer for them. A program that was running when it was allowed
-  may still not be let record, so the agent's half in the session ends itself
-  when it is refused, and launchd starts it anew.
-- A daemon's child that becomes a user can run as them, but not open a window:
-  it is outside their session. `launchctl asuser` puts it inside.
-- A Wayland desktop doesn't tell an application where on the screen its
-  windows are. What an application's accessibility says about the places of
-  its parts is zero, or counted from its own window. Only the process that
-  draws the screen knows, so only its parts are passed on with places.
-- What a display shows can be read as root from the kernel's mode setting,
-  whichever desktop put it there. The mouse pointer isn't in it: it is drawn
-  on a layer of its own.
-- A display that a desktop has turned off shows nothing, and has no size to
-  measure either. The pointer, which is what wakes it, goes by the size the
-  screen last had.
-- An input device made through `uinput` types key codes, not characters. Which
-  character a key gives is the guest's keyboard layout's business.
-- A command started by a systemd service is ended with the service. The agent
-  for Linux only has itself ended (`KillMode=process`), so that what was
-  started for someone stays when the agent is replaced by a newer one.
-- Debian's `genericcloud` image has no drivers for the display or USB storage,
-  and can't be resumed. The catalog uses the `generic` image.
-- Ubuntu turns kernel messages off on every console once it is up; only errors
-  reach the serial console.
-- systemd puts an SSH server on the socket device from version 256 on. For
-  older systems the guest tools add it.
-- A copy of a cloud-init guest needs a new instance ID, host name, and MAC
-  address in its seed image, or it comes up without a network.
-- The last step of cloud-init waits for the system to be up. A unit that runs
-  after that step can't be wanted by the same target, or the two wait for each
-  other at every start but the first. The setup unit is wanted by cloud-init's
-  own target.
-- A desktop brings NetworkManager, and two services must not configure one
-  network card. The card stays with systemd-networkd, which asks for its
-  address by MAC, and NetworkManager only watches it. Handing the card over
-  doesn't work everywhere: Ubuntu 26.04 configures it before the system
-  starts, NetworkManager then leaves it alone, and nothing renews the address.
-- Ubuntu 24.04's kernel for virtual machines has no sound driver. The desktop
-  scripts install the full kernel there.
-- Installing a desktop by its package alone can bring another desktop's login
-  theme. The scripts name the theme where that happens.
-- What a package prints while it is installed can start with `==> `, and then
-  shows as a step. Ubuntu's Firefox package does.
-- A guest that loses power while it installs packages comes back with a
-  package manager that takes on nothing new: `apt` wants `dpkg --configure -a`
-  first. The setup runner does that before it runs a script again.
-- `chown user: file`, with nothing after the colon, sets the group on Debian
-  and leaves it alone on Ubuntu 26.04, whose tools are a different
-  implementation. Scripts for both name the group or leave the colon out.
-- macOS doesn't let an app quit while one of its windows has a sheet open, and
-  doesn't ask the app first. `swiftvm quit` refuses then, instead of waiting
-  for a quit that never comes.
+- Disks can grow but cannot shrink. A macOS guest's startup volume cannot
+  expand into the new space. See [Growing the disk](../features/disks.md#growing-the-disk).
+- Disk compression is available for Linux and Windows. It saves space but
+  slows writes; a host crash can lose recent writes. See
+  [disk compression](../features/disks.md#keeping-the-disk-compressed).
+- APFS copies share unchanged blocks. Copies across volumes or on other file
+  systems need the space and time for a full copy.
+- Saved memory belongs to the original machine. Duplicates and templates
+  require a shut-down state.
+- A suspended guest cannot resume while the Mac is locked.
+- Live snapshots require attached physical USB devices and writable disk
+  images to be removed first. See [Snapshots](../features/snapshots.md).
 
-## Storage
+## Guest features
 
-- `FileManager` copies a file to another disk by writing all of it, also the
-  empty space of a sparse disk image: 300 MB for an image that held 16 MB.
-  Machines move with `copyfile` and `COPYFILE_DATA_SPARSE`, which leaves the
-  space empty.
-- `copyfile` copying a folder carries on past a file it couldn't copy and
-  reports success, unless its callback tells it to stop.
-- A path says nothing about why a package isn't there. A bookmark names the
-  disk it was on, and whether that disk is connected is the difference between
-  a machine that is away and one that was deleted.
-- A bookmark follows a package into the Trash. One it finds there counts as
-  deleted.
-- A copy that `copyfile` has finished may still be on its way to the disk. It
-  is flushed before the original is removed: an external disk can be pulled
-  out a moment later.
-- macOS keeps an app from external and network disks until the user allows
-  it, and a package it can't look at seems not to be there. Only a package
-  that is known to be missing from a connected disk is forgotten.
+- Linux and Windows guests have no graphics acceleration.
+- macOS needs the guest tools for unattended shutdown. Without them, confirm
+  shutdown in the guest's window.
+- Linux clipboard sharing requires `spice-vdagent` and may not work in every
+  Wayland session. Clipboard sharing supports text only.
+- The accessibility tree requires a logged-in desktop session. Linux needs
+  `python3-gi` and `gir1.2-atspi-2.0`; macOS requires permission in the guest.
+  Windows does not support this feature.
+- Windows does not support physical USB passthrough, microphone input, TPM,
+  or Secure Boot. See [Windows limitations](../features/windows-guests.md#limitations).
 
-## The app
+See [Guest tools](../features/guest-tools.md) and
+[Automation](../features/automation.md) for the features available in each guest.
 
-- An app without a Dock icon is not given the front for asking politely.
-  Windows that someone just asked for are brought forward with force; windows
-  that nobody asked for open behind.
-- Leaving the Dock while in front moves the user to another desktop. The app
-  leaves the Dock only once another app is in front.
-- The menu bar item can be dragged out of the menu bar. The app puts it back,
-  because it is the only way to the machines.
-- A quit that is asked for inside a task on the main actor can never be
-  answered. Quits go through a timer.
+## Building and signing
 
-## Building
+Local builds can run machines without an Apple Developer account. Physical
+USB passthrough requires a provisioning profile with the **Claim USB
+Accessory** capability; see [Building](building.md#usb-devices).
 
-- The file system doesn't tell `swiftvm` from `SwiftVM`. The tool and the app
-  are never built into the same folder.
-- An app that `open` starts has neither the terminal nor the caller's
-  environment. The development script passes both on.
+Build the app and command-line tool in separate build folders: `SwiftVM` and
+`swiftvm` are the same filename on a case-insensitive file system. The build
+scripts handle this automatically.

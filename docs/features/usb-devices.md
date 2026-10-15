@@ -1,8 +1,8 @@
 # USB Devices
 
-SwiftVM can hand a USB device of your Mac to a running guest: a drive, a
-security key, a serial adapter. The guest sees the real device and uses its own
-driver for it.
+SwiftVM can hand a USB device of your Mac to a running macOS or Linux guest:
+a drive, security key, or serial adapter. The guest uses its own driver for
+the device. Windows guests do not support physical USB devices.
 
 USB devices need a build with a provisioning profile. Releases have one. If
 you build SwiftVM yourself, see [Building](../tech/building.md#usb-devices).

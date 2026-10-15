@@ -9,7 +9,7 @@ connection.
 | | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | SwiftVM knows the guest's system, kernel, and address | Yes | Yes | Yes |
-| The clock is set the moment the guest resumes | Yes | Yes | Yes |
+| The clock is synchronized after the guest resumes | Yes | Yes | Yes |
 | **Shut Down** works at once, without a question on the guest's screen | Yes | Yes | Yes |
 | SwiftVM shows what a [setup script](setup-scripts.md) is doing | Yes | No | SwiftVM's own setup |
 | [Shared folders](sharing.md) are mounted | Yes | macOS mounts them by itself | As drive Z: |
@@ -34,8 +34,8 @@ Machines that SwiftVM sets up come with the guest tools:
 
 ## Installing
 
-For any other running guest, choose **Install Guest Tools…** in the machine's
-menu, or use `swiftvm install-tools`. The same command updates them when
+For another running guest, choose **Install Guest Tools…** in the machine's
+menu, or follow the commands below. The same steps update the tools when
 SwiftVM brings a newer version.
 
 ### Linux
@@ -46,22 +46,23 @@ swiftvm install-tools web-server --disc   # from a disc, inside the guest
 ```
 
 - Over SSH works when your key can sign in and `sudo` asks for no password.
-- Otherwise SwiftVM plugs in a disc and shows one command to run in the guest.
-- The guest needs systemd and Python 3. Ubuntu and Debian have both; other
-  distributions haven't been tried.
+- Use `--disc` to install from inside the guest when SSH isn't available.
+  The app's menu falls back to the disc automatically if SSH installation fails.
+- The guest needs systemd and Python 3 at `/usr/bin/python3`, as provided by
+  the supported Ubuntu and Debian images.
 - Reading the screen [as a tree](automation.md#what-is-on-the-screen) also
   takes `python3-gi` and `gir1.2-atspi-2.0`, which a desktop brings.
 
 ### macOS
 
-macOS asks for the account's password before installing:
+Installation over SSH needs your key to sign in and the account's password:
 
 ```bash
 swiftvm install-tools build-mac --password 'the account password'
 ```
 
-Or choose **Install Guest Tools…**, which plugs in a disc. In the guest's
-Terminal, run:
+To install from a disc, run `swiftvm install-tools build-mac --disc` on your
+Mac. Then, in the guest's Terminal, run:
 
 ```bash
 sudo sh /Volumes/SWIFTVM/install.sh
@@ -85,9 +86,16 @@ In the guest, Linux or macOS:
 sudo sh /usr/local/lib/swiftvm/install.sh --remove
 ```
 
-In a Windows guest, stop and delete the service (`sc.exe stop SwiftVMAgent` and
-`sc.exe delete SwiftVMAgent` in an administrator's terminal), and delete
-`C:\Program Files\SwiftVM`.
+In a Windows guest, run these commands in PowerShell as administrator:
+
+```powershell
+Stop-Service SwiftVMAgent
+Get-Process swiftvm-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+sc.exe delete SwiftVMAgent
+Remove-Item -Recurse -Force "$env:ProgramFiles\SwiftVM"
+```
+
+The device drivers remain installed.
 
 ## What is installed
 

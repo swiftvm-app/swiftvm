@@ -1,370 +1,149 @@
 # Architecture
 
-The programs, the modules, and how they work together.
+SwiftVM has a menu bar app, a command-line client, and tools that run inside
+guests. The app owns the machine library and coordinates both virtualization
+engines.
 
 ## Programs
 
-| Program | Where it runs | What it does |
+| Program | Where it runs | Role |
 | --- | --- | --- |
-| SwiftVM | Your Mac | The app. Owns every machine and runs the guests |
-| `swiftvm` | Your Mac | The command-line tool, inside the app at `Contents/Helpers`. Sends requests to the running app |
-| `swiftvm-agent` | macOS guests | The guest agent for macOS. Built with the app and carried into guests by an installer |
-| `swiftvm-agent.py` | Linux guests | The guest agent for Linux: one Python script and its systemd units |
-| `qemu-system-aarch64` | Your Mac | Included with SwiftVM to run Windows virtual machines |
-| `swiftvm-agent.exe` | Windows guests | The Windows guest tools |
+| SwiftVM | Your Mac | Manages machines, windows, storage, and networking |
+| `swiftvm` | Your Mac | Sends commands to the running app |
+| `qemu-system-aarch64` | Your Mac | Runs Windows guests with hardware acceleration |
+| `swiftvm-agent` | macOS guests | Power, clock, clipboard, and automation |
+| `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, and automation |
+| `swiftvm-agent.exe` | Windows guests | Power, clock, clipboard, display resizing, setup progress, and commands |
 
-The agents also do [jobs](#jobs-in-the-guest) for `swiftvm`. The app handles
-the screen, mouse, and keyboard itself for macOS and Windows guests.
+The app and its virtualization engines run as the current Mac user. The guest
+tools use system services inside each guest.
 
 ## Modules
 
-The app is the package at the repository's root. Everything that isn't
-interface is in `Packages/SwiftVMKit`.
-
-```mermaid
-flowchart TB
-    APP["SwiftVM app"] --> VZ["VZEngine"]
-    APP --> QEMU["QEMUEngine"]
-    APP --> SHARING["FileSharing"]
-    APP --> INSTALLERS["Installers"]
-    APP --> SSH["SSHIntegration"]
-    APP --> CONTROL["VMControl"]
-    CLI["swiftvm"] --> CONTROL
-    CLI --> CHANNEL
-    CONTROL --> CHANNEL
-    VZ --> NETWORKING["VMNetworking"]
-    VZ --> DISK["DiskTools"]
-    QEMU --> NETWORKING
-    QEMU --> DISK
-    QEMU --> CORE
-    INSTALLERS --> DISK
-    VZ --> CORE["VMCore"]
-    NETWORKING --> CORE
-    DISK --> CORE
-    SSH --> CORE
-    INSTALLERS --> CORE
-    CORE --> CHANNEL["GuestChannel"]
-    AGENT["swiftvm-agent"] --> AGENTMAC["GuestAgentMac"]
-    AGENTMAC --> CHANNEL
-```
+The root Swift package contains the app in `App/`. Shared functionality lives
+in `Packages/SwiftVMKit`.
 
 | Module | Role |
 | --- | --- |
-| `App/` | The SwiftUI app: the menu bar panel, the windows, and the model behind them |
-| `VMCore` | What a machine is: its configuration, its package on disk, the library, snapshots, templates, the serial console, USB rules. Knows no engine |
-| `VZEngine` | Runs machines on the Virtualization framework, installs macOS, and sees and uses a machine's display, mouse, and keyboard |
-| `QEMUEngine` | Runs Windows machines and handles their display, keyboard, mouse, and guest tools connection |
-| `FileSharing` | Serves the shared folders of Windows guests over WebDAV |
-| `VMNetworking` | The shared network, address reservations, and the port relay |
-| `SSHIntegration` | SSH names, keys, and the generated SSH configuration |
-| `DiskTools` | Creates, grows, and converts disk images, builds small ISO images, and holds the compressed disk with the server that hands it to a machine |
-| `Installers` | The distribution catalog, setup scripts, downloads, first-boot setup for Linux, and the guest agent installers |
-| `VMControl` | The messages between the app and `swiftvm`, and which copy of the app a program belongs to |
-| `GuestChannel` | The messages between the app and a guest agent, the jobs an agent does for `swiftvm`, and the keys of a Mac's keyboard by name |
-| `GuestAgentMac` | The guest agent for macOS |
+| `VMCore` | Machine configuration, state, library, snapshots, templates, and backend interfaces |
+| `VZEngine` | macOS and Linux guests using Apple's Virtualization framework |
+| `QEMUEngine` | Windows guests using QEMU, including display and input |
+| `VMNetworking` | Shared NAT network, address reservations, and port forwarding |
+| `DiskTools` | Disk creation, resizing, conversion, compression, and ISO images |
+| `FileSharing` | WebDAV shared folders for Windows guests |
+| `Installers` | Downloads, distribution catalog, setup scripts, and guest installation |
+| `SSHIntegration` | SSH names, keys, and generated configuration |
+| `VMControl` | Communication between the app and `swiftvm` |
+| `GuestChannel` | Messages and streaming jobs between the app and guest tools |
+| `GuestAgentMac` | macOS guest tools |
 
-`VMCore` defines a backend protocol, which `VZEngine` and `QEMUEngine`
-implement. A router hands each machine to the engine its configuration names.
+`VMCore` defines the backend interface. `BackendRouter` selects `VZEngine` or
+`QEMUEngine` from each machine's configuration.
 
 ## A machine on disk
 
-A machine is a `.swiftvm` package. New ones go to the library's folder for
-machines, or to a folder that was chosen for them; either may be on another
-disk.
+A `.swiftvm` package contains the machine's files:
 
-| File | What it holds |
+| File | Contents |
 | --- | --- |
-| `config.json` | The machine's configuration. Newer fields decode with defaults, so older machines keep opening |
-| `disk.img`, `disk.asif`, `disk.swiftvmdisk` | The disk: raw for Quick Create and Windows machines, ASIF for the rest, or [compressed](../features/disks.md#keeping-the-disk-compressed) |
-| `efi-vars.fd` | Linux and Windows: UEFI variables |
-| `aux.img`, `hardware-model.bin`, `machine-identifier.bin` | macOS: firmware state and the machine's identity |
-| `seed.iso` | Linux Quick Create: the first-boot setup data, with the setup script if one was picked. Windows: the answer file and SwiftVM's setup, until setup is over |
-| `state.vzvmsave` | Saved memory, while suspended |
-| `snapshots/` | One folder per snapshot |
+| `config.json` | Machine configuration |
+| `disk.img`, `disk.asif`, or `disk.swiftvmdisk` | Raw, ASIF, or compressed disk |
+| `efi-vars.fd` | Linux and Windows firmware variables |
+| `aux.img`, `hardware-model.bin`, `machine-identifier.bin` | macOS firmware and identity |
+| `seed.iso` | Linux first-boot data or temporary Windows setup data |
+| `state.vzvmsave` | Saved state while suspended |
+| `snapshots/` | Snapshot files |
 | `logs/console.log` | Serial console output |
 
-New machines are built in a staging folder and moved into the library once
-they are complete, so a creation that is cut short leaves nothing behind. The
-staging folder is next to where the machine is going, so that the finished
-machine never has to be copied from one disk to another. In a folder of the
-user's, the library writes down each package it is putting together and only
-ever clears those: another copy of the app may be at work in the same folder.
+`library.json` records each package's location. File bookmarks let SwiftVM
+follow packages moved on the same disk and recognize disconnected disks.
+Creation and moves use staging folders before updating the library.
 
-`library.json` lists every machine: its path, and a bookmark that finds the
-package again when it has been moved on its disk or the disk is connected
-somewhere else. The bookmark also names the disk, which tells a machine whose
-disk isn't connected from one that was deleted: the first stays listed, with
-its name, SSH name, and addresses kept for it, and the second is forgotten.
-
-A machine that moves to another folder is renamed there if that is on its
-disk. To another disk it is copied into that folder's staging folder, with
-`copyfile` so that disk images stay sparse, and flushed to that disk. The
-original is only removed once the new place is in `library.json`. If that
-can't be written, the move is undone.
+See [Storage](../user-guide/settings.md#storage) for choosing folders and
+[Files](../user-guide/settings.md#files) for default locations and backups.
 
 ## Starting a machine
 
-```mermaid
-sequenceDiagram
-    participant User as Panel or swiftvm
-    participant Machine as Machine
-    participant Network as Network manager
-    participant VZ as Virtualization framework
-    participant Agent as Guest agent
-    User->>Machine: Start
-    Machine->>Network: Attach
-    Note over Network: The first machine creates the network
-    Machine->>VZ: Build the configuration, then boot or restore
-    VZ-->>Machine: Running
-    loop Until it answers
-        Machine->>Agent: Connect over the socket device
-    end
-    Agent-->>Machine: Hello: system, kernel, addresses
-    Machine->>Agent: Set the clock, mount shared folders
-```
+1. The app loads the configuration and selects the backend.
+2. The machine joins SwiftVM's shared network, creating it if needed.
+3. The backend boots the guest or restores its saved state.
+4. SwiftVM connects to the guest tools, which report the guest's system,
+   capabilities, and addresses.
+5. The app synchronizes the clock and applies guest integrations.
 
 ## The control socket
 
-- The app listens on a Unix socket, `control.sock`, in its data folder. Only
-  the current user can connect.
-- `swiftvm` sends one JSON request per line and waits for the answer, however
-  long the operation takes.
-- The console and socket-device commands turn the connection into a byte
-  stream after the app agrees. So do the [jobs](#jobs-in-the-guest) that
-  `swiftvm` has a guest's agent do.
-- The tool finds its app by where it is: it follows its own path up to the app
-  it is inside of, and uses that app's data folder.
+The app listens on `control.sock` in its data folder. Only the current user
+can connect. `swiftvm` sends JSON requests and waits for their results.
+Console sessions and guest jobs switch to streaming data after the app
+accepts the request.
+
+The bundled command-line tool locates its app from its executable path.
+`SWIFTVM_HOME` can select a different data folder; see
+[Building](building.md#the-development-copy).
 
 ## The guest channel
 
-- Each machine has a virtio socket device. The agent listens on port 717 and
-  the app connects, again whenever a guest comes up or resumes.
-- Both sides send one JSON object per line and ignore what they don't know.
-  The agent names what it can do in its hello, and the app asks for nothing
-  else.
-- Only root can listen below port 1024 in a guest, so the app knows who
-  answers. The agent only accepts connections from the host.
-- The macOS agent runs as two halves. A root daemon talks to the app and
-  handles power, clock, and time zone. A second half in the login session
-  owns the clipboard, the screen, the mouse, and the keyboard, and reaches
-  the daemon over a Unix socket.
-- The Linux agent also passes on how the machine's
-  [setup script](#setup-scripts) is doing, unasked, whenever that changes. The
-  Windows agent does the same for SwiftVM's setup of Windows.
-- QEMU has no socket device on macOS, so the Windows agent uses a virtio
-  serial port instead, with the same messages.
+macOS and Linux guest tools connect through virtio sockets. Windows uses a
+virtio serial channel. Neither transport needs the guest's network or SSH.
+
+The control channel carries JSON messages for guest status, power, clock,
+clipboard, and setup progress. Guest tools advertise their capabilities so
+the app can support different installed versions.
+
+The macOS agent has a root daemon for system operations and a login-session
+process for clipboard and accessibility. The Windows agent similarly uses a
+system service and a session process.
 
 ## Jobs in the guest
 
-`swiftvm exec`, `cp`, `screenshot`, and `ui` are jobs. A guest's agent does
-them, except for the screen, mouse, and keyboard in macOS and Windows guests,
-which the app handles itself. See
-[Automation](../features/automation.md).
+The app checks **Allow Automation** before accepting a job. Commands and file
+copies use the guest tools, with a separate stream for each job's input,
+output, and result. File copies use `tar` at both ends.
 
-```mermaid
-sequenceDiagram
-    participant Tool as swiftvm
-    participant App as App
-    participant Agent as Guest agent
-    Tool->>App: job, over the control socket
-    Note over App: Is automation on? Does the agent do this?
-    App->>Agent: Connect to port 718. The job, one line
-    Agent-->>App: Yes, or no and why
-    App-->>Tool: The same
-    Note over App: From here the app only passes bytes on
-    Tool->>Agent: Frames: a command's input
-    Agent->>Tool: Frames: output, then how the job ended
-```
+Screenshots and input use different paths by guest:
 
-- A job has a connection of its own, to a second port of the agent, 718. The
-  line on port 717 stays what it was: short messages, one at a time. A job
-  carries megabytes, lasts as long as a command runs, and many run at once.
-- The app decides whether a job is given: the machine's switch has to be on,
-  and the agent has to name the feature in its hello. It sends the job, reads
-  the agent's answer, and from then on is a relay. `swiftvm` and the agent
-  speak to each other in frames: a kind, a length, and that many bytes.
-- Hanging up calls a job off. The agent ends the command it was running. An
-  agent that doesn't hang up in turn is hung up on by the app, a little later.
-- The agent ends a job by saying that it sends no more and waiting for the
-  other side to hang up. See [Constraints](./constraints.md#networking).
-- `swiftvm cp` is `exec` twice over: `tar` packs on one side and unpacks on
-  the other. What a guest sends is unpacked in a folder of its own first.
-
-| Job | Linux guest | macOS guest | Windows guest |
+| Feature | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Command | The agent: a process of the account it runs as, with the environment of that user's desktop session if there is one | The agent's own program, started as `run-as`: it becomes the account, then the command. Inside the user's session if they are logged in | The guest tools, as the logged-in account or SYSTEM with `--root` |
-| Screenshot | The agent: what the display shows, read from the kernel's mode setting | The app: the surface of the machine's display | The app |
-| Mouse and keyboard | The agent: input devices of its own, made through `uinput` | The app: events for the machine's own mouse and keyboard. Text that a US keyboard has no keys for is typed by the agent's half in the session, with Core Graphics events | The app |
-| Tree | The agent: AT-SPI, asked by the same script run as the user at the screen | The agent: the accessibility API, in the session's half, once [macOS allows it](#allowing-the-tree-in-a-macos-guest) | Not offered |
+| Screenshot and input | Guest tools read the display and create input devices | App uses the virtual machine's display and input view | App uses QEMU's display connection |
+| Accessibility tree | Guest tools use AT-SPI in the desktop session | Guest tools use the accessibility API after permission is granted | Unavailable |
 
-In a macOS guest, what a program may do with the screen belongs to whoever is
-logged in. The root daemon takes such a job, tells the session's half its
-name, and the session's half connects for it on a second Unix socket. The
-daemon then passes bytes on between the two connections.
-
-### The screen of a macOS guest
-
-macOS asks someone at the screen before a program in the guest may record it
-or use its mouse and keyboard. The app doesn't have to ask: it has the
-machine's display and input devices.
-
-- The engine keeps a second view of the machine, next to the one in the
-  machine's window, in a window that is never shown. It is made when a job
-  first needs it, and never resizes the guest's display.
-- A screenshot is the surface that view would show, copied and packed as a
-  PNG. A guest that has turned its display off has none.
-- The mouse and the keyboard are the events AppKit would hand the view if
-  someone used them over it. Keys go by their number on a US keyboard.
-- The app answers `swiftvm` the way an agent would, in frames, so the tool
-  doesn't know the difference.
-- A wheel is turned the way that scrolls as asked. The agent, if there is one,
-  says whether the guest turns its wheel around.
-
-### Allowing the tree in a macOS guest
-
-`swiftvm allow-accessibility` has macOS let the agent read the screen as a
-tree. The app does what a person at the guest's screen would, and the agent's
-half in the session tells it where.
-
-```mermaid
-sequenceDiagram
-    participant Tool as swiftvm
-    participant App as App
-    participant Agent as Agent, in the session
-    participant Guest as macOS, on the guest's screen
-    Tool->>App: allow-accessibility, with the password
-    App->>Agent: permission: ask
-    Agent->>Guest: Ask to be allowed. Open System Settings on its page
-    Agent-->>App: Not allowed. Where the window is
-    App->>Guest: Screenshot. Find the line that says swiftvm-agent
-    App->>Guest: Click the switch at its end
-    Agent-->>App: A question is in front of the window
-    App->>Guest: Type the password, and Return
-    Agent-->>App: Allowed
-    App->>Agent: permission: finish
-    Agent->>Guest: Close System Settings
-```
-
-- The agent's part is a job like the others, `permission`, done by its half in
-  the session: that is the program macOS allows, and the one that knows.
-- The app's part goes through the machine's own display, mouse, and keyboard,
-  as a screenshot and a click from `swiftvm` do.
-- The line is found by reading the picture of the screen, inside the window
-  the agent named. The switch is at the end of that line, at a fixed distance
-  from the window's edge.
+`swiftvm allow-accessibility` grants the macOS guest tools permission through
+System Settings in the guest, using the supplied administrator password.
+See [Automation](../features/automation.md) for commands and requirements.
 
 ## Networking
 
-- All machines share one NAT network made with vmnet. It is created when the
-  first machine starts and released when the last one stops.
-- Each machine's address is reserved for its MAC address when the network is
-  created.
-- Forwarded ports are relayed by the app itself, so they can change while
-  machines run.
-- The app picks a private address range that the Mac isn't using, and moves to
-  another if that one can't be created.
+All machines share one NAT network managed by vmnet. It is created when the
+first machine starts and released when the last one stops. Address
+reservations are set when the network is created.
+
+The app relays forwarded ports, allowing forwards to change while machines
+run. It selects a private address range that is available on the Mac. See
+[Networking](../features/networking.md).
 
 ## Creating machines
 
-- **Linux, Quick Create.** Download the cloud image and verify its checksum,
-  convert it to a raw disk, and write a cloud-init seed image with the account,
-  SSH key, host name, network setup, guest tools, and the setup script if one
-  was picked.
-- **Linux, installer disc.** Create an empty disk and attach the ISO as a USB
-  drive.
-- **macOS.** Install the restore image onto an empty disk, then start with an
-  account for macOS to create by itself. SwiftVM then installs the SSH key and
-  the guest tools over SSH.
-- **Windows.** Download Windows 11 for Arm or use a local ISO. Install Windows,
-  create the account, and add drivers, guest tools, and SSH. Remove the setup
-  media after installation.
-
-## Setup scripts
-
-A [setup script](../features/setup-scripts.md) is one file with a comment
-header. One catalog is the only place scripts come from: the built-in
-scripts, which are inside the app, and the files in the user's folder,
-`~/.config/swiftvm/setup-scripts`. A list fetched from elsewhere has one place
-to join. The app and the command line show the same list, by kind.
-
-A machine takes several scripts. They travel in its first-boot data, numbered
-in the order they run, and the runner in the guest goes through them: it notes
-each one that came to its end, so that a run that failed or was cut short
-carries on with the one that wasn't through.
-
-```mermaid
-sequenceDiagram
-    participant Seed as First-boot setup
-    participant Unit as swiftvm-setup.service
-    participant Runner as Runner
-    participant Agent as Guest agent
-    participant App as App
-    Seed->>Runner: Write the script, the runner, the unit. Schedule
-    Runner-->>Agent: status: pending
-    Agent->>App: setup: pending
-    Note over Seed: First-boot setup ends
-    Unit->>Runner: Run
-    loop While the script runs
-        Runner-->>Agent: status and step
-        Agent->>App: setup: running, step
-    end
-    Runner-->>Agent: status: finished or failed
-    Agent->>App: setup: finished or failed
-    Runner->>Unit: Disable. Restart the guest if asked
-```
-
-- The script travels in the seed image, next to a runner and a systemd unit.
-  First-boot setup writes them down and schedules the unit, which runs once
-  that setup is over.
-- The runner writes everything the script prints to a log, keeps a note of the
-  state and the step, and restarts the guest if the header asks. The agent
-  reads the note and tells the app.
-- The unit stays enabled until the script has finished or failed. A setup that
-  is cut short carries on at the next start; one that keeps being cut short is
-  given up on.
-- A copy of a machine goes through first-boot setup again. The runner leaves a
-  disk alone where a setup was scheduled before, so nothing is installed twice.
-
-## Snapshots and copies
-
-- A snapshot is a copy of the machine's disk, firmware, and saved memory, kept
-  in the package. On APFS the copy is a clone and takes no time.
-- A running machine is suspended, copied, and resumed.
-- Going back copies the snapshot's files next to the machine's first, then
-  swaps them in. If that is cut short, the machine never ends up with memory
-  saved next to a disk it doesn't belong to.
-
-## Templates
-
-A template is a `.swiftvmtemplate` package in the folder for templates, which
-can be on another disk.
-
-| File | What it holds |
+| Guest | Installation |
 | --- | --- |
-| `template.json` | The template's name, and the configuration of the machine it was saved from |
-| `disk.img`, `disk.asif`, `disk.swiftvmdisk` | The disk |
-| `efi-vars.fd`, `aux.img`, `hardware-model.bin` | Firmware state |
-| `seed.iso` | Linux Quick Create: the first-boot setup data |
+| Linux, Quick Create | Download and verify a cloud image, prepare its disk, and provide the account, SSH key, guest tools, and setup scripts through cloud-init |
+| Linux, installer disc | Create an empty disk and attach the chosen ISO |
+| macOS | Install an IPSW restore image; supported guests create an account on first start, with the SSH key and guest tools added when SSH setup is enabled |
+| Windows | Install Windows 11 for Arm with an answer file, then add the account, drivers, and guest tools; optional SSH setup needs Windows Update access |
 
-- The files are those a copy of a machine is made of, under the names they
-  have in a machine's package. So a machine is made from a template the way a
-  duplicate is made from a machine: the files are copied into a staging
-  folder, the copy gets an identity of its own, and it joins the library.
-- What makes a machine itself is left out: its identifier, saved memory,
-  snapshots, and logs.
-- Files are copied with `copyfile`. On the same APFS disk that is a clone. To
-  another disk the data is written out, and empty space stays empty.
-- A template is written under a hidden name, flushed to its disk, and renamed
-  when it is complete. The library writes down each package it is writing, in
-  `templates.json`, and clears what a save left behind that was cut short.
-- From a snapshot, the disk and the firmware state come from the snapshot's
-  folder, and the rest from the machine's package. Nothing writes to a
-  snapshot, so the machine can be running meanwhile.
+Linux [setup scripts](../features/setup-scripts.md) run in a systemd service
+after cloud-init. The runner records completed scripts and reports progress
+through the guest tools. Interrupted setup resumes with the unfinished script.
 
-## The app in the menu bar
+## Snapshots and templates
 
-- The app has no Dock icon by default. It enters the Dock while one of its
-  windows is open and leaves once another app comes to the front.
-- Messages that have no window to show in become a card at the top of the
-  panel.
-- Updates come through Sparkle. See [Releasing](./releasing.md).
+A snapshot copies a machine's disk, firmware, and any saved memory into its
+package. A running machine is suspended for the copy and resumed afterwards.
+APFS clones share unchanged disk blocks; other file systems use full copies.
+
+A template is an independent `.swiftvmtemplate` package containing a disk,
+firmware, and configuration. It excludes saved memory, snapshots, and logs.
+Creating a machine from it copies those files and assigns a new identity.
+
+See [Snapshots](../features/snapshots.md) and [Templates](../features/templates.md)
+for usage and restrictions.

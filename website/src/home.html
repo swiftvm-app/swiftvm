@@ -171,17 +171,17 @@
             <a class="feature" href="{{doc:features/linux-guests.md}}">
                 <span class="feature-tile tile-orange"><svg aria-hidden="true"><use href="#feature-terminal"/></svg></span>
                 <h3>Linux guests</h3>
-                <p>Ubuntu and Debian from a ready-made image, ready in seconds. Or install another ARM64 distribution from its installer disc.</p>
+                <p>Ubuntu and Debian from a ready-made image, with automatic setup. Or install another ARM64 distribution from its installer disc.</p>
             </a>
             <a class="feature" href="{{doc:features/ssh.md}}">
                 <span class="feature-tile tile-green"><svg aria-hidden="true"><use href="#feature-key"/></svg></span>
                 <h3>SSH by name</h3>
-                <p>Every machine gets an SSH name. Run <code>ssh web-server</code> from your Mac, without looking up addresses.</p>
+                <p>Enable SSH integration and run <code>ssh web-server</code> from your Mac, without looking up addresses.</p>
             </a>
             <a class="feature" href="{{doc:features/snapshots.md}}">
                 <span class="feature-tile tile-indigo"><svg aria-hidden="true"><use href="#feature-snapshot"/></svg></span>
                 <h3>Snapshots and duplicates</h3>
-                <p>Keep a machine exactly as it is, and come back to it later. A duplicate takes no time and no extra space at first.</p>
+                <p>Keep a machine as it is, and come back to it later. On the same APFS volume, duplicates share unchanged disk blocks.</p>
             </a>
             <a class="feature" href="{{doc:features/virtual-machines.md#power}}">
                 <span class="feature-tile tile-graphite"><svg aria-hidden="true"><use href="#feature-suspend"/></svg></span>
@@ -196,17 +196,17 @@
             <a class="feature" href="{{doc:features/networking.md}}">
                 <span class="feature-tile tile-cyan"><svg aria-hidden="true"><use href="#feature-network"/></svg></span>
                 <h3>Networking</h3>
-                <p>Each machine has its own address, the same every time it starts. Forward ports to reach what runs in a guest.</p>
+                <p>Reach guests on SwiftVM's shared network, with reserved addresses and port forwarding for their services.</p>
             </a>
             <a class="feature" href="{{doc:features/usb-devices.md}}">
                 <span class="feature-tile tile-red"><svg aria-hidden="true"><use href="#feature-usb"/></svg></span>
                 <h3>USB devices and disk images</h3>
-                <p>Hand a drive, a security key, or a serial adapter to a running guest. Plug in disc and disk images as USB drives.</p>
+                <p>Hand a physical USB device to a running macOS or Linux guest. Attach disc and disk images in any guest.</p>
             </a>
             <a class="feature" href="{{doc:features/command-line.md}}">
                 <span class="feature-tile tile-black"><svg aria-hidden="true"><use href="#feature-prompt"/></svg></span>
                 <h3>Command line</h3>
-                <p><code>swiftvm</code> does from a terminal what the app does from the menu bar, so everything can be scripted.</p>
+                <p>Create and manage machines, run guest commands, and automate their screens with <code>swiftvm</code>.</p>
             </a>
         </div>
     </div>
@@ -222,6 +222,7 @@
         <div class="terminal" role="img" aria-label="A terminal running swiftvm commands">
             <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>zsh</span></div>
             <pre aria-hidden="true"><code><span class="prompt">%</span> swiftvm create ubuntu-26.04 --name <span class="string">"Web Server"</span>
+<span class="prompt">%</span> swiftvm wait web-server
 <span class="prompt">%</span> swiftvm share web-server ~/Projects
 <span class="prompt">%</span> swiftvm forward web-server 8080:80
 <span class="prompt">%</span> swiftvm snapshot web-server <span class="string">"Before upgrade"</span>
@@ -235,16 +236,16 @@
         <h2>How it is built</h2>
         <div class="principles">
             <div class="principle">
-                <h3>Nothing runs as root</h3>
-                <p>Apple's Virtualization framework runs each guest in the app's own process. There is no helper and no kernel extension.</p>
+                <h3>Runs as your Mac user</h3>
+                <p>macOS and Linux guests use Apple's Virtualization framework. Windows uses bundled QEMU. Both run without root privileges on your Mac.</p>
             </div>
             <div class="principle">
                 <h3>A machine is a folder</h3>
-                <p>Its settings, disk, firmware, and snapshots live in one <code>.swiftvm</code> package. Copies and snapshots are APFS clones of its files.</p>
+                <p>Its settings, disk, firmware, and snapshots live in one <code>.swiftvm</code> package. Copies on the same APFS volume share unchanged blocks.</p>
             </div>
             <div class="principle">
                 <h3>Open source</h3>
-                <p>Written in Swift and released under the Apache-2.0 license. Read the <a href="{{doc:tech/README.md}}">technical design</a>, or <a href="{{doc:tech/building.md}}">build it yourself</a>.</p>
+                <p>Written in Swift and released under the Apache-2.0 license. Read the <a href="{{doc:tech/README.md}}">technical guide</a>, or <a href="{{doc:tech/building.md}}">build it yourself</a>.</p>
             </div>
         </div>
     </div>

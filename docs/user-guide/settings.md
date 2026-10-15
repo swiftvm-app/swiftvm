@@ -20,8 +20,7 @@ SwiftVM checks for updates by itself and shows the available version in the
 menu bar panel, without opening an update window on its own.
 
 - Choose **Update…** next to the version to open the update dialog and decide
-  whether to install. While an automatic download is in progress, the button
-  is unavailable; it becomes available when Sparkle is ready.
+  whether to install. The button is unavailable while a download is in progress.
 - **Check for Updates…** is in **Settings → Updates** and in the panel's
   **…** menu.
 - **Automatically download and install updates** installs an update the next
@@ -36,16 +35,13 @@ Builds you make yourself don't update.
 - **New Virtual Machines** is the folder machines are created in, unless you
   pick another one for a machine in the **New Virtual Machine** form.
 - **Templates** is where [templates](../features/templates.md) are kept.
-- **Downloaded Images** is where Linux images and macOS restore images are
-  kept, to be used again for the next machine.
+- **Downloaded Images** stores cached guest images and installers for reuse.
 
-Changing a folder moves nothing. Machines stay where they are, and you move
-one with **Move…** in [its settings](../features/virtual-machines.md#where-machines-are-kept).
-Templates in the old folder stay there and are no longer listed: move them to
-the new one yourself to keep using them.
-Images that were downloaded before stay in the old folder: move them to the
-new one yourself to keep using them, unless a machine still has one of them
-plugged in as an installer disc.
+Changing a folder leaves existing files in place. Use **Move…** in a
+[machine's settings](../features/virtual-machines.md#where-machines-are-kept)
+to move it. Move templates and cached images yourself to reuse them in the
+new folders; templates left in the old folder stop appearing in the list.
+Eject any image attached to a machine before moving it.
 
 An image that is downloading takes up room on your Mac's own disk until it is
 complete, also when the folder is on another disk.
@@ -73,9 +69,11 @@ Choose **Settings…** in a machine's menu, or the gear in its window's toolbar.
 | Keyboard | **Send System Shortcuts to the Guest** |
 | Startup | **Secure Boot** and **Rosetta for x86-64 Programs**, for Linux guests |
 
-Changes to processors, memory, and the display apply after the machine is shut
-down and started again. Shared folders, port forwards, disk images, and USB
-devices change while it runs.
+Shut down the machine to change processors, memory, display, audio, or startup
+settings. Linux clipboard settings also require a shutdown. Shared folders,
+port forwards, removable images, and supported USB devices can change while
+the machine runs. Microphone input and physical USB devices are unavailable
+for Windows guests.
 
 ## Files
 
@@ -87,7 +85,7 @@ devices change while it runs.
 | `~/Library/Application Support/SwiftVM/templates.json` | Where templates are kept, once you have chosen another folder for them |
 | `~/Library/Application Support/SwiftVM/ssh_config` | The SSH configuration SwiftVM generates |
 | `~/Library/Application Support/SwiftVM/known_hosts` | The guests' SSH host keys |
-| `~/Library/Caches/SwiftVM/Downloads/` | Downloaded Linux images and macOS restore images, unless you [keep them elsewhere](#storage) |
+| `~/Library/Caches/SwiftVM/Downloads/` | Cached guest images, installers, and drivers, unless you [keep them elsewhere](#storage) |
 | `~/.ssh/swiftvm_ed25519` | The SSH key SwiftVM makes if you have none |
 | `/usr/local/bin/swiftvm` | The link **Install Command Line Tool…** makes |
 
@@ -96,10 +94,10 @@ A machine's package holds everything about it:
 | File | What it holds |
 | --- | --- |
 | `config.json` | The machine's settings |
-| `disk.img` or `disk.asif` | Its disk |
+| `disk.img`, `disk.asif`, or `disk.swiftvmdisk` | Its disk |
 | `snapshots/` | Its [snapshots](../features/snapshots.md) |
 | `state.vzvmsave` | Saved memory, while the machine is suspended |
-| `logs/console.log` | What a Linux guest printed to its serial console since it last started |
+| `logs/console.log` | Recent serial console output; rotates at 4 MB |
 
 To back up a machine, shut it down and copy its package. To move one, use
 **Move…** in its settings. Open a package from the Finder, or drop it on the

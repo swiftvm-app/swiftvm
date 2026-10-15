@@ -9,24 +9,22 @@ Choose **New Virtual Machine**, then **macOS** in the **Type** dropdown.
 Choose a version, name, and password. SwiftVM starts with recommended hardware
 and an account based on your Mac's user name.
 
-Select **Advanced** to expand hardware, location, and account options below
-the essential fields. Clearing the checkbox hides those controls without
-changing the settings. Linux and templates use the same structure.
+Use **Advanced** to adjust hardware, storage location, and account settings.
 
 The virtual machine starts after installation to finish setup. Older
 versions still use the guest's setup assistant.
 
 | Setting | What it is |
 | --- | --- |
-| Version | The latest macOS, downloaded from Apple (about 25 GB), or **Choose Restore Image…** for an IPSW you already have |
-| Hardware | Processors, memory, disk size, and [where the machine is kept](virtual-machines.md#where-machines-are-kept). Pick a generous disk, 64 GB or more: [it can't grow later](disks.md#growing-the-disk) |
+| Version | The latest macOS downloaded from Apple, or **Choose Restore Image…** for an IPSW you already have |
+| Hardware | Processors, memory, disk size, and [where the machine is kept](virtual-machines.md#where-machines-are-kept). Pick a generous disk: [the startup volume cannot expand later](disks.md#growing-the-disk) |
 | Account | Full name, account name, and a password |
 | **Log in automatically** | The guest logs in to the account when it starts |
 | **Sign in over SSH with my key** | Installs your SSH key, so `ssh` works without a password |
 
-Installing takes a few minutes. The download is kept, so the next Mac you
-create starts installing right away. A download that is cut short carries on
-where it stopped.
+The download is cached for later installations. Interrupted downloads can
+[resume](../user-guide/troubleshooting.md#a-download-started-over) while
+their partial files are available.
 
 From the command line:
 
@@ -39,10 +37,11 @@ swiftvm create macos --ipsw ~/Downloads/restore.ipsw --password '…'
 
 A macOS 27 or newer guest sets itself up on its first start:
 
-- It creates the account and turns on Remote Login.
-- SwiftVM installs your SSH key and the [guest tools](guest-tools.md).
-- The guest is put on your Mac's time zone, once. If you pick another one in
-  the guest later, it stays.
+- It creates the account.
+- With **Sign in over SSH with my key** enabled, it turns on Remote Login and
+  SwiftVM installs your SSH key and the [guest tools](guest-tools.md).
+- With SSH setup enabled, SwiftVM sets the guest's time zone to your Mac's
+  once. Later changes you make in the guest are preserved.
 
 Versions before macOS 27 can't be set up automatically. Create the account in
 the setup assistant when the machine first starts.

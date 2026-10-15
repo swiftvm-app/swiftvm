@@ -9,6 +9,15 @@ Building the app, running a development copy, and signing.
 
 No Apple Developer account is needed to build and run virtual machines.
 
+For Windows support, install QEMU's build dependencies:
+
+```bash
+brew install ninja meson pkgconf glib pixman python
+```
+
+The build scripts build QEMU on the first run. Set `SWIFTVM_QEMU=-` to build
+without Windows support.
+
 ## Build
 
 ```bash

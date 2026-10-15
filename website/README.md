@@ -64,9 +64,9 @@ shared, is a capture of the hero at 1200 × 630.
 
 The site changes at two moments, and at no other:
 
-- When a stable release is published. **Release** ends by building the site
-  from the release's tag, so the documentation online is that of the latest
-  stable version.
+- When **Release** publishes a stable release with **draft** off. It builds
+  the site from the release's tag, so the documentation online matches that
+  version. Publishing a draft later does not deploy the site automatically.
 - When someone runs **Deploy Website**, under **Actions** on GitHub. It builds
   the branch it is run from, or the branch, tag or commit it is given.
 

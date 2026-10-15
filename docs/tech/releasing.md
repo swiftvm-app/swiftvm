@@ -27,12 +27,16 @@ flowchart LR
 
 Both workflows are started by hand, under **Actions** on GitHub.
 
-1. Run **Release (Beta)**. It builds `main` as the next beta and publishes it
-   as a pre-release. Try that build.
+1. Run **Release (Beta)** with `main` selected. It builds the selected ref as
+   the next beta and publishes it as a pre-release. Try that build.
 2. Run **Release** with the beta's tag, the stable version, and the version
    the next betas should count toward. It publishes the release, updates the
    Homebrew tap, puts the website online as it is at the release's tag, and
    writes the new `BETA_VERSION` to `main`.
+
+With **draft** enabled, **Release** creates a draft and still bumps
+`BETA_VERSION`, but skips Homebrew and the website. After publishing the
+draft, run **Update Homebrew Tap** and **Deploy Website** for its release tag.
 
 The website changes with a stable release and not with a push to `main` or a
 beta, so its documentation is that of the latest stable version. To change it
@@ -43,15 +47,15 @@ in between, run **Deploy Website**.
 | Workflow | What it does |
 | --- | --- |
 | Checks | On pull requests: builds the app and runs the tests |
-| Release (Beta) | Builds `main` as a beta, publishes a pre-release, and adds it to the beta appcast |
+| Release (Beta) | Builds the selected ref as a beta, publishes a pre-release, and adds it to the beta appcast |
 | Release | Promotes a beta to stable, publishes the release with its appcast, deploys the website, and bumps `BETA_VERSION` |
 | Update Homebrew Tap | Writes the cask to `swiftvm-app/homebrew-tap`. Runs after a release, or by hand |
 | Republish Beta Appcast | Puts a beta back into the beta appcast |
 | Build Release | The build that both releases share |
 | Deploy Website | Builds [the website](../../website/README.md) and puts it online. Runs after a release, or by hand |
 
-The ones that build the app run on GitHub's `xcode-27` image, which has the
-macOS 27 SDK.
+The workflows that build the app use the `xcode-27` runner with the macOS 27
+SDK.
 
 ## What a release build does
 
@@ -69,6 +73,10 @@ To try the build on your Mac:
 scripts/build-release.sh --version 0.2.0-beta.1    # into build/release
 ```
 
+Local builds use the available [signing identity](building.md#signing) and
+are not notarized by this script. Automatic updates require both
+`--sparkle-public-key` and `--sparkle-feed-url`; the workflows supply them.
+
 ## Updates
 
 The app updates itself with [Sparkle](https://sparkle-project.org).
@@ -78,8 +86,8 @@ The app updates itself with [Sparkle](https://sparkle-project.org).
 | Stable | `appcast.xml` of the latest release |
 | Beta | `appcast-beta.xml` of the `beta-channel` pre-release. Don't delete that release |
 
-- A release build carries the address of its appcast and the public half of
-  the update key. Other builds carry neither and don't update.
+- Published releases carry the appcast address and the public half of the
+  update key. Builds without these settings don't update.
 - The app only installs updates that are signed with the update key. If the
   key is lost, the apps that are out there can't be updated any more.
 - Updates found automatically are announced in the menu bar panel, including

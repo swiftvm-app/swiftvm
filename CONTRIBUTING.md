@@ -4,7 +4,7 @@ Thank you for your interest in contributing to SwiftVM! This guide will help you
 
 ## Getting Started
 
-Read [docs/tech](docs/tech/README.md) first. It describes how SwiftVM is built and the lessons that shape the code.
+Start with [Building](docs/tech/building.md) and [Architecture](docs/tech/architecture.md).
 
 ### Prerequisites
 
@@ -56,7 +56,7 @@ scripts/test.sh           # all tests
 - **Follow existing patterns** but suggest refactors if they improve quality
 - **Security first** — no command injection, and nothing a guest can use against the Mac
 - **Few dependencies** — discuss a new one before adding it
-- **Keep the docs current** — when behavior changes, change the page that describes it. Docs stay high level, simple, and clear
+- **Keep the docs current** — `docs/` is published on the website. Describe current behavior and how to use it. Keep agent work logs, validation reports, experiment results, and implementation history in issues or pull requests, outside the website docs
 
 Two rules protect your own Mac while you work:
 

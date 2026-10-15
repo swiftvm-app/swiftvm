@@ -68,8 +68,7 @@ final class AppWindows {
     /// Brings the app in front of the others, for something that someone at this Mac has just asked of it.
     ///
     /// Regardless of the app that is in front: an app that isn't in the Dock is not given the front for
-    /// asking with `activate()`, not even when it has only just been opened (docs/tech/constraints.md,
-    /// "The app").
+    /// asking with `activate()`, not even when it has only just been opened.
     func bringAppForward() {
         NSApp.activate(ignoringOtherApps: true)
     }

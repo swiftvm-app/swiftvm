@@ -2,8 +2,8 @@
 
 ## The disk
 
-Each machine has one disk. You pick its size when you create the machine, any
-size you type, but it only takes up what the guest has written to it.
+Each machine has one main disk. Choose its capacity when you create the
+machine. On APFS, it uses space as the guest writes data.
 
 The disk is in the machine's package, wherever you
 [keep the machine](virtual-machines.md#where-machines-are-kept).
@@ -25,14 +25,15 @@ what the guest does with the new space depends on the guest:
 | Linux, made with Quick Create | Grows into the new space at its next start |
 | Other Linux | Grow the partition and the file system in the guest, for example with `growpart` and `resize2fs` |
 | macOS | The startup volume can't grow. Add a volume in the new space with Disk Utility in the guest |
+| Windows | Extend the volume in Disk Management inside the guest |
 
 So pick a generous size when you create a Mac.
 
 ## Keeping the disk compressed
 
-The disk of a Linux machine can be kept compressed. It then usually takes less
-than half the space on your Mac. Files that are compressed already, such as
-video and archives, stay as large as they are.
+Linux and Windows disks can be compressed to save space on your Mac. Savings
+depend on their contents; video, archives, and other compressed files benefit
+less.
 
 Shut the machine down, then choose **Turn On…** next to **Compression** under
 **Storage** in its settings, or run:
@@ -50,11 +51,8 @@ to `swiftvm create`.
 
 What changes for the machine:
 
-- **Reading is as fast or faster, writing is slower.** A machine that mostly
-  reads, such as one that starts programs and builds, hardly notices. One that
-  writes a lot, such as a busy database, does: copying files in takes about
-  one and a half times as long, and many small writes at once get through at
-  about a third of the speed.
+- **Writes are slower.** Leave compression off for workloads with frequent
+  writes, such as a busy database.
 - **A crash of your Mac can cost the last second.** If the Mac loses power or
   crashes while the machine runs, the disk comes back whole, as it was at one
   moment in its last second. What the guest wrote after that moment is gone,
@@ -71,13 +69,13 @@ What changes for the machine:
 - Copies, templates and snapshots made afterwards share space with the disk,
   as before.
 
-macOS machines can't have a compressed disk: a Mac's own files are stored
-compressed already, so its disk would hardly get smaller.
+Disk compression is unavailable for macOS machines.
 
 ## Disc and disk images
 
 Disc images (ISO) and disk images (raw or ASIF) plug into a machine as USB
-drives, also while it runs.
+drives, also while it runs. Windows guests support ISO and raw images;
+ASIF images require a macOS or Linux guest.
 
 Attach one under **Disc and Disk Images** in the machine's toolbar, in its
 settings, or with:
@@ -98,10 +96,9 @@ swiftvm eject web-server data.img
 ## Copies and snapshots
 
 [Duplicates](virtual-machines.md#duplicating),
-[templates](templates.md), and [snapshots](snapshots.md) are instant because
-APFS shares the unchanged parts of the disk. On a volume with another file
-system they are full copies, and so is a template that is kept on another disk
-than its machine.
+[templates](templates.md), and [snapshots](snapshots.md) use APFS clones to
+share unchanged disk blocks. Copies across volumes or on other file systems
+are full copies.
 
 A machine that [moves to another disk](virtual-machines.md#where-machines-are-kept)
 takes its snapshots along. They are copied in full then, since two disks can't

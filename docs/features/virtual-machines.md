@@ -1,8 +1,8 @@
 # Virtual Machines
 
-A virtual machine is a computer that runs in a window on your Mac. SwiftVM runs
-[macOS](macos-guests.md) and [Linux](linux-guests.md) guests with Apple's
-Virtualization framework.
+A virtual machine is a computer that runs in a window on your Mac. SwiftVM
+supports [macOS](macos-guests.md), [Linux](linux-guests.md), and
+[Windows 11 for Arm](windows-guests.md).
 
 ## The panel
 
@@ -22,26 +22,20 @@ SwiftVM is in the Dock only while one of its windows is open.
 
 ## Creating
 
-Choose **New Virtual Machine** and pick **macOS**, **Linux**, or **Template**
-from the **Type** dropdown. The form shows the essential fields first.
-Select the **Advanced** checkbox to expand hardware, location, and account
-options below them. The existing fields keep their order, and clearing the
-checkbox hides the extra controls without changing their values.
-
-The window remembers whether Advanced was expanded and opens on the system
-you made last. You can also drop an installer disc (ISO), a macOS restore
-image (IPSW), or an existing virtual machine on the window. An ISO or IPSW
-opens with that file selected and Advanced expanded.
+Choose **New Virtual Machine** and select a **Type**. Use **Advanced** to
+adjust hardware, storage location, and account settings. You can also drop an
+installer disc (ISO), a macOS restore image (IPSW), or an existing machine
+package onto the window.
 
 - [Linux guests](linux-guests.md): from a ready-made image, or from an
   installer disc.
 - [macOS guests](macos-guests.md): the latest macOS, or your own restore image.
+- [Windows guests](windows-guests.md): Windows 11 for Arm, downloaded or from an ISO.
 - [Templates](templates.md): a machine you set up before and saved.
 
-New machines get half of your Mac's cores (between 2 and 4), 8 GB of memory
-(4 GB on Macs with less than 16 GB), and a 64 GB disk for Linux or 128 GB for
-macOS. Disks only take up what the guest has written. The form takes any disk
-size you type.
+SwiftVM recommends processors, memory, and disk size for your Mac and guest.
+You can change them before creating the machine. On APFS, disks use space as
+the guest writes data.
 
 **Location**, under **Hardware**, is the folder the machine is kept in. See
 [Where machines are kept](#where-machines-are-kept).
@@ -100,8 +94,8 @@ These work while one of SwiftVM's windows is in front.
 **Duplicate** copies a machine that is shut down. The copy is a machine of its
 own, with a new name, address, and SSH name.
 
-- It takes no time and no extra space at first: the copy shares disk space with
-  the original until they differ.
+- On APFS, the copy shares unchanged disk blocks with the original, making
+  duplication fast and saving space.
 - Forwarded ports, writable disk images, and USB devices the original takes by
   itself stay with the original. Snapshots aren't copied.
 
@@ -122,7 +116,7 @@ external disk.
 
 Moving needs the machine shut down.
 
-- On the same disk a move takes no time.
+- On the same disk, a move doesn't need to copy the machine's files.
 - To another disk the machine is copied, and the original is removed once the
   copy is complete and written to that disk. The panel shows how far it is.
   **Cancel** in the machine's settings, or quitting SwiftVM, calls it off and
@@ -133,8 +127,8 @@ Moving needs the machine shut down.
 
 - A machine whose disk isn't connected stays in the panel, under **Not
   Available**. It is back as soon as you connect the disk.
-- A [duplicate](#duplicating) is made next to the original, so it is instant
-  there too.
+- A [duplicate](#duplicating) is made next to the original and shares disk
+  space on APFS.
 - A package you move in the Finder is found again, as long as it stays on the
   same disk. Moved to another disk by hand, open it from the Finder to add it
   again.
@@ -154,9 +148,11 @@ the Trash.
 Quitting SwiftVM while machines are running asks what to do with them:
 
 - **Suspend and Quit** saves their state. They continue where they were the
-  next time you start them.
+  next time you start them. If saving fails, SwiftVM force-stops that machine.
 - **Shut Down and Quit** turns them off. Machines without the guest tools are
-  stopped at once.
+  stopped at once; guests that do not finish shutting down are force-stopped
+  after a timeout. Force-stopped machines lose unsaved work.
 
-Quitting while a machine is being created cancels it. A download carries on
-where it stopped the next time you create that system.
+Quitting while a machine is being created cancels it. The download can
+[resume](../user-guide/troubleshooting.md#a-download-started-over) the next
+time you create that system, while its partial file is still available.

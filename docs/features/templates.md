@@ -1,8 +1,7 @@
 # Templates
 
-A template keeps a machine as it was when you saved it, to make new machines
-from. Set a machine up once, with the system, the tools, and the settings you
-want, and every new machine starts out that way.
+A template saves a configured machine so you can create more like it, with
+the same system, software, accounts, and settings.
 
 ## Saving one
 
@@ -14,10 +13,9 @@ swiftvm save-template web-server "Web Base"
 swiftvm templates
 ```
 
-- The template holds the machine's disk and its settings. The machine itself
-  stays as it is, and you go on using it.
-- Nothing that happens in the machine afterwards changes the template.
-- The machine has to be shut down: not running, and not suspended.
+- The template is independent of the original machine. You can keep using or
+  delete the original without changing the template.
+- A suspended machine must be shut down before saving it as a template.
 - Start a new machine at least once before you save it. A Linux machine
   creates its account on its first start, and a template from before that has
   none.
@@ -32,10 +30,9 @@ become a template too, without going back to it. Right-click it under
 swiftvm save-template web-server "Clean Install" --snapshot "Before upgrade"
 ```
 
-The machine can be running meanwhile, and stays as it is until the template
-is saved: it can't be shut down, suspended, or snapshotted before that. On the
-same disk that is over at once. A snapshot of a running machine holds its
-memory, which only that machine can resume, so it can't become a template.
+The machine can stay running, but power actions and snapshots are unavailable
+until saving finishes. Snapshots that include saved memory cannot become
+templates.
 
 ## Creating a machine from one
 
@@ -43,11 +40,9 @@ In the **New Virtual Machine** window, choose **Template** in the **Type**
 dropdown, and then the template. Or choose **New Machine…** next to it in the
 **Templates** window.
 
-Both forms show the template and machine name first, followed by a hardware
-summary. Select **Advanced** to expand processors, memory, disk size,
-location, and whether to start when ready. Clearing the checkbox hides the
-extra controls without changing their values. Until you edit them, the new
-machine keeps the template's hardware exactly.
+The new machine uses the template's hardware settings. Use **Advanced** to
+change processors, memory, disk size, storage location, or whether to start
+when ready.
 
 ```bash
 swiftvm create --template "Web Base" --name "Web 2"
@@ -94,19 +89,15 @@ swiftvm delete-template "Web Base 2026"
 
 ## Good to know
 
-- Saving a template and creating a machine from it take no time and no extra
-  space at first, as long as both are on the same disk: APFS shares what
-  hasn't changed. To another disk, or on another file system, the disk is
-  copied. The panel and the **Templates** window show how far that is.
-  **Cancel**, or quitting SwiftVM, calls it off, and nothing is left of the
-  template. `swiftvm quit` refuses until the template is saved.
+- On the same APFS volume, templates and new machines share unchanged disk
+  blocks. Across volumes or on other file systems, they are full copies.
+  SwiftVM shows progress and lets you cancel. `swiftvm quit` refuses while
+  saving is in progress.
 - Templates are kept in `~/Library/Application Support/SwiftVM/Templates`,
   each as one `.swiftvmtemplate` package, named after the template when it was
   saved. Renaming a template doesn't rename its package. **Settings → Storage
   → Templates → Change** picks another folder, on another disk if you like.
   See [Settings](../user-guide/settings.md#storage).
-- A template made from a machine on another disk than the templates folder is
-  a full copy, and so is each machine made from it on another disk.
 - Everything on the machine's disk is in the template, and in every machine
   made from it: also the accounts, their passwords, and their keys.
 - Snapshots aren't part of a template, and a template has none.

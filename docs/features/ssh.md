@@ -32,8 +32,9 @@ up to date.
 - SwiftVM uses the key you already have (`id_ed25519`, `id_ecdsa`, or
   `id_rsa` in `~/.ssh`). If you have none, it makes `~/.ssh/swiftvm_ed25519`.
 - With **Sign in over SSH with my key** on, the key is installed in guests that
-  SwiftVM sets up: [Quick Create](linux-guests.md#quick-create) Linux machines
-  and [macOS](macos-guests.md) 27 or newer.
+  SwiftVM sets up: [Quick Create](linux-guests.md#quick-create) Linux machines,
+  [macOS](macos-guests.md) 27 or newer, and [Windows](windows-guests.md) when
+  SSH installation succeeds.
 - The guests' host keys are kept apart from your own `known_hosts`. A guest's
   key is accepted the first time you connect and checked from then on.
 
@@ -59,5 +60,10 @@ swiftvm ssh web-server --vsock
 
 ```
 Host web-server-vsock
+    User user
+    IdentityFile ~/.ssh/swiftvm_ed25519
     ProxyCommand swiftvm vsock web-server 22
 ```
+
+Replace `user` and the key path with the guest's account and your SSH key.
+`swiftvm ssh --vsock` uses the machine's configured account and key for you.

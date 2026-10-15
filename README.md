@@ -8,19 +8,19 @@
 
 ## Supported guests
 
-- Mac
+- macOS
 - Linux
 - Windows 11 for Arm
 
 ## Top level features
 
 - macOS guests that install and set themselves up
-- Linux guests from a cloud image, ready in seconds
+- Linux guests from cloud images with automatic setup
 - Linux desktops that install themselves: GNOME, KDE Plasma, Xfce, Cinnamon
 - Windows 11 that downloads from Microsoft and installs itself, logged in and with its drivers
 - Setup scripts for everything else a new machine needs, in one file you write
 - `ssh <machine>` from your Mac
-- Snapshots and instant duplicates
+- Snapshots and duplicates that share unchanged disk blocks on APFS
 - Templates: save a machine you set up, and create new ones from it
 - Suspend and resume
 - Shared folders and clipboard

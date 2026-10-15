@@ -25,17 +25,21 @@ swiftvm info web-server      # one machine in detail
 | --- | --- |
 | `list` | List virtual machines |
 | `info <machine>` | Show one machine in detail |
-| `create <system> [options]` | Create a machine and wait until it is ready |
+| `create <system> [options]` | Create a machine and start it, unless `--no-start` is given |
 | `create --template <template> [options]` | Create a machine from a [template](templates.md#creating-a-machine-from-one) |
 | `clone <machine> [name]` | Copy a machine that is shut down |
 | `move <machine> <folder>` | Move a machine that is shut down to [another folder or disk](virtual-machines.md#where-machines-are-kept), and wait until it is there |
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
-| `compression <machine> on\|off` | Keep the disk of a Linux machine that is shut down [compressed](disks.md#keeping-the-disk-compressed), or not |
+| `compression <machine> on\|off` | Enable or disable [disk compression](disks.md#keeping-the-disk-compressed) for a shut-down Linux or Windows machine |
 | `open <machine>` | Show the machine's window |
 | `delete <machine>` | Move a stopped machine to the Trash |
 
-`<system>` is `macos`, or a Linux image: `ubuntu-26.04`, `ubuntu-24.04`, or
-`debian-13`.
+`<system>` is `macos`, `windows`, or a Linux image: `ubuntu-26.04`,
+`ubuntu-24.04`, or `debian-13`.
+
+`create` waits for the machine to be created and started, not for setup inside
+the guest to finish. Use `swiftvm wait <machine>` for the guest tools and
+`swiftvm info <machine>` to check installation or setup-script progress.
 
 `swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
 SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
@@ -49,12 +53,13 @@ SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 | `--memory <GB>` | Memory |
 | `--disk <GB>` | Disk size |
 | `--user <name>` | The account's name |
-| `--password <password>` | The account's password. Required for macOS |
+| `--password <password>` | The account's password. Required for automatic macOS setup, Windows, and Linux desktop scripts |
 | `--location <folder>` | Keep the machine in this folder instead of the one for new machines |
 | `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs `--password`; macOS leaves Remote Login off |
 | `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta) |
-| `--compressed` | Linux: keep the disk [compressed](disks.md#keeping-the-disk-compressed) from the start |
+| `--compressed` | Linux and Windows: keep the disk [compressed](disks.md#keeping-the-disk-compressed) from the start |
 | `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |
+| `--iso <file>` | Windows: install this Windows 11 Arm64 ISO instead of downloading |
 | `--script <name>` | Linux: run a [setup script](setup-scripts.md) on the first start, by its name in `swiftvm scripts`. A desktop needs `--password` |
 | `--script <file>` | The same with a file, by its path: `./mine.sh` |
 | `--script … --script …` | Several, which run in that order |
@@ -82,7 +87,7 @@ apply. `--disk` then grows the disk beyond the template's.
 | --- | --- |
 | `ssh <machine> [--vsock] [ssh arguments]` | Open a shell or run a command in the guest. See [SSH](ssh.md) |
 | `ip <machine>` | Print the machine's IP address |
-| `console <machine>` | Connect to a Linux guest's [serial console](linux-guests.md#serial-console). `Ctrl+]` leaves |
+| `console <machine> [--wait <seconds>]` | Connect to a Linux guest's [serial console](linux-guests.md#serial-console). `Ctrl+]` leaves |
 | `vsock <machine> <port>` | Connect input and output to a port in the guest over its socket device |
 | `plug <machine>`, `unplug <machine>` | Plug in the network cable, or pull it |
 | `forward <machine> <port>[:<guest port>]` | [Forward a port](networking.md#port-forwarding). `--udp`, `--allow-others` |
@@ -105,8 +110,8 @@ apply. `--disk` then grows the disk beyond the template's.
 
 ## Automation
 
-These work inside a running guest, through its [guest tools](guest-tools.md).
-See [Automation](automation.md).
+These work inside a running guest. Requirements vary by guest and command;
+see [Automation](automation.md#what-works-where).
 
 | Command | What it does |
 | --- | --- |
@@ -120,7 +125,7 @@ See [Automation](automation.md).
 | `ui <machine> tree` | Print [what is on the screen](automation.md#what-is-on-the-screen) as a tree, in JSON. `--app <name>`, `--depth <levels>`, `--all` |
 | `ui <machine> press <element>` | Press a part of the tree, by its `id`. Also `focus <element>` and `set <element> <text>` |
 | `allow-accessibility <machine> --password <password>` | Have a macOS guest [let the guest tools read its screen as a tree](automation.md#macos-guests), once |
-| `automation <machine> on\|off` | Let all of the above work in the machine, or [not](automation.md#turning-it-off) |
+| `automation <machine> on\|off` | Enable or disable `exec`, `cp`, `screenshot`, and `ui`. See [Automation](automation.md#turning-it-off) |
 
 ## Snapshots
 
@@ -150,21 +155,22 @@ See [Automation](automation.md).
 machine is running. While one is being created it refuses too, unless you add
 `--cancel-creations`.
 
+It also refuses while machine files are being moved, copied, resized, or
+converted, or a dialog is open. Finish or cancel that work first.
+
 ## Example
 
 ```bash
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
-swiftvm create debian-13 --name "Desk" --script xfce --script docker --password 'a password'
-swiftvm create ubuntu-26.04 --name "Big" --disk 200 --location /Volumes/External/Machines
-swiftvm move web-server /Volumes/External/Machines
+swiftvm wait web-server
+swiftvm exec web-server --root -- sh -c 'apt-get update && apt-get install -y nginx'
 swiftvm share web-server ~/Projects
 swiftvm forward web-server 8080:80
 swiftvm snapshot web-server "Before upgrade"
-swiftvm save-template web-server "Web Base"         # while it is shut down
+swiftvm stop web-server
+swiftvm save-template web-server "Web Base"
 swiftvm create --template "Web Base" --name "Web 2"
-swiftvm ssh web-server
-swiftvm exec web-server --root -- apt-get install -y nginx
-swiftvm cp ./site web-server:/var/www
+swiftvm start web-server
 swiftvm suspend web-server
 swiftvm start web-server
 ```

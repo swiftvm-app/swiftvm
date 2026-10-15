@@ -18,7 +18,9 @@ flowchart LR
 
 ## Addresses
 
-- Each machine has its own address, which stays the same every time it starts.
+- Each machine has a reserved address that normally stays the same between
+  starts. If SwiftVM moves to another address range to avoid a conflict, the
+  machines get new addresses.
 - SwiftVM picks an address range that doesn't collide with the networks your
   Mac is on. **Settings → Network** shows it.
 - A machine created while others are running gets a temporary address. It
@@ -57,7 +59,7 @@ swiftvm unforward web-server 8080
 - If the port is in use on your Mac, SwiftVM keeps trying until it is free.
   `swiftvm info <machine>` shows each forward's status.
 
-## Not yet
+## Limitations
 
-Bridged, host-only, and isolated networks, and more than one network card per
-machine.
+Bridged, host-only, and isolated networks, and multiple network cards per
+machine are unavailable.

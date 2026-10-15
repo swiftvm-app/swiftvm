@@ -1,14 +1,8 @@
 # Automation
 
-`swiftvm` can work inside a running guest: run commands in it, copy files, see
-its screen, and use its mouse and keyboard. It is made for scripts and for AI
-agents, which get a machine of their own to work in instead of your Mac.
-
-Most of it goes through the [guest tools](guest-tools.md), over the machine's
-own socket device. The guest needs no network and no SSH key for it. The
-screen, the mouse, and the keyboard of a macOS guest are the machine's own:
-SwiftVM reads the display and presses the keys itself, and the guest isn't
-asked.
+Use `swiftvm` to run commands, copy files, take screenshots, and control a
+guest's mouse and keyboard. These commands work for scripts and AI agents
+without a guest network connection or SSH key.
 
 ## Getting ready
 
@@ -19,18 +13,22 @@ swiftvm info desk               # the Automation line says what works
 swiftvm allow-accessibility desk --password '…'   # a macOS guest, once: for ui tree
 ```
 
-Guest tools that came with an older SwiftVM do none of this.
-`swiftvm install-tools <machine>` updates them. A Linux guest needs Python 3.9
-or newer for it, which every system SwiftVM sets up has.
+If a command needs newer [guest tools](guest-tools.md), update them with
+`swiftvm install-tools <machine>` on Linux or macOS, or use the
+[guest tools disc](guest-tools.md#windows) on Windows. Linux automation
+requires Python 3.9 or newer, included in every Quick Create image.
+
+`wait` only waits for the guest tools to connect. It does not wait for setup
+scripts, Windows installation, or a desktop login to finish. Check
+`swiftvm info <machine>` for setup progress.
 
 ## What works where
 
-| | Linux | macOS |
-| --- | --- | --- |
-| `exec`, `cp` | With the guest tools | With the guest tools |
-| `screenshot` | With the guest tools: any desktop, the login screen, and the console | Always: whatever the display shows, also the login screen and a locked screen |
-| `ui` mouse and keyboard | The same | The same |
-| `ui tree`, `press`, `set`, `focus` | A desktop that someone is logged in to | The same, once [macOS allows it](#macos-guests) |
+| Command | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| `exec`, `cp` | Guest tools | Guest tools | Guest tools |
+| `screenshot`, `ui` mouse and keyboard | Guest tools; works at the login screen and console | Works without guest tools, including login and locked screens | Works without guest tools, including the sign-in screen |
+| `ui tree`, `press`, `set`, `focus` | Guest tools and a logged-in desktop session | Guest tools, a logged-in session, and [permission](#macos-guests) | Unavailable |
 
 ## Commands
 
@@ -43,8 +41,8 @@ swiftvm exec desk -- sh -s < setup.sh
 
 | Option | What it does |
 | --- | --- |
-| `--root` | Run the command as root |
-| `--user <name>` | Run it as another account |
+| `--root` | Run as root, or SYSTEM on Windows |
+| `--user <name>` | Run as this account; on Windows, it must be the account logged in at the guest's screen |
 | `--cwd <folder>` | Where to run it. Otherwise the account's home folder |
 | `--env <name>=<value>` | Add a variable to its environment. Give it again for more |
 | `--timeout <seconds>` | Stop the command if it takes longer |
@@ -57,13 +55,16 @@ swiftvm exec desk -- sh -s < setup.sh
   terminal: for something you type into, use [`swiftvm ssh`](ssh.md).
 - Output arrives as the command prints it, byte for byte.
 - A command stops when `swiftvm` does: at Control-C, or when the time is up.
-  To leave something running, start it in the background:
+  On Linux and macOS, you can leave a program running in the background:
   `swiftvm exec desk -- sh -c 'firefox > /dev/null 2>&1 &'`.
 - A command that runs as the user who is logged in at the guest's screen can
   open windows there.
 
 `swiftvm exec` ends with the command's own exit status, so a script can go by
 it.
+
+On Windows, the configured account must be logged in unless you use `--root`.
+For shell commands, use `powershell.exe -Command '…'`.
 
 | Status | Meaning |
 | --- | --- |
@@ -76,13 +77,14 @@ it.
 ```bash
 swiftvm cp notes.txt desk:Documents/           # into the guest
 swiftvm cp desk:/var/log/syslog ./syslog.txt   # out of it
-swiftvm cp ./project desk:/srv                 # a folder, with everything in it
-swiftvm cp ./project/. desk:/srv/app           # only what is in the folder
+swiftvm cp --root ./project desk:/srv          # a folder, with everything in it
+swiftvm cp --root ./project/. desk:/srv/app    # only what is in the folder
 swiftvm cp --root nginx.conf desk:/etc/nginx/nginx.conf
 ```
 
-- The side in the guest is `<machine>:<path>`. A path that doesn't start with
-  `/` is in the account's home folder.
+- The side in the guest is `<machine>:<path>`. Relative paths start in the
+  account's home folder. Windows also accepts drive paths, for example
+  `swiftvm cp notes.txt win:C:/Users/user/Documents/`.
 - It works as `cp -R` does: into a folder that is there, under the name you
   give otherwise.
 - Files arrive as the account that `--root` or `--user` names, as with `exec`.
@@ -102,9 +104,6 @@ prints where.
 - A desktop turns the display off after a while without input, and locks the
   screen. A screenshot then says that the display is off: wake it with
   `swiftvm ui <machine> key shift`, and look again before you type.
-- A macOS guest's screen can be looked at, clicked on, and typed into in any
-  state: without the guest tools, before anyone is logged in, while it is
-  locked.
 
 ## Mouse and keyboard
 
@@ -127,9 +126,10 @@ swiftvm ui desk key ctrl+c
   are one key. Several keys in one command are pressed one after the other.
 - `type` presses the keys of a US keyboard. A guest set to another layout
   gets other characters.
-- Text beyond those keys isn't typed in a Linux guest: put it into a text
-  field with [`ui set`](#what-is-on-the-screen). In a macOS guest the guest
-  tools type it, once [macOS allows it](#macos-guests).
+- Linux and Windows input supports characters available on a US keyboard.
+  For other text, use [`ui set`](#what-is-on-the-screen) on Linux, or `exec`
+  and `cp` to work with files on Windows. On macOS, the guest tools can type
+  other characters once [macOS allows it](#macos-guests).
 - All of this works at the login screen too, so a script can sign in.
 - `scroll` goes the way it says in a macOS guest, whichever way the guest is
   set to scroll. Without the guest tools it takes the guest to scroll the way
@@ -137,9 +137,9 @@ swiftvm ui desk key ctrl+c
 
 ## What is on the screen
 
-A screenshot shows the screen. The tree says what is on it: every window,
-button, and text field that applications describe to the system's
-accessibility, the way a screen reader gets to know them.
+The accessibility tree describes windows, buttons, and text fields that
+applications expose to screen readers. Use it to find controls by name and
+act on them by ID.
 
 ```bash
 swiftvm ui desk tree
@@ -155,8 +155,8 @@ swiftvm ui desk tree --app files
 
 | Field | What it is |
 | --- | --- |
-| `id` | What the part is asked for by |
-| `role`, `name`, `description`, `value` | What kind of thing it is, what it is called, and what is in it |
+| `id` | Identifier used to act on the element |
+| `role`, `name`, `description`, `value` | Element type, label, description, and contents |
 | `states` | `focused`, `selected`, `checked`, `expanded`, `editable`, `disabled`, and the like |
 | `actions` | What it can be asked to do |
 | `bounds` | Where it is on the screen, in the pixels of a screenshot: left, top, width, height |
@@ -186,32 +186,24 @@ swiftvm ui desk focus 10345/0/3/1
 
 ## macOS guests
 
-`screenshot`, and the mouse and keyboard of `ui`, need nothing in the guest:
-no guest tools, no login, and nothing allowed.
-
-The tree is different. macOS asks whoever sits at the screen before a program
-may read what others show there, and the guest tools are such a program. Each
-macOS guest has to allow it once:
+Screenshots and basic mouse and keyboard input work without guest tools or
+permission in the guest. The accessibility tree requires permission for
+**swiftvm-agent**. Grant it once per guest:
 
 ```bash
 swiftvm allow-accessibility desk --password 'the account password'
 ```
 
-SwiftVM gives the answer the way a person at the guest's screen would, with
-the machine's own mouse and keyboard. It opens System Settings in the guest,
-turns on the switch for **swiftvm-agent**, and types the password where macOS
-asks for it. Then it closes System Settings again.
+The command opens System Settings in the guest and enables access using the
+supplied administrator password.
 
-- It takes a few seconds. The first time, reading the guest's screen can take
-  half a minute.
-- Someone has to be logged in at the guest's screen, and the password has to
-  be that of an administrator there. An account that SwiftVM created is one.
+- Log in to an administrator account at the guest's screen first. Accounts
+  created by SwiftVM are administrators.
 - Leave the guest's mouse and keyboard alone while it runs.
-- The guest tools have to be version 1.2 or newer. `swiftvm info <machine>`
-  shows the version, and `swiftvm install-tools <machine>` updates them.
+- Guest tools version 1.2 or newer is required. `swiftvm info <machine>` shows
+  the installed version.
 - The password is typed on the machine's keyboard, so it has to be made of
   what a US keyboard has keys for.
-- A machine that is already allowed is left as it is.
 
 To do it by hand instead, open **System Settings › Privacy & Security › Device
 Control and Data Access** in the guest, which earlier versions call
@@ -221,9 +213,8 @@ A copy of the machine keeps what you allowed. `exec` and `cp` need none of it.
 
 ## Turning it off
 
-Automation is on for every machine that has the guest tools. For a machine
-that nothing but you should touch, turn off **Allow Automation** in its
-settings, or run:
+Automation is enabled by default. To disable it, turn off **Allow Automation**
+in the machine's settings, or run:
 
 ```bash
 swiftvm automation desk off

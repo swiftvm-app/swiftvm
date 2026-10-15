@@ -12,16 +12,14 @@ Choose **Linux** in the **Type** dropdown. Pick **Quick Create** or
 **Installer Disc** under **Setup**, then choose the image and name. Quick
 Create also offers setup scripts and a password.
 
-Select **Advanced** to expand hardware, location, account, and startup
-settings below the essential fields. Clearing the checkbox keeps the chosen
-values and hides only the extra controls. macOS and templates use the same
-structure.
+Use **Advanced** to adjust hardware, storage location, account, and startup
+settings.
 
 ## Quick Create
 
-Quick Create downloads a server image and sets it up on first start. There is
-no installer to click through, and the machine is ready in seconds once the
-image is on your Mac.
+Quick Create downloads a server image and sets it up on first start, without
+an interactive installer. Account creation, guest tools, and any setup scripts
+finish inside the running guest.
 
 | Distribution | Name for `swiftvm create` |
 | --- | --- |
@@ -61,8 +59,8 @@ Scripts**, click one, and set a password.
 swiftvm create ubuntu-26.04 --script xfce --password 'a password'
 ```
 
-The machine starts as a server, installs the desktop in about ten minutes, and
-restarts into its login screen. SwiftVM shows the step it is at.
+The machine starts as a server, installs the desktop, and restarts into its
+login screen. SwiftVM shows the step it is at; downloads can take a while.
 
 A desktop is one kind of [setup script](setup-scripts.md), and a machine can
 have several: a desktop and then Docker, say. Write your own for anything
@@ -84,9 +82,14 @@ SwiftVM doesn't set these guests up, so afterwards you may want to:
 
 ## Rosetta
 
-With Rosetta, x86-64 Linux programs run in an ARM64 guest. Turn it on when you
-create a Quick Create machine, or later with **Rosetta for x86-64 Programs**
-in the machine's settings. It needs Rosetta installed on your Mac.
+With Rosetta, x86-64 Linux programs run in an ARM64 guest. Enable it when
+creating a Quick Create machine so first-boot setup mounts Rosetta and
+registers it as a binary handler. Rosetta must be installed on your Mac.
+
+You can expose Rosetta to an existing machine by shutting it down and enabling
+**Rosetta for x86-64 Programs** in its settings. If it was not configured on
+first boot, you also need to mount the `rosetta` share and register the binary
+handler inside Linux; changing the setting alone does not perform those steps.
 
 ## Secure Boot
 
@@ -101,16 +104,17 @@ there.
 
 - Choose **Open Serial Console** in the machine's menu, or run
   `swiftvm console <machine>`. Press `Ctrl+]` to leave.
-- What the guest printed since it last started is in `logs/console.log` in the
-  machine's [package](../user-guide/settings.md#files).
+- Recent output is in `logs/console.log` in the machine's
+  [package](../user-guide/settings.md#files). The log rotates at 4 MB and
+  starts over on a fresh boot; resuming continues the existing log.
 - Quick Create machines also send their kernel's messages there, from their
   second start on. Ubuntu only lets errors through once it is up; Debian shows
   everything.
 
 ## Good to know
 
-- Linux guests draw without graphics acceleration. Of the desktops, Xfce is the
-  quickest.
+- Linux guests draw without graphics acceleration. Xfce is a lighter option
+  than GNOME or KDE Plasma.
 - The shared clipboard works in desktop guests that run `spice-vdagent`, which
   the [desktops](#desktops-and-setup-scripts) SwiftVM installs bring.
 - SSH [without a network](ssh.md#without-a-network) works out of the box on

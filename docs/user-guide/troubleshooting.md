@@ -12,6 +12,7 @@ Common problems and fixes. If yours isn't here, please
 | Guest tools in a Linux guest | `systemctl status swiftvm-agent` in the guest |
 | What a setup script printed | `/var/log/swiftvm-setup.log` in the guest |
 | Guest tools in a macOS guest | `sudo launchctl print system/com.swiftvm.agent` in the guest |
+| Guest tools in a Windows guest | `Get-Service SwiftVMAgent` in the guest's PowerShell |
 
 Messages about a machine show in its window. When the window is closed, they
 are at the top of the panel, and the menu bar item turns into a warning sign
@@ -43,9 +44,8 @@ the guest loses what it hasn't saved.
 
 ## A desktop didn't install
 
-A desktop is installed by a [setup script](../features/setup-scripts.md), and
-this goes for every setup script. SwiftVM says when one fails, and at which
-step. The usual cause is a download that didn't come through.
+A desktop is installed by a [setup script](../features/setup-scripts.md).
+SwiftVM shows the script and step that failed, often during a download.
 
 - Read what the script printed: `/var/log/swiftvm-setup.log` in the guest.
 - Run it again: `sudo systemctl start swiftvm-setup` in the guest. Scripts
@@ -59,7 +59,8 @@ step. The usual cause is a download that didn't come through.
 - **Your Mac is locked.** macOS won't read saved memory while the screen is
   locked. Unlock and start the machine again.
 - **A disk image is gone.** The machine expects the images it was suspended
-  with. Put the image back, or choose **Discard Saved State** and start fresh.
+  with. Put the image back, or choose **Discard Saved State**, eject the
+  missing image in the machine's settings, and start fresh.
 - **An older Debian 13 machine.** Machines made from Debian's `genericcloud`
   image can't resume. In the guest, run `sudo apt install linux-image-arm64`,
   remove `linux-image-cloud-arm64`, and restart. New machines are fine.
@@ -72,7 +73,8 @@ step. The usual cause is a download that didn't come through.
   `swiftvm ip <machine>`.
 - A guest installed from a disc may have no SSH server or no key of yours.
   Install one in the guest, and set **SSH User** in the machine's settings.
-- If only the guest's network is down, try `swiftvm ssh <machine> --vsock`.
+- If only a Linux guest's network is down, try
+  `swiftvm ssh <machine> --vsock`.
 
 ## A machine has an unexpected address
 
@@ -95,23 +97,25 @@ Install the [guest tools](../features/guest-tools.md), or
 ## The clipboard isn't shared
 
 - Check **Share Clipboard** in the machine's settings.
-- A macOS guest needs the [guest tools](../features/guest-tools.md).
-- A Linux guest needs a desktop with `spice-vdagent` running.
-- Only text is shared, up to about 250 kB.
+- macOS and Windows guests need the [guest tools](../features/guest-tools.md).
+- A Linux guest needs a desktop with `spice-vdagent` running. Shut down the
+  guest before changing **Share Clipboard**.
+- Only text is shared. The macOS and Windows guest tools limit it to about
+  250 kB.
 
 ## `swiftvm exec` or `swiftvm screenshot` doesn't work
 
-- **The guest tools don't answer.** The guest is still starting up, or has no
-  [guest tools](../features/guest-tools.md). `swiftvm wait <machine>` waits
-  for them, and `swiftvm install-tools <machine>` installs them.
-- **The guest tools are too old.** `swiftvm install-tools <machine>` updates
-  them.
+- **The guest tools don't answer.** Commands and file copies require the
+  [guest tools](../features/guest-tools.md), as do Linux screenshots and input.
+  `swiftvm wait <machine>` waits for them. Follow the
+  [installation steps](../features/guest-tools.md#installing) for your guest.
+- **The guest tools are too old.** Install them again to update them.
 - **Automation is turned off.** Turn on **Allow Automation** in the machine's
   settings.
-- **A macOS guest says it isn't allowed.** That is the tree of what is on its
-  screen. `swiftvm allow-accessibility <machine> --password <password>`
-  [has the guest allow it](../features/automation.md#macos-guests), once. A
-  screenshot, the mouse, and the keyboard need nothing allowed.
+- **A macOS guest denies accessibility access.** Run
+  `swiftvm allow-accessibility <machine> --password <password>` to
+  [grant permission](../features/automation.md#macos-guests) for the screen
+  tree. Screenshots and basic mouse and keyboard input need no permission.
 - **The display is off.** A guest turns its display off after a while without
   input. `swiftvm ui <machine> key shift` wakes it.
 - **Nobody is logged in.** The tree of what is on the screen belongs to
@@ -119,8 +123,8 @@ Install the [guest tools](../features/guest-tools.md), or
 
 ## The USB button is missing
 
-USB devices need a build with a provisioning profile. Releases have one;
-builds you make yourself may not. See
+Physical USB devices work with macOS and Linux guests, and need a build with
+a provisioning profile. Releases have one; builds you make yourself may not. See
 [Building](../tech/building.md#usb-devices).
 
 ## A USB device isn't listed
@@ -133,7 +137,8 @@ the menu bar and set the device to SwiftVM. See
 
 A running machine can't be snapshotted while it has a USB device or a writable
 disk image attached, or while your Mac is locked. Detach or eject it, or shut
-the machine down first.
+the machine down first. A suspended machine also cannot be snapshotted with a
+writable disk image attached.
 
 ## The guest doesn't see its bigger disk
 
@@ -142,14 +147,15 @@ Growing a disk only makes the hardware bigger. See
 
 ## The guest's clock is wrong after resuming
 
-With the guest tools, the clock is set the moment the guest resumes. Without
-them, macOS catches up in a few seconds and Linux can take much longer.
+The guest tools synchronize the clock after resuming and reconnecting.
+Without them, the guest relies on its own time synchronization, which may
+need a network connection.
 
 ## A download started over
 
-A download that was cut short carries on where it stopped. The part that has
-arrived waits in the system's temporary folder, which macOS clears after three
-days without use.
+A download can resume while its partial file and resume data are available.
+If macOS removes the temporary file, or the server no longer accepts the
+resume request, the download starts over.
 
 ## Reporting a bug
 
