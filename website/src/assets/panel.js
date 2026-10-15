@@ -4,7 +4,7 @@
 
 export const appName = 'SwiftVM'
 
-/** The machines the hero starts with: the two in the screenshot it is made after. */
+/** The machines the hero starts with: the two in the screenshot it is made after, and a Windows guest. */
 export function initialMachines() {
     return [
         {
@@ -26,6 +26,16 @@ export function initialMachines() {
             address: '192.168.231.11',
             hardware: '4 CPU · 4 GB RAM',
             summary: 'Ubuntu 26.04.1 LTS',
+        },
+        {
+            id: 'windows-11',
+            name: 'Windows 11',
+            os: 'windows',
+            family: 'Windows',
+            state: 'running',
+            address: '192.168.231.12',
+            hardware: '4 CPU · 8 GB RAM',
+            summary: 'Windows 11',
         },
     ]
 }
@@ -165,7 +175,7 @@ function symbolButton(action, symbolName, help, label, attributes = '') {
 
 /** A machine's tile: in the system's colour while it holds a guest, without colour while it doesn't. */
 function badge(os, isLit, isPulsing = false) {
-    const glyph = os === 'macos' ? 'apple' : 'terminal'
+    const glyph = { macos: 'apple', windows: 'grid' }[os] ?? 'terminal'
     return `<span class="pn-badge pn-badge-${os}${isLit ? ' is-lit' : ''}${isPulsing ? ' is-pulsing' : ''}">${symbol(glyph)}</span>`
 }
 
