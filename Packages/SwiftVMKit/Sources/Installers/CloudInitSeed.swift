@@ -313,11 +313,23 @@ public struct CloudInitSeed: Sendable, Hashable {
     static let bootMenuUpdateCommand = "command -v update-grub >/dev/null && update-grub || true"
 
     /// Registers Rosetta with binfmt_misc so the kernel runs x86-64 ELF binaries through it.
+    ///
+    /// Debian and Ubuntu do that with `update-binfmts`. A system without it (Arch Linux) gets a file
+    /// for systemd-binfmt instead, which is told to wait for Rosetta's share at every start: the kernel
+    /// opens the program as it is registered, so it has to be there by then.
     static func rosettaRegistrationCommand(mountPoint: String) -> String {
         let magic = #"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00"#
         let mask = #"\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff"#
-        return "command -v update-binfmts >/dev/null && update-binfmts --install rosetta \(mountPoint)/rosetta"
-            + " --magic '\(magic)' --mask '\(mask)' --credentials yes --preserve no --fix-binary yes || true"
+        let interpreter = "\(mountPoint)/rosetta"
+        let updateBinfmts = "update-binfmts --install rosetta \(interpreter)"
+            + " --magic '\(magic)' --mask '\(mask)' --credentials yes --preserve no --fix-binary yes"
+        // The same registration in binfmt.d's words: C for --credentials, F for --fix-binary.
+        let binfmtFile = "printf '%s\\n' ':rosetta:M::\(magic):\(mask):\(interpreter):CF' > /etc/binfmt.d/rosetta.conf"
+        let dropIn = "/etc/systemd/system/systemd-binfmt.service.d"
+        let waitForShare = "mkdir -p \(dropIn) && printf '[Unit]\\nAfter=%s\\n'"
+            + " \"$(systemd-escape --path --suffix=mount \(mountPoint))\" > \(dropIn)/rosetta.conf"
+        return "if command -v update-binfmts >/dev/null; then \(updateBinfmts); else \(binfmtFile) && \(waitForShare)"
+            + " && systemctl daemon-reload && systemctl restart systemd-binfmt; fi || true"
     }
 
     /// Takes the sections that create the account and set its password out of a cloud-config document

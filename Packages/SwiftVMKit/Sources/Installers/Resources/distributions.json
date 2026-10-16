@@ -48,6 +48,23 @@
         "checksumAlgorithm": "sha512"
       },
       "installers": []
+    },
+    {
+      "id": "arch",
+      "distribution": "arch",
+      "name": "Arch Linux ARM",
+      "summary": "Rolling release, from the Arch Linux ARM project",
+      "cloudImage": {
+        "url": "https://github.com/swiftvm-app/swiftvm/releases/download/arch-image-2026.10.16/archlinuxarm-2026.10.16.qcow2",
+        "sha256": "9db699ca9d7820b3b9f26a0bce4f56478fe1e312d71749244527987bf08458a1"
+      },
+      "installers": [
+        {
+          "name": "Archboot",
+          "url": "https://archboot.com/release/aarch64/2026.10/iso/archboot-2026.10.16-02.28-7.2.10-1-aarch64-ARCH-aarch64.iso",
+          "sha256": "acfdaefccaa7586298cf146ab51814db98fd8522019663c2b12d566c094abea5"
+        }
+      ]
     }
   ]
 }

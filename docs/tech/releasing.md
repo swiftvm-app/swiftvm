@@ -53,6 +53,7 @@ in between, run **Deploy Website**.
 | Republish Beta Appcast | Puts a beta back into the beta appcast |
 | Build Release | The build that both releases share |
 | Deploy Website | Builds [the website](../../website/README.md) and puts it online. Runs after a release, or by hand |
+| Build Arch Linux ARM Image | Builds the image that [Arch Linux ARM machines](#the-arch-linux-arm-image) start from and publishes it. By hand |
 
 The workflows that build the app use the `xcode-27` runner with the macOS 27
 SDK.
@@ -77,7 +78,30 @@ Local builds use the available [signing identity](building.md#signing) and
 are not notarized by this script. Automatic updates require both
 `--sparkle-public-key` and `--sparkle-feed-url`; the workflows supply them.
 
+## The Arch Linux ARM image
+
+Arch Linux publishes no image for ARM64, so SwiftVM builds the one its Arch
+Linux ARM machines start from. `scripts/build-arch-image.sh` makes it from
+Arch Linux ARM's signed root file system, with cloud-init, GRUB, and the
+packages of the day.
+
+1. Run **Build Arch Linux ARM Image** under **Actions**. It runs on a 64-bit
+   ARM runner and publishes `archlinuxarm-<date>.qcow2` as the pre-release
+   `arch-image-<date>`, which is never marked as the latest release.
+2. Put the address and SHA-256 from the run's summary into the `arch` entry of
+   `Packages/SwiftVMKit/Sources/Installers/Resources/distributions.json`.
+
+A machine brings itself up to date when a setup script installs anything, so
+a new image is only needed now and then: when the first start of a new
+machine takes long, or the image's own setup changes. Keep the releases of
+images that a version of the app still names.
+
+The installer disc, [Archboot](https://archboot.com), is pinned to one monthly
+release by its address and SHA-256. Archboot keeps about six months of them;
+move the entry to a newer one before it goes.
+
 ## Updates
+
 
 The app updates itself with [Sparkle](https://sparkle-project.org).
 

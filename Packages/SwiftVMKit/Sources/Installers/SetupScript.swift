@@ -334,7 +334,9 @@ public enum SetupScriptCatalog {
 
     /// The files in `Resources/SetupScripts`, in the order they are offered: the desktops, and what
     /// else a new machine is often wanted with. The documentation shows the short ones in full.
-    static let builtInFileNames = ["gnome.sh", "kde-plasma.sh", "xfce.sh", "cinnamon.sh", "docker.sh", "web-server.sh", "updates.sh"]
+    static let builtInFileNames = [
+        "gnome.sh", "kde-plasma.sh", "xfce.sh", "cinnamon.sh", "hyprland.sh", "omarchy.sh", "docker.sh", "web-server.sh", "updates.sh",
+    ]
 
     /// The scripts bundled with the app.
     public static let builtIn: [SetupScript] = builtInFileNames.compactMap { fileName in

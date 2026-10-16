@@ -2,7 +2,7 @@
 # name: KDE Plasma
 # summary: The KDE Plasma desktop, with its own login screen
 # category: desktop
-# systems: ubuntu debian
+# systems: ubuntu debian arch
 # memory: 4
 # disk: 24
 # restart: yes
@@ -26,41 +26,61 @@ case $ID in
     # the one of another desktop.
     ubuntu) packages="kde-plasma-desktop sddm sddm-theme-breeze network-manager-config-connectivity-ubuntu spice-vdagent" ;;
     debian) packages="kde-plasma-desktop sddm network-manager-config-connectivity-debian firefox-esr spice-vdagent" ;;
-    *) echo "This script is written for Ubuntu and Debian, not for $ID." >&2; exit 1 ;;
+    arch | archarm) packages="plasma-desktop sddm konsole dolphin plasma-nm networkmanager pipewire-pulse wireplumber firefox spice-vdagent" ;;
+    *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
 # the Mac (swiftvm ui): the desktop's own accessibility, and what Python takes to ask it.
-packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0"
+case $ID in
+    arch | archarm) packages="$packages at-spi2-core python-gobject" ;;
+    *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0" ;;
+esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
     packages="$packages linux-image-generic"
 fi
 
-echo "==> Getting the list of packages"
-# A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.
-tries=0
-until dpkg --configure -a; do
-    tries=$((tries + 1))
-    [ "$tries" -lt 18 ] || exit 1
-    sleep 10
-done
-apt_get update
+if command -v pacman > /dev/null; then
+    echo "==> Getting the list of packages"
+    # The keys that sign today's packages first, which may be newer than the system's.
+    pacman -Sy --noconfirm --needed $(pacman -Qqs '^arch.*-keyring$')
 
-echo "==> Downloading KDE Plasma"
-apt_get install --download-only $packages
+    echo "==> Downloading KDE Plasma"
+    # The whole system is brought up to date with it: Arch Linux doesn't mix old packages with new.
+    pacman -Su --noconfirm --needed --downloadonly $packages
 
-echo "==> Installing KDE Plasma"
-apt_get install $packages
+    echo "==> Installing KDE Plasma"
+    pacman -Su --noconfirm --needed $packages
+    # One login screen at a time: a desktop installed before this one keeps its own.
+    [ -e /etc/systemd/system/display-manager.service ] || systemctl enable sddm
+    systemctl enable NetworkManager
+else
+    echo "==> Getting the list of packages"
+    # A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.
+    tries=0
+    until dpkg --configure -a; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 18 ] || exit 1
+        sleep 10
+    done
+    apt_get update
 
-if [ "$ID" = ubuntu ]; then
-    echo "==> Installing Firefox"
-    # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
-    # still a desktop.
-    apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+    echo "==> Downloading KDE Plasma"
+    apt_get install --download-only $packages
+
+    echo "==> Installing KDE Plasma"
+    apt_get install $packages
+
+    if [ "$ID" = ubuntu ]; then
+        echo "==> Installing Firefox"
+        # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
+        # still a desktop.
+        apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+    fi
 fi
 
 echo "==> Finishing"
-if [ "$ID" = ubuntu ]; then
+if [ "$ID" != debian ]; then
     mkdir -p /etc/sddm.conf.d
     printf '[Theme]\nCurrent=breeze\n' > /etc/sddm.conf.d/90-swiftvm.conf
 fi

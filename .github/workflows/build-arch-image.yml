@@ -1,0 +1,65 @@
+name: Build Arch Linux ARM Image
+
+# Builds the disk image that Arch Linux ARM machines start from (scripts/build-arch-image.sh) and
+# publishes it as a release of its own. The app downloads it from there, by the address and SHA-256
+# that distributions.json gives, so a new image reaches people once that file names it.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-arch-image
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # The image's packages are set up by running them, which takes 64-bit ARM.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools dosfstools fdisk e2fsprogs gpg curl qemu-utils
+
+      - name: Build the image
+        run: sudo scripts/build-arch-image.sh output
+
+      - name: Publish the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          image=$(ls output/*.qcow2)
+          file=$(basename "$image")
+          date=${file#archlinuxarm-}
+          date=${date%.qcow2}
+          tag=arch-image-$date
+          digest=$(cut -d' ' -f1 output/SHA256SUMS)
+          url=https://github.com/$REPO/releases/download/$tag/$file
+          # A pre-release that is never the latest: the app's appcast is found through the latest
+          # release, and the betas through the pre-releases with -beta. in their tags.
+          gh release create "$tag" \
+            --repo "$REPO" \
+            --target "$GITHUB_SHA" \
+            --title "Arch Linux ARM image $date" \
+            --prerelease \
+            --latest=false \
+            --notes "The disk image that SwiftVM's Arch Linux ARM machines start from, built by scripts/build-arch-image.sh. To use it, set the \`arch\` entry's cloud image in distributions.json to \`$url\` with sha256 \`$digest\`." \
+            "$image" output/SHA256SUMS
+          {
+            echo "### Arch Linux ARM image $date"
+            echo
+            echo "For the \`arch\` entry in \`Packages/SwiftVMKit/Sources/Installers/Resources/distributions.json\`:"
+            echo
+            echo '```json'
+            echo "\"cloudImage\": {"
+            echo "  \"url\": \"$url\","
+            echo "  \"sha256\": \"$digest\""
+            echo "}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
