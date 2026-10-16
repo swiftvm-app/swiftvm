@@ -2,7 +2,7 @@
 # name: KDE Plasma
 # summary: The KDE Plasma desktop, with its own login screen
 # category: desktop
-# systems: ubuntu debian arch
+# systems: ubuntu debian
 # memory: 4
 # disk: 24
 # restart: yes

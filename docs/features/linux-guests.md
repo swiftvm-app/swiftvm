@@ -59,9 +59,9 @@ swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
 ## Desktops and setup scripts
 
 A Quick Create machine can install a desktop by itself the first time it
-starts: GNOME, KDE Plasma, Xfce, or Cinnamon, and on Arch Linux also Hyprland
-or [Omarchy](setup-scripts.md#omarchy). Choose **Add…** next to **Setup
-Scripts**, click one, and set a password.
+starts: GNOME, Xfce, or Cinnamon; KDE Plasma on Ubuntu and Debian; and
+Hyprland or [Omarchy](setup-scripts.md#omarchy) on Arch Linux. Choose **Add…**
+next to **Setup Scripts**, click one, and set a password.
 
 ```bash
 swiftvm create ubuntu-26.04 --script xfce --password 'a password'

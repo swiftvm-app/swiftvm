@@ -211,8 +211,10 @@ import VMCore
         let missing = FileManager.default.temporaryDirectory.appending(path: "swiftvm-scripts-\(UUID().uuidString)")
         let arch = try #require(DistributionCatalog.quickCreate.first { $0.distribution == "arch" })
         let ubuntu = try #require(DistributionCatalog.quickCreate.first { $0.distribution == "ubuntu" })
-        // Every script the app brings works on Arch Linux. Hyprland and Omarchy work on nothing else.
-        #expect(SetupScriptCatalog.all(for: arch, in: missing) == SetupScriptCatalog.builtIn)
+        // Arch Linux ARM's Plasma packages aren't built together yet. Hyprland and Omarchy work only on Arch.
+        #expect(SetupScriptCatalog.all(for: arch, in: missing) == SetupScriptCatalog.builtIn.filter { $0.id != "kde-plasma" })
+        let plasma = try #require(SetupScriptCatalog.builtIn.first { $0.id == "kde-plasma" })
+        #expect(plasma.problem(for: arch, memorySize: 8 * HostResources.gibibyte, diskCapacity: 64 * HostResources.gibibyte) != nil)
         let forUbuntu = SetupScriptCatalog.all(for: ubuntu, in: missing).map(\.id)
         #expect(forUbuntu == ["gnome", "kde-plasma", "xfce", "cinnamon", "docker", "web-server", "updates"])
         let omarchy = try #require(SetupScriptCatalog.builtIn.first { $0.id == "omarchy" })
