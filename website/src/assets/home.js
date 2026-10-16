@@ -24,6 +24,7 @@ const duration = { starting: 1500, restoring: 1100, suspending: 1100, stopping: 
 const catalogue = [
     { name: 'Debian 13', os: 'debian', family: 'Linux', hardware: '4 CPU · 4 GB RAM', summary: 'Debian GNU/Linux 13 (trixie)' },
     { name: 'Ubuntu 24.04', os: 'ubuntu', family: 'Linux', hardware: '4 CPU · 4 GB RAM', summary: 'Ubuntu 24.04.4 LTS' },
+    { name: 'Arch Linux', os: 'arch', family: 'Linux', hardware: '6 CPU · 8 GB RAM', summary: 'Arch Linux ARM' },
     ...initialMachines(),
 ]
 

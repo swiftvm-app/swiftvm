@@ -49,17 +49,25 @@ and `swiftvm info <machine>`. You can use the machine while setup runs.
 
 ## Built-in scripts
 
-All built-in scripts support Ubuntu 26.04, Ubuntu 24.04, and Debian 13.
+| Script | Name for `--script` | Systems | Minimum memory / disk |
+| --- | --- | --- | --- |
+| GNOME | `gnome` | All | 4 GB / 24 GB |
+| KDE Plasma | `kde-plasma` | Ubuntu, Debian | 4 GB / 24 GB |
+| Xfce | `xfce` | All | 2 GB / 16 GB |
+| Cinnamon | `cinnamon` | All | 4 GB / 24 GB |
+| Hyprland | `hyprland` | Arch Linux | 4 GB / 16 GB |
+| Omarchy (experimental) | `omarchy` | Arch Linux | 8 GB / 32 GB |
+| Docker | `docker` | All | 2 GB / 16 GB |
+| Web Server | `web-server` | All | Default machine settings |
+| Updates | `updates` | All | Default machine settings |
 
-| Script | Name for `--script` | Minimum memory / disk |
-| --- | --- | --- |
-| GNOME | `gnome` | 4 GB / 24 GB |
-| KDE Plasma | `kde-plasma` | 4 GB / 24 GB |
-| Xfce | `xfce` | 2 GB / 16 GB |
-| Cinnamon | `cinnamon` | 4 GB / 24 GB |
-| Docker | `docker` | 2 GB / 16 GB |
-| Web Server | `web-server` | Default machine settings |
-| Updates | `updates` | Default machine settings |
+All is Ubuntu 26.04, Ubuntu 24.04, Debian 13, and Arch Linux ARM. On Arch
+Linux, a script that installs packages brings the whole system up to date
+with them, as Arch Linux expects. When that replaces the running kernel, the
+machine restarts once setup is done, whether a script asks for it or not.
+
+KDE Plasma isn't offered on Arch Linux ARM while its upstream Plasma packages
+are only partly built. It remains available on Ubuntu and Debian.
 
 ## Desktops
 
@@ -67,15 +75,42 @@ A desktop needs an account password. Installation can take about ten minutes,
 then the machine restarts into its login screen. Scripts selected after the
 desktop finish before that restart.
 
-Desktop scripts install the distribution's desktop packages, Firefox, and
-`spice-vdagent` for [clipboard sharing](sharing.md#clipboard). They keep the
+Desktop scripts install the distribution's desktop packages, a browser
+(Firefox, or Chromium for Omarchy), and `spice-vdagent` for [clipboard sharing](sharing.md#clipboard). They keep the
 machine's network and SSH configuration and disable guest sleep; suspend the
 machine from SwiftVM instead.
 
 Linux guests have no graphics acceleration. Xfce uses fewer resources than
-GNOME or KDE Plasma. Clipboard sharing may not work in every Wayland session;
+GNOME or KDE Plasma. Hyprland and Omarchy draw with OpenGL on the machine's
+processors; give them four or more. In both, Super is the Command key:
+Command-Q opens a terminal in Hyprland, and Command-Space the menu in
+Omarchy. Clipboard sharing may not work in every Wayland session;
 use X11, Xfce, or Cinnamon if you need it. If the display goes dark, click in
 the window or press a key to wake it.
+
+### Omarchy
+
+[Omarchy](https://omarchy.org) is made for Arch Linux on PCs, and its package
+repository has nothing for ARM64 yet. The `omarchy` script installs one
+release of Omarchy's own source on Arch Linux ARM's packages, the way
+[Try Omarchy](https://github.com/omacom/try-omarchy) does. It is
+experimental:
+
+- What Omarchy installs from its own repository or the AUR isn't there,
+  including Walker, mise, yay, Omarchy's own apps, and some fonts and icons.
+- Animations, blur, and shadows are off, as they cost the most without a GPU.
+  Remove the lines SwiftVM added to `~/.config/hypr/looknfeel.lua` to turn
+  them on.
+- Everything on the screen is drawn by the machine's processors, so the
+  work grows with the number of pixels. A full-screen window on a Retina
+  display is over twice the pixels of 1920×1200. For a smoother desktop, give
+  the machine six or more processors, and keep its window smaller or turn off
+  **Resize Display with Window** in its settings and pick a resolution such
+  as 1920×1200.
+- Omarchy's update puts its package configuration for PCs in place. A hook
+  in `~/.config/omarchy/hooks/pre-refresh-pacman.d` puts Arch Linux ARM's
+  back before anything is installed.
+- Omarchy finishes setting up the account the first time it signs in.
 
 ## Your own scripts
 
@@ -146,7 +181,10 @@ line. All keys are optional; unknown keys are ignored.
 ### How it runs
 
 - Scripts run as root after first-boot setup, without an interactive terminal.
-  Use noninteractive commands such as `apt-get install -y`.
+  Use noninteractive commands such as `apt-get install -y`, or
+  `pacman -S --noconfirm` on Arch Linux.
+- `systems: arch` is Arch Linux ARM, whose `/etc/os-release` calls it
+  `archarm` (and `arch` in `ID_LIKE`).
 - The `#!` line selects the interpreter; without one, SwiftVM uses `sh`.
   Python 3 is available in every Quick Create image.
 - `SWIFTVM_USER` contains the account name. Output beginning with `==> ` is

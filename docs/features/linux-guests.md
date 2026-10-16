@@ -26,6 +26,7 @@ finish inside the running guest.
 | Ubuntu 26.04 LTS | `ubuntu-26.04` |
 | Ubuntu 24.04 LTS | `ubuntu-24.04` |
 | Debian 13 | `debian-13` |
+| Arch Linux ARM | `arch` |
 
 | Setting | What it is |
 | --- | --- |
@@ -43,7 +44,13 @@ A Quick Create machine comes with:
 - A disk that [grows by itself](disks.md#growing-the-disk) after you resize it.
 - A host name that matches its [SSH name](ssh.md).
 
-Images are checked against the checksums their distribution publishes.
+Images are checked against the checksums their distribution publishes, or
+against the checksum SwiftVM knows for them.
+
+Arch Linux publishes no image for ARM64. The Arch Linux ARM image is built by
+SwiftVM from [Arch Linux ARM](https://archlinuxarm.org)'s own root file
+system, and brings itself up to date on first start when a setup script installs
+anything. Its installer disc is [Archboot](https://archboot.com).
 
 ```bash
 swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
@@ -52,8 +59,9 @@ swiftvm create ubuntu-26.04 --name "Web Server" --cpus 2 --memory 4 --disk 32
 ## Desktops and setup scripts
 
 A Quick Create machine can install a desktop by itself the first time it
-starts: GNOME, KDE Plasma, Xfce, or Cinnamon. Choose **Add…** next to **Setup
-Scripts**, click one, and set a password.
+starts: GNOME, Xfce, or Cinnamon; KDE Plasma on Ubuntu and Debian; and
+Hyprland or [Omarchy](setup-scripts.md#omarchy) on Arch Linux. Choose **Add…**
+next to **Setup Scripts**, click one, and set a password.
 
 ```bash
 swiftvm create ubuntu-26.04 --script xfce --password 'a password'
@@ -109,15 +117,18 @@ there.
   starts over on a fresh boot; resuming continues the existing log.
 - Quick Create machines also send their kernel's messages there, from their
   second start on. Ubuntu only lets errors through once it is up; Debian shows
-  everything.
+  everything. Arch Linux only lets serious errors through, from its first
+  start on.
 
 ## Good to know
 
 - Linux guests draw without graphics acceleration. Xfce is a lighter option
-  than GNOME or KDE Plasma.
+  than GNOME or KDE Plasma. Hyprland and Omarchy draw with OpenGL on the
+  machine's processors: give them four or more.
 - The shared clipboard works in desktop guests that run `spice-vdagent`, which
   the [desktops](#desktops-and-setup-scripts) SwiftVM installs bring.
 - SSH [without a network](ssh.md#without-a-network) works out of the box on
-  Ubuntu 26.04 and Debian 13. Ubuntu 24.04 needs the guest tools for it.
+  Ubuntu 26.04, Debian 13, and Arch Linux ARM. Ubuntu 24.04 needs the guest
+  tools for it.
 - `swiftvm` can [run commands in the guest, see its screen, and use its mouse
   and keyboard](automation.md), from the login screen on.

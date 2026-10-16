@@ -32,10 +32,12 @@ public struct LinuxDistribution: Codable, Sendable, Hashable, Identifiable {
         public var url: URL
         public var checksumsURL: URL?
         public var checksumAlgorithm: RemoteImage.ChecksumAlgorithm?
+        /// The SHA-256 digest of the disc, where its publisher lists none in a form the app reads.
+        public var sha256: String?
 
         public var id: URL { url }
         public var image: RemoteImage {
-            RemoteImage(url: url, checksumsURL: checksumsURL, checksumAlgorithm: checksumAlgorithm)
+            RemoteImage(url: url, checksumsURL: checksumsURL, checksumAlgorithm: checksumAlgorithm, sha256: sha256)
         }
     }
 
