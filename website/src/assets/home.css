@@ -505,7 +505,11 @@
     background: linear-gradient(180deg, light-dark(#ff6961, #ff7a70), light-dark(#ff3b30, #f9493e));
 }
 
-/* A fixed colour, not a system one, so the same in both appearances. */
+/* Fixed colours, not system ones, so the same in both appearances. */
+.pn-badge-arch.is-lit {
+    background: linear-gradient(180deg, #3f8bc4, #126bad);
+}
+
 .pn-badge-windows.is-lit {
     background: linear-gradient(180deg, #45b4dd, #0099d1);
 }

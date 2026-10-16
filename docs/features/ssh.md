@@ -54,7 +54,7 @@ It still works when the guest's network is down or its cable is pulled.
 swiftvm ssh web-server --vsock
 ```
 
-- It is for Linux guests. Ubuntu 26.04 and Debian 13 support it as they come;
+- It is for Linux guests. Ubuntu 26.04, Debian 13, and Arch Linux ARM support it as they come;
   older systems such as Ubuntu 24.04 need the [guest tools](guest-tools.md).
 - To use it from your own SSH configuration, for `scp`, `rsync`, or an editor:
 

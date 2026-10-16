@@ -1211,7 +1211,8 @@ def accessibility_main(request):
     except (ImportError, ValueError):
         print(
             "Reading what is on the screen takes two packages in the guest that this system doesn't have. "
-            "Install them with: sudo apt install python3-gi gir1.2-atspi-2.0",
+            "Install them with: sudo apt install python3-gi gir1.2-atspi-2.0"
+            " (on Arch Linux: sudo pacman -S python-gobject at-spi2-core)",
             file=sys.stderr,
         )
         return 1

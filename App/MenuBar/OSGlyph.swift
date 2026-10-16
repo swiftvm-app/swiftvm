@@ -50,6 +50,8 @@ extension GuestOS {
             case "ubuntu": .orange
             case "debian": .red
             case "fedora": .indigo
+            // Arch Linux, and Arch Linux ARM, which is what the guest calls itself.
+            case "arch", "archarm": Color(red: 0.07, green: 0.42, blue: 0.68)
             default: .gray
             }
         }

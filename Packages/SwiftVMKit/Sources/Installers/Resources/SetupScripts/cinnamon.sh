@@ -2,7 +2,7 @@
 # name: Cinnamon
 # summary: The desktop of Linux Mint, from the distribution's own packages
 # category: desktop
-# systems: ubuntu debian
+# systems: ubuntu debian arch
 # memory: 4
 # disk: 24
 # restart: yes
@@ -24,37 +24,57 @@ apt_get() {
 case $ID in
     ubuntu) packages="cinnamon-core lightdm slick-greeter network-manager-config-connectivity-ubuntu spice-vdagent" ;;
     debian) packages="cinnamon-core lightdm slick-greeter network-manager-config-connectivity-debian firefox-esr spice-vdagent" ;;
-    *) echo "This script is written for Ubuntu and Debian, not for $ID." >&2; exit 1 ;;
+    arch | archarm) packages="cinnamon gnome-terminal lightdm lightdm-slick-greeter networkmanager pipewire-pulse wireplumber firefox spice-vdagent" ;;
+    *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
 # the Mac (swiftvm ui): the desktop's own accessibility, and what Python takes to ask it.
-packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0"
+case $ID in
+    arch | archarm) packages="$packages at-spi2-core python-gobject" ;;
+    *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0" ;;
+esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
     packages="$packages linux-image-generic"
 fi
 
-echo "==> Getting the list of packages"
-# A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.
-tries=0
-until dpkg --configure -a; do
-    tries=$((tries + 1))
-    [ "$tries" -lt 18 ] || exit 1
-    sleep 10
-done
-apt_get update
+if command -v pacman > /dev/null; then
+    echo "==> Getting the list of packages"
+    # The keys that sign today's packages first, which may be newer than the system's.
+    pacman -Sy --noconfirm --needed $(pacman -Qqs '^arch.*-keyring$')
 
-echo "==> Downloading Cinnamon"
-apt_get install --download-only $packages
+    echo "==> Downloading Cinnamon"
+    # The whole system is brought up to date with it: Arch Linux doesn't mix old packages with new.
+    pacman -Su --noconfirm --needed --downloadonly $packages
 
-echo "==> Installing Cinnamon"
-apt_get install $packages
+    echo "==> Installing Cinnamon"
+    pacman -Su --noconfirm --needed $packages
+    # One login screen at a time: a desktop installed before this one keeps its own.
+    [ -e /etc/systemd/system/display-manager.service ] || systemctl enable lightdm
+    systemctl enable NetworkManager
+else
+    echo "==> Getting the list of packages"
+    # A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.
+    tries=0
+    until dpkg --configure -a; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 18 ] || exit 1
+        sleep 10
+    done
+    apt_get update
 
-if [ "$ID" = ubuntu ]; then
-    echo "==> Installing Firefox"
-    # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
-    # still a desktop.
-    apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+    echo "==> Downloading Cinnamon"
+    apt_get install --download-only $packages
+
+    echo "==> Installing Cinnamon"
+    apt_get install $packages
+
+    if [ "$ID" = ubuntu ]; then
+        echo "==> Installing Firefox"
+        # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
+        # still a desktop.
+        apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+    fi
 fi
 
 echo "==> Finishing"
@@ -64,7 +84,10 @@ echo "==> Finishing"
 session=cinnamon
 [ ! -e /usr/share/xsessions/cinnamon2d.desktop ] || session=cinnamon2d
 mkdir -p /etc/lightdm/lightdm.conf.d
-printf '[Seat:*]\ngreeter-session=slick-greeter\nuser-session=%s\ngreeter-hide-users=false\n' "$session" > /etc/lightdm/lightdm.conf.d/90-swiftvm.conf
+# Arch Linux calls the greeter by its package's name.
+greeter=slick-greeter
+[ ! -e /usr/share/xgreeters/lightdm-slick-greeter.desktop ] || greeter=lightdm-slick-greeter
+printf '[Seat:*]\ngreeter-session=%s\nuser-session=%s\ngreeter-hide-users=false\n' "$greeter" "$session" > /etc/lightdm/lightdm.conf.d/90-swiftvm.conf
 # The network card stays with the service that has it, which asks for an address by the card's
 # own: that is what the Mac keeps the machine's address by. The desktop's NetworkManager only
 # watches the card, so that the desktop knows it is online. Two services that both configure

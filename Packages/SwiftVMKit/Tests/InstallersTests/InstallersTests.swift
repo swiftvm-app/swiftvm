@@ -63,6 +63,16 @@ import VMCore
         #expect(withRosetta.userData.contains("update-binfmts --install rosetta /media/rosetta/rosetta"))
     }
 
+    @Test func registersRosettaWithoutUpdateBinfmts() {
+        // Arch Linux has no update-binfmts: systemd-binfmt registers the same, once Rosetta's share is there.
+        let command = CloudInitSeed.rosettaRegistrationCommand(mountPoint: "/media/rosetta")
+        #expect(command.hasPrefix("if command -v update-binfmts >/dev/null; then update-binfmts --install rosetta /media/rosetta/rosetta "))
+        #expect(command.contains(#"printf '%s\n' ':rosetta:M::\x7fELF\x02\x01\x01\x00"#))
+        #expect(command.contains(#"\xfe\xff\xff\xff:/media/rosetta/rosetta:CF' > /etc/binfmt.d/rosetta.conf"#))
+        #expect(command.contains(#"printf '[Unit]\nAfter=%s\n' "$(systemd-escape --path --suffix=mount /media/rosetta)""#))
+        #expect(command.hasSuffix("systemctl restart systemd-binfmt; fi || true"))
+    }
+
     @Test func sendsKernelMessagesToTheSerialConsole() {
         let text = seed.userData
         #expect(text.contains("write_files:\n  - path: \"/etc/default/grub.d/99-swiftvm-console.cfg\"\n    content: \""))
@@ -514,6 +524,17 @@ private func blockPatternedPayload() -> Data {
         for distribution in DistributionCatalog.builtIn {
             #expect(distribution.cloudImage != nil || !distribution.installers.isEmpty)
             #expect(distribution.cloudImage?.url.scheme == "https")
+        }
+    }
+
+    /// A download with nothing to check it against is taken as it arrives.
+    @Test func everyImageCanBeVerified() {
+        let images = DistributionCatalog.builtIn.flatMap { [$0.cloudImage].compactMap { $0 } + $0.installers.map(\.image) }
+        for image in images {
+            let isPinned = image.sha256?.count == 64
+            let isListed = image.checksumsURL != nil && image.checksumAlgorithm != nil
+            #expect(isPinned || isListed, "\(image.fileName) has no checksum")
+            #expect(image.url.scheme == "https", "\(image.fileName) isn't downloaded over HTTPS")
         }
     }
 }

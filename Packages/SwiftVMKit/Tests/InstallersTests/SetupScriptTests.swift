@@ -198,13 +198,26 @@ import VMCore
     @Test func aScriptOfTheUsersTakesThePlaceOfTheAppsByThatName() throws {
         try withFolder(["Xfce.sh": "#!/bin/sh\n# name: My Xfce\n# category: desktop\n# systems: debian\n\necho hi\n"]) { folder in
             let scripts = SetupScriptCatalog.all(in: folder)
-            #expect(scripts.map(\.id) == ["gnome", "kde-plasma", "cinnamon", "docker", "web-server", "updates", "xfce"])
+            #expect(scripts.map(\.id) == ["gnome", "kde-plasma", "cinnamon", "hyprland", "omarchy", "docker", "web-server", "updates", "xfce"])
             #expect(SetupScriptCatalog.script(withID: "xfce", in: folder)?.name == "My Xfce")
             #expect(SetupScriptCatalog.script(withID: "xfce", in: folder)?.origin == .library)
             // It takes the place for good: where the user's isn't written for a system, the app's isn't offered either.
             let ubuntu = try #require(DistributionCatalog.quickCreate.first { $0.distribution == "ubuntu" })
             #expect(!SetupScriptCatalog.all(for: ubuntu, in: folder).contains { $0.id == "xfce" })
         }
+    }
+
+    @Test func archLinuxHasScriptsOfItsOwn() throws {
+        let missing = FileManager.default.temporaryDirectory.appending(path: "swiftvm-scripts-\(UUID().uuidString)")
+        let arch = try #require(DistributionCatalog.quickCreate.first { $0.distribution == "arch" })
+        let ubuntu = try #require(DistributionCatalog.quickCreate.first { $0.distribution == "ubuntu" })
+        // Every script the app brings works on Arch Linux. Hyprland and Omarchy work on nothing else.
+        #expect(SetupScriptCatalog.all(for: arch, in: missing) == SetupScriptCatalog.builtIn)
+        let forUbuntu = SetupScriptCatalog.all(for: ubuntu, in: missing).map(\.id)
+        #expect(forUbuntu == ["gnome", "kde-plasma", "xfce", "cinnamon", "docker", "web-server", "updates"])
+        let omarchy = try #require(SetupScriptCatalog.builtIn.first { $0.id == "omarchy" })
+        #expect(omarchy.isDesktop)
+        #expect(omarchy.problem(for: ubuntu, memorySize: 8 * HostResources.gibibyte, diskCapacity: 64 * HostResources.gibibyte) != nil)
     }
 
     @Test func findsTheScriptsThatAreAskedFor() throws {

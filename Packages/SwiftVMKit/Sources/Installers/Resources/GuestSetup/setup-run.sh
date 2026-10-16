@@ -176,6 +176,11 @@ while [ "$number" -lt "$total" ]; do
             sleep 10
         done
     fi
+    # pacman leaves its lock behind when it is cut short, and then refuses to run at all. Nothing
+    # else is installing at this point, so a lock without a pacman to hold it is a leftover.
+    if [ -e "$state/begun" ] && [ -e /var/lib/pacman/db.lck ] && ! pgrep -x pacman > /dev/null 2>&1; then
+        rm -f /var/lib/pacman/db.lck
+    fi
     : > "$state/begun"
     # On the disk before the script starts: these notes are for the start after a power cut.
     sync
@@ -199,6 +204,12 @@ while [ "$number" -lt "$total" ]; do
 done
 
 finish finished "$name"
+# A script that brought the system up to date may have replaced the kernel that runs. Arch Linux
+# takes the old kernel's modules away with it, so nothing that needs one more works until the
+# system starts the new kernel.
+if [ ! -d "/usr/lib/modules/$(uname -r)" ]; then
+    restart=yes
+fi
 # Started by hand when everything was done already, there is nothing to restart for.
 if [ "$restart" = yes ] && [ "$ran" = yes ]; then
     say "==== Restarting. ===="

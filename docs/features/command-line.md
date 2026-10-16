@@ -35,7 +35,7 @@ swiftvm info web-server      # one machine in detail
 | `delete <machine>` | Move a stopped machine to the Trash |
 
 `<system>` is `macos`, `windows`, or a Linux image: `ubuntu-26.04`,
-`ubuntu-24.04`, or `debian-13`.
+`ubuntu-24.04`, `debian-13`, or `arch`.
 
 `create` waits for the machine to be created and started, not for setup inside
 the guest to finish. Use `swiftvm wait <machine>` for the guest tools and
