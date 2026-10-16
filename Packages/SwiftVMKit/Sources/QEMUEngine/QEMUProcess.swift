@@ -45,7 +45,7 @@ final class QEMUProcess: @unchecked Sendable {
     ///
     /// - Parameter descriptors: Open descriptors that QEMU gets as 3, 4, 5 and so on. The caller keeps its
     ///   own and closes them once QEMU has started.
-    static func launch(program: URL, arguments: [String], descriptors: [Int32], log: URL, pidFile: URL) throws -> QEMUProcess {
+    static func launch(program: URL, arguments: [String], descriptors: [Int32], log: URL, pidFile: URL, environment: [String: String] = [:]) throws -> QEMUProcess {
         try? FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
         var output: [Int32] = [0, 0]
         guard pipe(&output) == 0 else { throw QEMUError.didNotStart(String(cString: strerror(errno))) }
@@ -67,6 +67,7 @@ final class QEMUProcess: @unchecked Sendable {
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_addchdir(&actions, log.deletingLastPathComponent().path)
         posix_spawn_file_actions_adddup2(&actions, output[1], 1)
         posix_spawn_file_actions_adddup2(&actions, output[1], 2)
         for (index, source) in sources.enumerated() {
@@ -90,7 +91,10 @@ final class QEMUProcess: @unchecked Sendable {
         var pid: pid_t = 0
         let argv = ([program.path] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
-        let result = posix_spawn(&pid, program.path, &actions, &attributes, argv, environ)
+        let values = ProcessInfo.processInfo.environment.merging(environment) { _, value in value }
+        let envp = values.sorted(by: { $0.key < $1.key }).map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { envp.forEach { free($0) } }
+        let result = posix_spawn(&pid, program.path, &actions, &attributes, argv, envp)
         guard result == 0 else {
             close(output[0])
             throw QEMUError.didNotStart(String(cString: strerror(result)))

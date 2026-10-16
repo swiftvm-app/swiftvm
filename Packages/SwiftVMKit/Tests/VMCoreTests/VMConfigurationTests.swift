@@ -47,6 +47,16 @@ import Testing
         #expect(!configuration.installation.hasHostTimeZone)
     }
 
+    @Test func aDisplayFromBeforeGraphicsAccelerationDrawsAsItDid() throws {
+        let json = #"{"widthInPixels":1920,"heightInPixels":1200,"pixelsPerInch":144,"automaticallyResizes":false}"#
+        let display = try JSONDecoder().decode(DisplayConfiguration.self, from: Data(json.utf8))
+        #expect(!display.acceleratesGraphics)
+        #expect(!display.automaticallyResizes)
+        var accelerated = display
+        accelerated.acceleratesGraphics = true
+        #expect(try JSONDecoder().decode(DisplayConfiguration.self, from: JSONEncoder().encode(accelerated)).acceleratesGraphics)
+    }
+
     @Test func remembersWhatWasDecidedAboutTheClipboardAndTheTimeZone() throws {
         var configuration = sample()
         configuration.clipboard.isShared = false
@@ -74,11 +84,28 @@ import Testing
         #expect(!linux.mountsSharedFoldersAutomatically)
         linux.installation.attachesSeedImage = true
         #expect(linux.mountsSharedFoldersAutomatically)
+        // On QEMU the agent mounts a device for each folder instead.
+        linux.engine = .qemu
+        #expect(!linux.mountsSharedFoldersAutomatically)
         var mac = sample()
         mac.os = GuestOS(family: .macOS)
         #expect(mac.mountsSharedFoldersAutomatically)
         #expect(GuestIntegration.linuxMountCommand == "sudo mkdir -p /mnt/shared && sudo mount -t virtiofs swiftvm /mnt/shared")
         #expect(GuestIntegration.linuxPersistentMountCommand == "echo 'swiftvm /mnt/shared virtiofs rw,nofail 0 0' | sudo tee -a /etc/fstab")
+    }
+
+    @Test func eachFolderOnQEMUHasADeviceAndANameOfItsOwn() {
+        let folders = [
+            SharedFolder(name: "Code", path: "/a"), SharedFolder(name: "Code", path: "/b"),
+            SharedFolder(name: "a/b", path: "/c", readOnly: true), SharedFolder(name: "..", path: "/d"),
+            SharedFolder(name: "tab\there", path: "/e"),
+        ]
+        let devices = GuestIntegration.folderDevices(of: folders)
+        #expect(devices.map(\.name) == ["Code", "Code 2", "a-b", "Shared", "tabhere"])
+        #expect(devices.map(\.readOnly) == [false, false, true, false, false])
+        // The tag goes by the folder, whatever else is shared, and fits what QEMU takes.
+        #expect(GuestIntegration.folderDevices(of: Array(folders.dropFirst())).first?.tag == devices[1].tag)
+        #expect(Set(devices.map(\.tag)).count == 5 && devices.allSatisfy { $0.tag.count <= 31 })
     }
 
     @Test func summarizesGuestOS() {

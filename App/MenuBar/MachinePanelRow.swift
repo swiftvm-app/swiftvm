@@ -121,7 +121,11 @@ struct MachinePanelRow: View {
             case .paused:
                 symbolButton("play", label: "Resume") { Task { await machine.resume() } }
             case .running:
-                symbolButton("pause.circle", label: "Suspend") { Task { await machine.suspend() } }
+                if machine.canSuspend {
+                    symbolButton("pause.circle", label: "Suspend") { Task { await machine.suspend() } }
+                } else {
+                    symbolButton("pause", label: "Pause") { Task { await machine.pause() } }
+                }
             case .starting, .restoring, .suspending, .stopping:
                 progress(machine.state.label)
             }

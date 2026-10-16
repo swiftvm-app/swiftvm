@@ -1,0 +1,21 @@
+--- a/Sources/CocoaSpiceRenderer/CSMetalRenderer.m
++++ b/Sources/CocoaSpiceRenderer/CSMetalRenderer.m
+@@ -40,8 +40,8 @@
+ @property (nonatomic, strong, readonly) _CSRendererSourceData *cursorSource;
+ 
+ - (instancetype)init NS_UNAVAILABLE;
+-- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource device:(id<MTLDevice>)device;
+-- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset device:(id<MTLDevice>)device NS_DESIGNATED_INITIALIZER;
++- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource;
++- (nullable instancetype)initWithRenderSource:(id<CSRenderSource>)renderSource atOffset:(CGPoint)offset NS_DESIGNATED_INITIALIZER;
+ 
+ @end
+ 
+@@ -435,6 +435,7 @@
+     }
+ 
+     [renderEncoder endEncoding];
++    return YES;
+ }
+ 
+ - (void)_renderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder

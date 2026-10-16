@@ -122,9 +122,10 @@ public final class GuestAgent {
         await request { .setClock(id: $0, nanoseconds: GuestProtocol.currentTimeInNanoseconds()) }
     }
 
-    /// Mounts the shared folders in the guest, unless they are mounted there already.
-    public func mountSharedFolders(tag: String, at mountPoint: String) async -> Bool {
-        await request { .mountSharedFolders(id: $0, tag: tag, mountPoint: mountPoint) }
+    /// Mounts the shared folders in the guest, unless they are mounted there already: those of the
+    /// device with `tag`, or the folders that have a device each.
+    public func mountSharedFolders(tag: String, at mountPoint: String, folders: [SharedFolderDevice] = []) async -> Bool {
+        await request { .mountSharedFolders(id: $0, tag: tag, mountPoint: mountPoint, folders: folders) }
     }
 
     /// Has the guest shut itself down. `true` means it has started to.
@@ -146,6 +147,14 @@ public final class GuestAgent {
               let line = GuestMessageCoding.clipboardLine(text, as: HostMessage.clipboard(text:))
         else { return false }
         return connection.send(line: line)
+    }
+
+    /// Tells the agent how large the window is that its guest is shown in. Returns `false` when there is
+    /// no agent that fits its desktop to it.
+    @discardableResult
+    public func sendDisplaySize(width: Int, height: Int, scale: Double) -> Bool {
+        guard hello?.offers(GuestFeature.displaySize) == true, let connection else { return false }
+        return connection.send(line: GuestMessageCoding.line(for: HostMessage.displaySize(width: width, height: height, scale: scale)))
     }
 
     /// Whether the agent did what `message` asks. `false` also when there is no agent, or no answer.

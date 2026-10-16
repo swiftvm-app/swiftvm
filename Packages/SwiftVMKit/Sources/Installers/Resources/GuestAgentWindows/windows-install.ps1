@@ -10,12 +10,15 @@ $ErrorActionPreference = 'Stop'
 $program = Join-Path $env:ProgramFiles 'SwiftVM'
 $executable = Join-Path $program 'swiftvm-agent.exe'
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+$graphicsArchive = Join-Path $Source 'graphics-driver.zip'
+$hasGraphicsDriver = Test-Path $graphicsArchive
 
 # The drivers. Windows on ARM has none of its own for these devices: the network card, the agent's
 # serial line, the display that follows the window, and the rest.
 $virtio = Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path (Join-Path $_.Root 'NetKVM\w11\ARM64\netkvm.inf') } | Select-Object -First 1
 if ($virtio) {
     foreach ($driver in 'NetKVM', 'vioserial', 'viogpudo', 'viorng', 'vioinput', 'viostor', 'vioscsi', 'pvpanic') {
+        if ($driver -eq 'viogpudo' -and $hasGraphicsDriver) { continue }
         $folder = Join-Path $virtio.Root "$driver\w11\ARM64"
         if (Test-Path $folder) {
             & pnputil.exe /add-driver (Join-Path $folder '*.inf') /install | Out-Null
@@ -23,6 +26,27 @@ if ($virtio) {
     }
 } else {
     Write-Warning 'The virtio-win disc is not plugged in, so no drivers were installed.'
+}
+
+if ($hasGraphicsDriver) {
+    $graphics = Join-Path $program 'Graphics'
+    Expand-Archive -Force -Path $graphicsArchive -DestinationPath $graphics
+    $inf = Join-Path $graphics 'drivers\viogpu3d\viogpu3d.inf'
+    if (-not (Test-Path $inf)) { throw 'The Windows graphics driver archive is incomplete.' }
+    # Stage the signed driver before removing the display-only driver. Both match the same device;
+    # Windows otherwise keeps the old driver's higher version, even though it cannot accelerate DWM.
+    & pnputil.exe /add-driver $inf | Out-Null
+    if ($LASTEXITCODE -notin 0,3010) { throw 'Windows could not stage the signed graphics driver.' }
+    $oldDrivers = Get-CimInstance Win32_PnPSignedDriver | Where-Object {
+        $_.DeviceName -eq 'Red Hat VirtIO GPU DOD controller' -and $_.InfName -match '^oem[0-9]+\.inf$'
+    }
+    foreach ($old in $oldDrivers) {
+        & pnputil.exe /delete-driver $old.InfName /uninstall | Out-Null
+        if ($LASTEXITCODE -notin 0,3010) { throw 'Windows could not replace the display-only driver. Restart Windows and run the guest tools installer again.' }
+    }
+    & pnputil.exe /add-driver $inf /install | Out-Null
+    # 259 means the driver is already current, or is staged for the GPU on the next cold boot.
+    if ($LASTEXITCODE -notin 0,259,3010) { throw 'Windows could not install the graphics driver.' }
 }
 
 if (-not (Test-Path $compiler)) {

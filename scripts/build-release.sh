@@ -14,8 +14,8 @@
 # that goes with it, for USB devices: scripts/bundle-app.sh finds both, or is told with
 # SWIFTVM_SIGN_IDENTITY and SWIFTVM_PROVISIONING_PROFILE. Notarizing is the workflow's part.
 #
-# A release always carries the QEMU that runs Windows guests: scripts/build-qemu.sh says what building
-# it takes.
+# A release always carries the QEMU that runs Windows guests and Linux guests with graphics
+# acceleration: scripts/build-qemu.sh says what building it takes.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"

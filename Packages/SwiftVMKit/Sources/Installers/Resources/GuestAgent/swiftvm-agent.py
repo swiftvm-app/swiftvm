@@ -2,7 +2,8 @@
 """The SwiftVM guest agent for Linux.
 
 Talks to the SwiftVM app on the Mac over the virtual machine's socket device (virtio-vsock), which
-needs no network. It tells the app which system this is, which addresses it holds and how the setup
+needs no network. A machine that has none, on QEMU, has a serial line for the agent instead, which
+carries the same connections in frames (SerialLine below). It tells the app which system this is, which addresses it holds and how the setup
 script it was created with is doing, and on the app's request sets the clock, mounts the folders
 shared with the machine, or shuts the system down.
 
@@ -46,7 +47,7 @@ PORT = 717
 # Where jobs are taken, each on a connection of its own.
 JOB_PORT = 718
 # What this agent does beyond what every agent does, as it tells the app.
-FEATURES = ["exec", "screen", "input", "accessibility"]
+FEATURES = ["exec", "screen", "input", "accessibility", "display-size"]
 MAX_LINE = 256 * 1024
 MAX_INTERFACES = 64
 # A clock that is this close to the Mac's is left to the system's time service.
@@ -60,6 +61,13 @@ POLL_INTERVAL = 30.0
 POLL_INTERVAL_WITHOUT_NOTICE = 5.0
 # Where the app may have the shared folders mounted.
 MOUNT_ROOTS = ("/mnt/", "/media/")
+# The serial line of a machine on QEMU, which has no socket device. Its name is the app's.
+SERIAL_LINE = "/dev/virtio-ports/org.swiftvm.agent"
+# The SSH server, which the app reaches without a network: over the socket device by itself, over
+# the serial line through the agent.
+SSH_PORT = 22
+# How the kernel calls a virtio socket device, in /sys/bus/virtio/devices/*/device.
+VIRTIO_SOCKET_DEVICE = "0x0013"
 # Where the setup script that SwiftVM put into a new machine leaves word of how it is doing: its
 # state and name in "status", one "key=value" to a line, and the step it is at in "step".
 SETUP_DIRECTORY = "/var/lib/swiftvm/setup"
@@ -262,13 +270,29 @@ class System:
         run(["mount", "-t", "virtiofs", "--", tag, mount_point])
         log("Mounted the shared folders at %s." % mount_point)
 
-    def is_mounted(self, tag):
+    def mount_folder_devices(self, folders, mount_point):
+        """Mounts the folders that QEMU shares one device each, under their names at `mount_point`.
+        The devices are those the machine started with: a folder shared since then has none yet."""
+        present = folder_device_tags()
+        for folder in folders:
+            tag = folder["tag"]
+            if tag not in present or self.is_mounted(tag, "9p"):
+                continue
+            place = os.path.join(mount_point, folder["name"])
+            os.makedirs(place, exist_ok=True)
+            options = "trans=virtio,version=9p2000.L,msize=524288,access=any"
+            if folder["readOnly"]:
+                options += ",ro"
+            run(["mount", "-t", "9p", "-o", options, "--", tag, place])
+            log("Mounted the shared folder %s at %s." % (tag, place))
+
+    def is_mounted(self, tag, kind="virtiofs"):
         """Whether the shared folders are mounted, wherever. Mounting them twice only gets in the way."""
         try:
             with open("/proc/self/mounts", encoding="utf-8", errors="replace") as file:
                 for line in file:
                     fields = line.split()
-                    if len(fields) >= 3 and fields[0] == tag and fields[2] == "virtiofs":
+                    if len(fields) >= 3 and fields[0] == tag and fields[2] == kind:
                         return True
         except OSError:
             pass
@@ -382,6 +406,37 @@ class System:
                 environment[key] = value
         return environment
 
+    def fit_display(self, width, height, scale):
+        """Gives the desktop the size of the window it is shown in on the Mac, in pixels and at its
+        scale. Most desktops take a new size from the display itself. Hyprland keeps the sizes it
+        was given when it started, and is told: as the user whose desktop it is."""
+        user = self.session_user()
+        if user is None:
+            return
+        sockets = glob.glob("/run/user/%d/hypr/*/.socket.sock" % user)
+        if not sockets:
+            return
+        account = pwd.getpwuid(user)
+        # The newest, should an older session have left its folder behind.
+        signature = os.path.basename(os.path.dirname(max(sockets, key=os.path.getmtime)))
+        environment = dict(self.environment(account), HYPRLAND_INSTANCE_SIGNATURE=signature)
+        mode = "%dx%d@60" % (width, height)
+        scale = ("%.2f" % scale).rstrip("0").rstrip(".")
+        # Its configuration in Lua, from 0.56 on, and before that in its own language.
+        for command in (
+            ["hyprctl", "eval", 'hl.monitor({ output = "", mode = "%s", position = "auto", scale = %s })' % (mode, scale)],
+            ["hyprctl", "keyword", "monitor", ",%s,auto,%s" % (mode, scale)],
+        ):
+            try:
+                answer = subprocess.run(
+                    command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=5, env=environment, **self.identity(account),
+                ).stdout.decode("utf-8", "replace").strip()
+            except (OSError, subprocess.SubprocessError):
+                return
+            if answer in ("", "ok"):
+                return
+
     # The screen, the mouse and the keyboard
 
     def screenshot(self):
@@ -438,6 +493,13 @@ class PretendSystem(System):
 
     def mount_shared_folders(self, tag, mount_point):
         log("Would mount %s at %s." % (tag, mount_point))
+
+    def fit_display(self, width, height, scale):
+        log("Would make the display %dx%d at %s." % (width, height, scale))
+
+    def mount_folder_devices(self, folders, mount_point):
+        for folder in folders:
+            log("Would mount %s at %s." % (folder["tag"], os.path.join(mount_point, folder["name"])))
 
     def shut_down(self):
         log("Would shut down.")
@@ -1175,6 +1237,18 @@ def accessibility_main(request):
     return 0
 
 
+def folder_device_tags():
+    """The tags of the folders shared through virtio 9p devices: one each, on QEMU."""
+    tags = set()
+    for path in glob.glob("/sys/bus/virtio/drivers/9pnet_virtio/*/mount_tag"):
+        try:
+            with open(path, "rb") as file:
+                tags.add(file.read().rstrip(b"\x00\n").decode("utf-8", "replace"))
+        except OSError:
+            pass
+    return tags
+
+
 def open_address_notices():
     """A socket on which the kernel says that links or addresses have changed, or None."""
     try:
@@ -1211,6 +1285,7 @@ class Agent:
             "set-clock": self.set_clock,
             "mount-shared-folders": self.mount_shared_folders,
             "shut-down": self.shut_down,
+            "display-size": self.display_size,
         }
 
     def run(self):
@@ -1368,10 +1443,37 @@ class Agent:
         mount_point = os.path.normpath(mount_point)
         if not mount_point.startswith(MOUNT_ROOTS):
             raise AgentError("Shared folders are only mounted under /mnt or /media.")
-        self.system.mount_shared_folders(tag, mount_point)
+        folders = message.get("folders")
+        if folders is None:
+            self.system.mount_shared_folders(tag, mount_point)
+            return
+        # On QEMU each folder is a device of its own, which the app names, with the name it has here.
+        if not isinstance(folders, list) or len(folders) > 64:
+            raise AgentError("That isn't a list of shared folders.")
+        for folder in folders:
+            if not isinstance(folder, dict):
+                raise AgentError("That isn't a shared folder.")
+            if not isinstance(folder.get("tag"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,30}", folder["tag"]):
+                raise AgentError("That isn't the name of a shared folder device.")
+            name = folder.get("name")
+            if not isinstance(name, str) or name in (".", "..") or not re.fullmatch(r"[^/\x00-\x1f\x7f]{1,255}", name):
+                raise AgentError("That isn't the name of a shared folder.")
+            if not isinstance(folder.get("readOnly"), bool):
+                raise AgentError("A shared folder says whether it is read-only.")
+        self.system.mount_folder_devices(folders, mount_point)
 
     def shut_down(self, message):
         self.system.shut_down()
+
+    def display_size(self, message):
+        width, height, scale = message["width"], message["height"], message["scale"]
+        sizes = (width, height)
+        if not all(isinstance(size, int) and not isinstance(size, bool) and 320 <= size <= 16384 for size in sizes):
+            raise AgentError("That isn't the size of a display.")
+        if not isinstance(scale, (int, float)) or isinstance(scale, bool) or not 1 <= scale <= 4:
+            raise AgentError("That isn't the scale of a display.")
+        # It may take Hyprland a moment, and the app is served meanwhile.
+        threading.Thread(target=self.system.fit_display, args=(width, height, float(scale)), daemon=True).start()
 
     # Addresses
 
@@ -1687,6 +1789,339 @@ class Job:
             pass
 
 
+# The serial line
+
+class SerialLine:
+    """The connections that share the serial line of a machine on QEMU, which has no socket device.
+
+    The app opens a connection to a port, as it would over a socket device, and both ends pass the
+    bytes in frames that say which connection they belong to: a byte for the frame's kind, four for
+    the connection and four for the length of what follows, most significant first, and then that
+    many bytes (ChannelFrame, in Sources/GuestChannel). Each connection is handed to whoever listens
+    on its port as one end of a socket pair, so that it serves it as it serves one from the socket
+    device. The line itself has a thread that reads it, and each connection one that sends.
+    """
+
+    HELLO, OPEN, ACCEPT, REFUSE, DATA, END, CLOSE = range(7)
+    HELLO_WORDS = b"swiftvm-agent-channel"
+    MAX_PAYLOAD = 64 * 1024
+
+    def __init__(self, open_line):
+        # Returns the line as a file descriptor, waiting for as long as it takes.
+        self.open_line = open_line
+        self.descriptor = None
+        self.listeners = {}
+        self.connections = {}
+        self.lock = threading.Lock()
+        self.write_lock = threading.Lock()
+
+    def listen(self, port):
+        listener = SerialListener()
+        self.listeners[port] = listener
+        return listener
+
+    def start(self):
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        while True:
+            try:
+                descriptor = self.open_line()
+                with self.write_lock:
+                    self.descriptor = descriptor
+                self.drop_everything()
+                self.send(self.HELLO, 0, self.HELLO_WORDS)
+                self.read_frames()
+            except OSError as problem:
+                log("The serial line to the Mac: %s" % (problem.strerror or problem))
+            self.drop_everything()
+            with self.write_lock:
+                if self.descriptor is not None:
+                    try:
+                        os.close(self.descriptor)
+                    except OSError:
+                        pass
+                    self.descriptor = None
+            time.sleep(2)
+
+    def read_exactly(self, count):
+        data = b""
+        while len(data) < count:
+            chunk = os.read(self.descriptor, count - len(data))
+            if not chunk:
+                raise OSError("the Mac has closed its end")
+            data += chunk
+        return data
+
+    def read_frames(self):
+        while True:
+            kind, connection, length = struct.unpack(">BII", self.read_exactly(9))
+            if kind > self.CLOSE or length > self.MAX_PAYLOAD:
+                raise OSError("what came on the line isn't frames")
+            self.handle(kind, connection, self.read_exactly(length) if length else b"")
+
+    def handle(self, kind, connection, payload):
+        if kind == self.HELLO:
+            # The app has opened its end anew: whatever was open before is gone.
+            self.drop_everything()
+            self.send(self.HELLO, 0, self.HELLO_WORDS)
+        elif kind == self.OPEN:
+            listener = self.listeners.get(struct.unpack(">I", payload)[0]) if len(payload) == 4 else None
+            if listener is None:
+                self.send(self.REFUSE, connection)
+                return
+            ours, theirs = socket.socketpair()
+            link = SerialConnection(self, connection, ours)
+            with self.lock:
+                self.connections[connection] = link
+            self.send(self.ACCEPT, connection)
+            link.start()
+            listener.put(theirs)
+        else:
+            with self.lock:
+                link = self.connections.get(connection)
+                if kind == self.CLOSE:
+                    self.connections.pop(connection, None)
+            if link is None:
+                return
+            # Never waits: what the side here hasn't read yet waits in the connection's queue, so that
+            # one connection that is slow to read holds up none of the others, nor the line.
+            if kind == self.DATA:
+                link.receive(payload)
+            elif kind == self.END:
+                link.receive(None)
+            elif kind == self.CLOSE:
+                link.close()
+
+    def forget(self, link, tell=True):
+        with self.lock:
+            if self.connections.get(link.number) is link:
+                del self.connections[link.number]
+            else:
+                tell = False
+        link.close()
+        if tell:
+            self.send(self.CLOSE, link.number)
+
+    def drop_everything(self):
+        with self.lock:
+            dropped = list(self.connections.values())
+            self.connections.clear()
+        for link in dropped:
+            link.close()
+
+    def send(self, kind, connection, payload=b""):
+        frame = struct.pack(">BII", kind, connection, len(payload)) + payload
+        with self.write_lock:
+            if self.descriptor is None:
+                return
+            view = memoryview(frame)
+            try:
+                while view:
+                    view = view[os.write(self.descriptor, view):]
+            except OSError:
+                # The reader finds out too, and opens the line anew.
+                pass
+
+
+class SerialConnection:
+    """One connection on the serial line: the side here is one end of a socket pair. A thread passes
+    on what the side here writes, and another writes what came from the Mac, from a queue, so that
+    neither ever holds up the line."""
+
+    # What may wait for the side here to read it. A program that reads nothing of what keeps coming
+    # loses the connection rather than the agent its memory.
+    MAX_QUEUED = 32 * 1024 * 1024
+
+    def __init__(self, line, number, ours):
+        self.line = line
+        self.number = number
+        self.socket = ours
+        self.queue = []
+        self.queued = 0
+        self.closed = False
+        self.condition = threading.Condition()
+
+    def start(self):
+        threading.Thread(target=self.pass_on, daemon=True).start()
+        threading.Thread(target=self.write_out, daemon=True).start()
+
+    def receive(self, data):
+        """Queues what came from the Mac: bytes, or None for the end of what it sends."""
+        with self.condition:
+            if self.closed:
+                return
+            self.queue.append(data)
+            self.queued += len(data or b"")
+            overflowing = self.queued > self.MAX_QUEUED
+            self.condition.notify()
+        if overflowing:
+            self.line.forget(self)
+
+    def write_out(self):
+        while True:
+            with self.condition:
+                while not self.queue and not self.closed:
+                    self.condition.wait()
+                if self.closed:
+                    return
+                data = self.queue.pop(0)
+                self.queued -= len(data or b"")
+            try:
+                if data is None:
+                    self.socket.shutdown(socket.SHUT_WR)
+                else:
+                    self.socket.sendall(data)
+            except OSError:
+                # The side here is gone: so is the connection.
+                self.line.forget(self)
+                return
+
+    def pass_on(self):
+        """Sends what the side here writes, until it has no more."""
+        while True:
+            try:
+                data = self.socket.recv(SerialLine.MAX_PAYLOAD)
+            except OSError:
+                data = None
+            with self.line.lock:
+                if self.line.connections.get(self.number) is not self:
+                    return
+            if data:
+                self.line.send(SerialLine.DATA, self.number, data)
+            elif data == b"":
+                # It has no more to send, and may still read.
+                self.line.send(SerialLine.END, self.number)
+                return
+            else:
+                self.line.forget(self)
+                return
+
+    def close(self):
+        with self.condition:
+            if self.closed:
+                return
+            self.closed = True
+            self.queue = []
+            self.condition.notify()
+        # Shut down before closing: a thread waiting on the socket wakes up, and the side here hears
+        # that the connection is gone.
+        try:
+            self.socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.socket.close()
+        except OSError:
+            pass
+
+
+class SerialListener:
+    """Stands in for a listening socket, for the connections on one port of the serial line."""
+
+    def __init__(self):
+        self.ready, self.signal = socket.socketpair()
+        self.waiting = []
+        self.lock = threading.Lock()
+
+    def put(self, connection):
+        with self.lock:
+            self.waiting.append(connection)
+        self.signal.send(b"x")
+
+    def fileno(self):
+        return self.ready.fileno()
+
+    def accept(self):
+        self.ready.recv(1)
+        with self.lock:
+            if not self.waiting:
+                raise BlockingIOError()
+            return self.waiting.pop(0), ("serial", 0)
+
+
+def relay_to_local_port(listener, port):
+    """Connects each connection on `listener` to `port` here: the SSH server, for the Mac's
+    `swiftvm ssh --vsock`, which on QEMU has no socket device to reach it through."""
+    def relay(source, destination):
+        try:
+            while True:
+                data = source.recv(64 * 1024)
+                if not data:
+                    break
+                destination.sendall(data)
+        except OSError:
+            pass
+        for end, how in ((destination, socket.SHUT_WR), (source, socket.SHUT_RD)):
+            try:
+                end.shutdown(how)
+            except OSError:
+                pass
+
+    def serve(connection):
+        try:
+            local = socket.create_connection(("127.0.0.1", port), timeout=10)
+        except OSError:
+            connection.close()
+            return
+        local.settimeout(None)
+        other = threading.Thread(target=relay, args=(local, connection), daemon=True)
+        other.start()
+        relay(connection, local)
+        other.join()
+        connection.close()
+        local.close()
+
+    while True:
+        select.select([listener], [], [])
+        try:
+            connection, _ = listener.accept()
+        except OSError:
+            continue
+        threading.Thread(target=serve, args=(connection,), daemon=True).start()
+
+
+def has_socket_device():
+    """Whether the machine has a virtio socket device: those on Apple's virtualization do, those on
+    QEMU have the serial line instead."""
+    for path in glob.glob("/sys/bus/virtio/devices/*/device"):
+        try:
+            with open(path, encoding="ascii") as file:
+                if file.read().strip() == VIRTIO_SOCKET_DEVICE:
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def open_serial_line(path):
+    """Opens the serial line, waiting for as long as it takes for it to be there."""
+    def opener():
+        problem = None
+        while True:
+            try:
+                return os.open(path, os.O_RDWR | os.O_NOCTTY)
+            except OSError as error:
+                if str(error) != problem:
+                    problem = str(error)
+                    log("Can't open %s (%s). Trying again until it works." % (path, problem))
+                time.sleep(2)
+    return opener
+
+
+def connect_to_unix_socket(path):
+    """A pretended serial line: the other end of a Unix socket, for trying the line without QEMU."""
+    def opener():
+        while True:
+            try:
+                line = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                line.connect(path)
+                return line.detach()
+            except OSError:
+                time.sleep(0.2)
+    return opener
+
+
 def listen_on_socket_device(port):
     """Listens for the app. Waits for as long as it takes for the socket device to be there."""
     problem = None
@@ -1719,12 +2154,25 @@ def listen_on_unix_socket(path):
 
 
 def main(arguments):
-    if not arguments:
+    if not arguments and not has_socket_device():
+        # Only the app is at the other end of the line.
+        line = SerialLine(open_serial_line(SERIAL_LINE))
+        agent = Agent(line.listen(PORT), System(), lambda peer: True, line.listen(JOB_PORT))
+        threading.Thread(target=relay_to_local_port, args=(line.listen(SSH_PORT), SSH_PORT), daemon=True).start()
+        line.start()
+        log("SwiftVM guest agent %s, listening on ports %d and %d of the serial line." % (AGENT_VERSION, PORT, JOB_PORT))
+    elif not arguments:
         listener = listen_on_socket_device(PORT)
         jobs = listen_on_socket_device(JOB_PORT)
         # Only the Mac may give orders, not a program in this system that connects to the same port.
         agent = Agent(listener, System(), lambda peer: peer[0] == socket.VMADDR_CID_HOST, jobs)
         log("SwiftVM guest agent %s, listening on ports %d and %d of the socket device." % (AGENT_VERSION, PORT, JOB_PORT))
+    elif len(arguments) == 2 and arguments[0] == "--pretend-on-line":
+        # The serial line, pretended: the other end of a Unix socket, and a system that only says.
+        line = SerialLine(connect_to_unix_socket(arguments[1]))
+        agent = Agent(line.listen(PORT), PretendSystem(), lambda peer: True, line.listen(JOB_PORT))
+        line.start()
+        log("SwiftVM guest agent %s, pretending, on the line at %s." % (AGENT_VERSION, arguments[1]))
     elif len(arguments) in (2, 4) and arguments[0] == "--pretend-on" and arguments[2:3] in ([], ["--setup-in"]):
         system = PretendSystem(arguments[3] if len(arguments) == 4 else None)
         jobs = listen_on_unix_socket(arguments[1] + ".jobs")
@@ -1746,6 +2194,9 @@ def main(arguments):
     else:
         print(
             "Usage: swiftvm-agent.py                      serve the SwiftVM app (as root, in a virtual machine)\n"
+            "       swiftvm-agent.py --pretend-on-line <path>\n"
+            "                                             the same over a pretended serial line: the Unix socket\n"
+            "                                             at <path>, which something else listens on\n"
             "       swiftvm-agent.py --pretend-on <path> [--setup-in <folder>]\n"
             "                                             serve on a Unix socket and only say what would be done,\n"
             "                                             with a setup script's state read from that folder.\n"

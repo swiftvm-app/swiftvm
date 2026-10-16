@@ -305,6 +305,9 @@ extension AppModel {
             return details(machine)
         case .shareClipboard:
             guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            guard machine.configuration.os.family != .linux || machine.configuration.engine == .virtualization else {
+                return .failure("“\(machine.name)” has graphics acceleration, which doesn't share the clipboard yet.")
+            }
             // A Linux guest shares the clipboard through a device, which like all hardware is there
             // from the start or not at all. The agent of a macOS or Windows guest is simply told, or no
             // longer told.
@@ -723,6 +726,15 @@ extension AppModel {
             }
         }
 
+        let acceleratesGraphics = parameters.acceleratesGraphics ?? false
+        if acceleratesGraphics {
+            guard !isMac else { return .failure("--gpu is for Linux guests. A macOS guest draws with this Mac's GPU by itself.") }
+            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Leave out one of the two.") }
+            guard qemuProvider?.canAccelerateGraphics == true else {
+                return .failure("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.")
+            }
+        }
+
         let compressesDisk = parameters.compressed ?? false
         if compressesDisk, isMac {
             return .failure("The disk of a macOS machine can't be kept compressed: its files are compressed already.")
@@ -750,6 +762,7 @@ extension AppModel {
                 installsSSHKey: installsSSHKey,
                 rosetta: usesRosetta,
                 compressesDisk: compressesDisk,
+                acceleratesGraphics: acceleratesGraphics,
                 setupScripts: setupScripts,
                 location: location
             )
@@ -804,6 +817,7 @@ extension AppModel {
     private func createWindowsMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.") }
         guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.") }
+        guard parameters.acceleratesGraphics == nil else { return .failure("--gpu is for Linux guests.") }
         guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.") }
         guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription) }
         var name = parameters.name ?? "Windows 11"
@@ -867,7 +881,7 @@ extension AppModel {
     private func createMachine(fromTemplate identifier: String, _ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.user == nil, parameters.password == nil, parameters.restoreImagePath == nil,
               parameters.installerPath == nil, parameters.scripts == nil, parameters.rosetta == nil,
-              parameters.installsSSHKey == nil, parameters.compressed == nil
+              parameters.installsSSHKey == nil, parameters.compressed == nil, parameters.acceleratesGraphics == nil
         else {
             return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.")
         }

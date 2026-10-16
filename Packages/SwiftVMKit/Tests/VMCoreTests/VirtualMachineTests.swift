@@ -8,6 +8,9 @@ private final class FakeBackend: VMBackend {
     var eventHandler: (@MainActor (VMBackendEvent) -> Void)?
     let displayView = NSView()
     let canRequestStop = true
+    var canSaveState = true
+    var pauseCount = 0
+    var saveCount = 0
     /// The options of every start attempt, in order.
     var starts: [VMStartOptions] = []
     var startError: (any Error)?
@@ -22,9 +25,12 @@ private final class FakeBackend: VMBackend {
 
     func requestStop() throws { stopRequests += 1 }
     func stop() async throws {}
-    func pause() async throws {}
+    func pause() async throws { pauseCount += 1 }
     func resume() async throws {}
-    func saveState(to url: URL) async throws { try Data("state".utf8).write(to: url) }
+    func saveState(to url: URL) async throws {
+        saveCount += 1
+        try Data("state".utf8).write(to: url)
+    }
     func setNetworkInterface(_ id: UUID, connected: Bool) throws {}
     func setSharedFolders(_ folders: [SharedFolder]) throws {}
     func invalidate() {}
@@ -161,6 +167,25 @@ private final class FakeProvider: VMBackendProvider {
         #expect(machine.state == .running)
         #expect(provider.backend.starts.last == VMStartOptions(savedState: machine.bundle.savedStateURL))
         #expect(!machine.bundle.hasSavedState)
+    }
+
+    @Test func unsaveableGraphicsRejectsSuspendAndLiveSnapshotsBeforePausing() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine(family: .windows)
+        provider.backend.canSaveState = false
+        await machine.start()
+        #expect(!machine.canSuspend)
+        await machine.suspend()
+        #expect(machine.state == .running)
+        #expect(machine.lastError != nil)
+        await #expect(throws: VMError.self) { try await machine.takeSnapshot(named: "Running") }
+        #expect(provider.backend.pauseCount == 0)
+        #expect(provider.backend.saveCount == 0)
+        #expect(!machine.bundle.hasSavedState)
+        #expect(machine.snapshots.isEmpty)
+        await machine.forceStop()
+        let snapshot = try await machine.takeSnapshot(named: "Shut down")
+        #expect(machine.snapshots.contains { $0.id == snapshot.id })
     }
 }
 

@@ -26,7 +26,9 @@ public final class QEMUBackend: VMBackend {
     /// key is pressed, which nobody is there to do.
     private let pressesKeyToBootInstaller: Bool
 
-    private let screen: RFBClient
+    private let screen: RFBClient?
+    private let spice: SpiceClient?
+    private let input: any GuestScreenInput
     /// QEMU's end of the display's line, until it has been handed over.
     private var screenEnd: Int32
     private let view: GuestScreenView
@@ -66,17 +68,30 @@ public final class QEMUBackend: VMBackend {
         self.network = network
         self.console = console
         self.pressesKeyToBootInstaller = pressesKeyToBootInstaller
-        let (app, engine) = try Self.socketPair(SOCK_STREAM)
-        // macOS gives a local stream just 8 KB by default. A frame is several MB: give QEMU's
-        // outgoing pixels room at both ends so each scanline doesn't require a reader/writer handoff.
-        var pixelBufferSize: Int32 = 1 << 20
-        _ = setsockopt(app, SOL_SOCKET, SO_RCVBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
-        _ = setsockopt(engine, SOL_SOCKET, SO_SNDBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
-        screen = RFBClient(descriptor: app)
-        screenEnd = engine
-        view = GuestScreenView(client: screen)
+        if adapter == .virtioGPU3D {
+            let spice = try SpiceClient(library: installation.displayLibrary)
+            self.spice = spice
+            screen = nil
+            screenEnd = -1
+            input = spice
+            view = GuestScreenView(input: spice, content: spice.view)
+            spice.onResize = { [weak view] size in view?.show(size: size) }
+        } else {
+            let (app, engine) = try Self.socketPair(SOCK_STREAM)
+            // macOS gives a local stream just 8 KB by default. A frame is several MB: give QEMU's
+            // outgoing pixels room at both ends so each scanline doesn't require a reader/writer handoff.
+            var pixelBufferSize: Int32 = 1 << 20
+            _ = setsockopt(app, SOL_SOCKET, SO_RCVBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
+            _ = setsockopt(engine, SOL_SOCKET, SO_SNDBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
+            let screen = RFBClient(descriptor: app)
+            self.screen = screen
+            spice = nil
+            input = screen
+            screenEnd = engine
+            view = GuestScreenView(client: screen)
+        }
         view.capturesSystemKeys = configuration.keyboard.capturesSystemKeys
-        view.resizesGuest = adapter == .virtioGPU && configuration.display.automaticallyResizes
+        view.resizesGuest = adapter != .framebuffer && configuration.display.automaticallyResizes
         connectScreen()
     }
 
@@ -87,6 +102,7 @@ public final class QEMUBackend: VMBackend {
     /// Passes what the display's client hears on to the view, on the main thread. A display that
     /// changes faster than the screen is drawn is drawn once for all of it.
     private func connectScreen() {
+        guard let screen else { return }
         let redraw = Redraw()
         screen.onResize = { [weak view] picture in
             DispatchQueue.main.async { MainActor.assumeIsolated { view?.show(picture) } }
@@ -105,9 +121,15 @@ public final class QEMUBackend: VMBackend {
 
     // MARK: Lifecycle
 
+    public var canSaveState: Bool { adapter != .virtioGPU3D }
+
     public var canRequestStop: Bool { monitor != nil && isRunning }
 
     public func start(options: VMStartOptions) async throws {
+        // A desktop that doesn't follow the display's size by itself is told by the machine.
+        spice?.onSizeRequest = { [weak self] width, height, scale in
+            self?.eventHandler?(.displaySizeRequested(width: width, height: height, scale: scale))
+        }
         isLaunching = true
         defer { isLaunching = false }
         do {
@@ -149,8 +171,8 @@ public final class QEMUBackend: VMBackend {
 
         let commandLine = QEMUCommandLine(
             configuration: configuration, bundle: bundle, installation: installation, diskSources: sources,
-            display: adapter == .virtioGPU ? .virtioGPU : .framebuffer, restoresSavedState: savedState != nil,
-            usbPorts: try savedState.map { try SavedStateHeader.read(from: $0).usbPorts } ?? [:]
+            display: adapter == .virtioGPU3D ? .virtioGPU3D : adapter == .virtioGPU ? .virtioGPU : .framebuffer, restoresSavedState: savedState != nil,
+            usbPorts: try savedState.map { try SavedStateHeader.read(from: $0).usbPorts } ?? [:], spiceSocket: spice?.socket
         )
         let arguments = try commandLine.arguments()
         usbPorts = try commandLine.startingUSBPorts()
@@ -169,7 +191,8 @@ public final class QEMUBackend: VMBackend {
         do {
             process = try QEMUProcess.launch(
                 program: installation.program, arguments: arguments, descriptors: engineEnds,
-                log: bundle.logsDirectory.appending(path: "qemu.log"), pidFile: Self.pidFile(in: bundle)
+                log: bundle.logsDirectory.appending(path: "qemu.log"), pidFile: Self.pidFile(in: bundle),
+                environment: spice.map { installation.environment(in: $0.directory) } ?? [:]
             )
         } catch {
             (engineEnds + appEnds).forEach { close($0) }
@@ -218,13 +241,16 @@ public final class QEMUBackend: VMBackend {
             throw QEMUError.didNotStart(await reason(process))
         }
 
-        // The display's line, handed to QEMU over the machine protocol, which carries descriptors.
-        try await monitor.execute("getfd", ["fdname": "screen"], passing: screenEnd)
-        close(screenEnd)
-        screenEnd = -1
-        try await monitor.execute("add_client", ["protocol": "vnc", "fdname": "screen", "skipauth": true])
-        let screen = screen
-        try await Task.detached { try screen.open() }.value
+        if let spice {
+            try await spice.open()
+        } else if let screen {
+            // The display's line, handed to QEMU over the machine protocol, which carries descriptors.
+            try await monitor.execute("getfd", ["fdname": "screen"], passing: screenEnd)
+            close(screenEnd)
+            screenEnd = -1
+            try await monitor.execute("add_client", ["protocol": "vnc", "fdname": "screen", "skipauth": true])
+            try await Task.detached { try screen.open() }.value
+        }
 
         for (index, interface) in configuration.networkInterfaces.enumerated() where !interface.isConnected {
             try await monitor.execute("set_link", ["name": .string(QEMUCommandLine.networkDeviceID(at: index)), "up": false])
@@ -292,6 +318,7 @@ public final class QEMUBackend: VMBackend {
     }
 
     public func saveState(to url: URL) async throws {
+        guard canSaveState else { throw QEMUError.refused("The GPU cannot save running graphics state.") }
         guard let monitor else { throw VMError.notRunning(name: configuration.name) }
         try? FileManager.default.removeItem(at: url)
         // QEMU can't save its USB sound card, which is unplugged for the moment saving takes.
@@ -413,7 +440,8 @@ public final class QEMUBackend: VMBackend {
         }
         monitor?.close()
         monitor = nil
-        screen.close()
+        screen?.close()
+        spice?.close()
         if screenEnd >= 0 {
             close(screenEnd)
             screenEnd = -1
@@ -566,7 +594,8 @@ public final class QEMUBackend: VMBackend {
     // MARK: The machine's own display, mouse and keyboard
 
     public func screenshot() async throws -> Data {
-        guard let picture = screen.picture else { throw MachineDeskError.nothingShown }
+        if let spice { return try await spice.screenshot() }
+        guard let picture = screen?.picture else { throw MachineDeskError.nothingShown }
         let surface = picture.surface
         surface.lock(options: .readOnly, seed: nil)
         let pixels = Data(bytes: surface.baseAddress, count: surface.bytesPerRow * surface.height)
@@ -595,11 +624,21 @@ public final class QEMUBackend: VMBackend {
 
     /// How long the guest gets to take in what the mouse did before the next thing.
     private static let mousePause: Duration = .milliseconds(40)
-    private static let keyPause: Duration = .milliseconds(12)
+    /// How long the guest gets to take in a key before the next. Keys typed over SPICE come in bunches,
+    /// and a guest's USB keyboard that gets them faster than it reports them loses some: at a login
+    /// screen, the password typed is then not the one it gets.
+    private static let wheelPause: Duration = .milliseconds(12)
+    private var keyPause: Duration { spice == nil ? .milliseconds(12) : .milliseconds(40) }
 
     public func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
-        guard let picture = screen.picture else { throw MachineDeskError.nothingShown }
-        let size = (width: picture.width, height: picture.height)
+        let size: (width: Int, height: Int)
+        if let spice, spice.size.width > 0, spice.size.height > 0 {
+            size = (Int(spice.size.width), Int(spice.size.height))
+        } else if let picture = screen?.picture {
+            size = (picture.width, picture.height)
+        } else {
+            throw MachineDeskError.nothingShown
+        }
         func place(_ x: Int, _ y: Int) throws -> (Int, Int) {
             guard (0..<size.width).contains(x), (0..<size.height).contains(y) else {
                 throw MachineDeskError.invalid("(\(x), \(y)) isn't on the screen, which is \(size.width) by \(size.height).")
@@ -612,7 +651,7 @@ public final class QEMUBackend: VMBackend {
         case .right: .right
         case .middle: .middle
         }
-        let screen = screen
+        let screen = input
         try await inTurn {
             func move(_ point: (Int, Int), _ buttons: RFBClient.Buttons) async throws {
                 screen.pointer(x: point.0, y: point.1, buttons: buttons)
@@ -655,7 +694,7 @@ public final class QEMUBackend: VMBackend {
                     if notch < abs(deltaX) { wheel.insert(deltaX > 0 ? .wheelRight : .wheelLeft) }
                     screen.pointer(x: start.0, y: start.1, buttons: wheel)
                     screen.pointer(x: start.0, y: start.1, buttons: [])
-                    try await Task.sleep(for: Self.keyPause)
+                    try await Task.sleep(for: Self.wheelPause)
                 }
             }
         }
@@ -681,22 +720,23 @@ public final class QEMUBackend: VMBackend {
                 throw MachineDeskError.invalid("The machine's keyboard has no such key.")
             }
         }
-        let screen = screen
+        let screen = input
+        let pause = keyPause
         try await inTurn {
             for (held, key) in codes {
                 for code in held {
                     screen.key(code, down: true)
-                    try await Task.sleep(for: Self.keyPause)
+                    try await Task.sleep(for: pause)
                 }
                 if let key {
                     screen.key(key, down: true)
-                    try await Task.sleep(for: Self.keyPause)
+                    try await Task.sleep(for: pause)
                     screen.key(key, down: false)
-                    try await Task.sleep(for: Self.keyPause)
+                    try await Task.sleep(for: pause)
                 }
                 for code in held.reversed() {
                     screen.key(code, down: false)
-                    try await Task.sleep(for: Self.keyPause)
+                    try await Task.sleep(for: pause)
                 }
             }
         }

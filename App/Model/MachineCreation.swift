@@ -49,6 +49,9 @@ struct LinuxQuickCreateRequest {
     var rosetta: Bool
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
+    /// Draw with the Mac's GPU, on QEMU. Without Rosetta and without suspending: see
+    /// ``DisplayConfiguration/acceleratesGraphics``.
+    var acceleratesGraphics = false
     /// What to set the system up with on its first start, such as a desktop.
     var setupScripts: [SetupScript] = []
     /// The folder to keep the machine in. `nil` is the folder for new machines.
@@ -69,6 +72,8 @@ struct LinuxInstallerRequest {
     var diskCapacity: UInt64
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
+    /// Draw with the Mac's GPU, on QEMU.
+    var acceleratesGraphics = false
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
@@ -215,6 +220,9 @@ extension AppModel {
         guard let image = request.distribution.cloudImage else {
             throw VMError.invalidConfiguration("\(request.distribution.name) has no ready-made image.")
         }
+        try requireGraphicsAcceleration(request.acceleratesGraphics)
+        // Rosetta is Apple's virtualization's, which a machine on QEMU doesn't run on.
+        let rosetta = request.rosetta && !request.acceleratesGraphics
         try prepareLocation(request.location)
         let imageURL = try await download(image, named: request.distribution.name, creation: creation)
         try Task.checkCancellation()
@@ -229,22 +237,28 @@ extension AppModel {
         let configuration = VMConfiguration(
             name: request.name,
             os: os,
+            engine: request.acceleratesGraphics ? .qemu : nil,
             cpuCount: request.cpuCount,
             memorySize: request.memorySize,
             disks: [disk],
+            display: DisplayConfiguration(acceleratesGraphics: request.acceleratesGraphics),
             networkInterfaces: [interface],
-            boot: BootConfiguration(rosetta: request.rosetta),
+            boot: BootConfiguration(rosetta: rosetta),
             ssh: SSHConfiguration(alias: alias, user: request.userName, identityFile: keyPair?.privateKeyPath),
             installation: InstallationConfiguration(attachesSeedImage: true)
         )
         let seed = CloudInitSeed(
             hostName: alias,
             userName: request.userName,
+            // Shared folders on QEMU show the Mac's owners as they are: the account is the Mac user's.
+            userID: request.acceleratesGraphics ? Int(getuid()) : nil,
             fullName: request.fullName.isEmpty ? nil : request.fullName,
             password: request.password.isEmpty ? nil : request.password,
             authorizedKeys: keyPair.map { [$0.publicKey] } ?? [],
             macAddress: interface.macAddress,
-            rosettaTag: request.rosetta ? GuestIntegration.rosettaTag : nil,
+            // QEMU has a device for each shared folder, which the agent mounts, and none for all of them.
+            sharedFoldersTag: request.acceleratesGraphics ? nil : GuestIntegration.sharedFoldersTag,
+            rosettaTag: rosetta ? GuestIntegration.rosettaTag : nil,
             setupScripts: request.setupScripts
         )
 
@@ -278,7 +292,14 @@ extension AppModel {
         }
     }
 
+    /// Stops a machine that is to draw with the Mac's GPU from being made where it can't start.
+    private func requireGraphicsAcceleration(_ wanted: Bool) throws {
+        guard wanted, qemuProvider?.canAccelerateGraphics != true else { return }
+        throw VMError.invalidConfiguration("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.")
+    }
+
     private func performInstallerCreate(_ request: LinuxInstallerRequest, os: GuestOS, creation: MachineCreation) async throws -> VirtualMachine {
+        try requireGraphicsAcceleration(request.acceleratesGraphics)
         try prepareLocation(request.location)
         let mediaURL: URL
         switch request.media {
@@ -290,16 +311,21 @@ extension AppModel {
         try Task.checkCancellation()
 
         creation.update("Creating disk…")
+        // QEMU reads no ASIF disk: a machine on it has a plain one.
         let disk = request.compressesDisk
             ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .virtio, format: .compressed)
+            : request.acceleratesGraphics
+            ? DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
             : DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
         let configuration = VMConfiguration(
             name: request.name,
             os: os,
+            engine: request.acceleratesGraphics ? .qemu : nil,
             cpuCount: request.cpuCount,
             memorySize: request.memorySize,
             disks: [disk],
             removableImages: [RemovableImage(url: mediaURL, readOnly: true)],
+            display: DisplayConfiguration(acceleratesGraphics: request.acceleratesGraphics),
             networkInterfaces: [NetworkInterfaceConfiguration()],
             ssh: SSHConfiguration(alias: uniqueAlias(for: request.name))
         )

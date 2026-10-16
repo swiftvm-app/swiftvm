@@ -1,0 +1,12 @@
+--- a/src/common/system_utils.cpp
++++ b/src/common/system_utils.cpp
+@@ -220,7 +220,7 @@
+ {
+ #if defined(ANGLE_PLATFORM_MACOS)
+-    std::string frameworkPath = std::string(libraryName) + ".framework/Versions/Current/" + std::string(libraryName);
+-    return OpenSystemLibraryWithExtensionAndGetError(frameworkPath.c_str(), SearchType::SystemDir, errorOut);
++    std::string dylibPath = std::string("@rpath/lib") + libraryName + ".dylib";
++    return OpenSystemLibraryWithExtensionAndGetError(dylibPath.c_str(), SearchType::SystemDir, errorOut);
+ #elif defined(ANGLE_PLATFORM_IOS_FAMILY)
+     std::string frameworkPath = std::string(libraryName) + ".framework/" + std::string(libraryName);
+     return OpenSystemLibraryWithExtensionAndGetError(frameworkPath.c_str(), SearchType::SystemDir, errorOut);

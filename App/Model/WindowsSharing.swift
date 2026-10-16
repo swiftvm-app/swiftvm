@@ -9,7 +9,8 @@ extension AppModel {
     /// Where `machine`'s agent finds its shared folders, for a machine that has none through a device.
     /// Starts the server the first time a machine needs it, on the Mac's address on the network.
     func sharedFoldersPlace(for machine: VirtualMachine) -> SharedFoldersPlace? {
-        guard machine.configuration.engine == .qemu, let networkManager else { return nil }
+        // Linux on QEMU has a device for each folder instead.
+        guard machine.configuration.engine == .qemu, machine.configuration.os.family == .windows, let networkManager else { return nil }
         let subnet = networkManager.defaultSubnet
         do {
             try sharedFolderServer.start(on: subnet.hostAddress.description) { peer in
@@ -28,7 +29,7 @@ extension AppModel {
     /// change at once: the folders are listed afresh every time it looks. A machine that was deleted
     /// shares nothing any more.
     func syncSharedFolderServer() {
-        let machines = library.machines.filter { $0.configuration.engine == .qemu }
+        let machines = library.machines.filter { $0.configuration.engine == .qemu && $0.configuration.os.family == .windows }
         sharedFolderServer.unshare(allBut: Set(machines.map(\.id.uuidString)))
         for machine in machines {
             guard sharedFolderServer.location(for: machine.id.uuidString) != nil else { continue }

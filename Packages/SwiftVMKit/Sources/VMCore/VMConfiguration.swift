@@ -124,7 +124,9 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
     public var mountsSharedFoldersAutomatically: Bool {
         switch os.family {
         case .macOS: true
-        case .linux: installation.attachesSeedImage
+        // Through the virtio-fs device that their first-boot setup mounts. QEMU has a device per
+        // folder instead, which the agent mounts.
+        case .linux: installation.attachesSeedImage && engine == .virtualization
         case .windows: false
         }
     }
@@ -281,6 +283,8 @@ public enum DisplayAdapter: String, Codable, Sendable, Hashable {
     case framebuffer
     /// A virtio GPU, which a driver in the guest makes the size of the window.
     case virtioGPU
+    /// A Windows 3D driver renders through the Mac's GPU.
+    case virtioGPU3D
 }
 
 public struct DisplayConfiguration: Codable, Sendable, Hashable {
@@ -292,16 +296,30 @@ public struct DisplayConfiguration: Codable, Sendable, Hashable {
     /// The adapter the guest last started with, and so the one any memory saved of it expects. `nil`
     /// for an engine that has no choice.
     public var adapter: DisplayAdapter?
+    /// A Linux guest draws with the Mac's GPU: on QEMU, whose virtio GPU passes OpenGL on to it.
+    /// Apple's virtualization has no such GPU for Linux.
+    public var acceleratesGraphics: Bool
 
     public init(
         widthInPixels: Int = 1920, heightInPixels: Int = 1200, pixelsPerInch: Int = 144, automaticallyResizes: Bool = true,
-        adapter: DisplayAdapter? = nil
+        adapter: DisplayAdapter? = nil, acceleratesGraphics: Bool = false
     ) {
         self.widthInPixels = widthInPixels
         self.heightInPixels = heightInPixels
         self.pixelsPerInch = pixelsPerInch
         self.automaticallyResizes = automaticallyResizes
         self.adapter = adapter
+        self.acceleratesGraphics = acceleratesGraphics
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        widthInPixels = try c.decode(Int.self, forKey: .widthInPixels)
+        heightInPixels = try c.decode(Int.self, forKey: .heightInPixels)
+        pixelsPerInch = try c.decode(Int.self, forKey: .pixelsPerInch)
+        automaticallyResizes = try c.decode(.automaticallyResizes, default: true)
+        adapter = try c.decodeIfPresent(DisplayAdapter.self, forKey: .adapter)
+        acceleratesGraphics = try c.decode(.acceleratesGraphics, default: false)
     }
 
     /// A Retina display the size of the default machine window, for macOS guests.
@@ -509,19 +527,21 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
     /// The guest has a driver for a display that can change its size, as its agent said. It starts with
     /// one from then on, where its engine has a choice (``DisplayAdapter``).
     public var hasDisplayDriver: Bool
+    public var hasAcceleratedDisplayDriver: Bool
     /// The drives that were plugged in to install the system, by their identifiers: a Windows machine's
     /// installer and drivers. They come out when the guest's setup has finished.
     public var setupMedia: [UUID]
 
     public init(
         attachesSeedImage: Bool = false, isProvisioned: Bool = false, hasHostTimeZone: Bool = false,
-        hasReportedSetupFailure: Bool = false, hasDisplayDriver: Bool = false, setupMedia: [UUID] = []
+        hasReportedSetupFailure: Bool = false, hasDisplayDriver: Bool = false, hasAcceleratedDisplayDriver: Bool = false, setupMedia: [UUID] = []
     ) {
         self.attachesSeedImage = attachesSeedImage
         self.isProvisioned = isProvisioned
         self.hasHostTimeZone = hasHostTimeZone
         self.hasReportedSetupFailure = hasReportedSetupFailure
         self.hasDisplayDriver = hasDisplayDriver
+        self.hasAcceleratedDisplayDriver = hasAcceleratedDisplayDriver
         self.setupMedia = setupMedia
     }
 
@@ -532,6 +552,7 @@ public struct InstallationConfiguration: Codable, Sendable, Hashable {
         hasHostTimeZone = try c.decode(.hasHostTimeZone, default: false)
         hasReportedSetupFailure = try c.decode(.hasReportedSetupFailure, default: false)
         hasDisplayDriver = try c.decode(.hasDisplayDriver, default: false)
+        hasAcceleratedDisplayDriver = try c.decode(.hasAcceleratedDisplayDriver, default: false)
         setupMedia = try c.decode(.setupMedia, default: [])
     }
 }

@@ -277,6 +277,9 @@ struct SharedFoldersGuestHint: View {
                 hint("Folders appear in the guest under “My Shared Files” in the Finder sidebar.")
             case .windows:
                 hint("Folders appear in the guest on drive \(GuestIntegration.windowsSharedFoldersDrive), once the guest tools are installed. Changes apply right away.")
+            case .linux where configuration.engine == .qemu:
+                // A device for each folder, which QEMU adds only when the machine starts.
+                hint("Each folder appears in the guest under \(GuestIntegration.sharedFoldersMountPoint)/<name>, mounted by the guest tools. Folders shared while the machine runs appear after it restarts.")
             case .linux:
                 if configuration.mountsSharedFoldersAutomatically || isMountedByAgent {
                     hint("Folders appear in the guest under \(GuestIntegration.sharedFoldersMountPoint). Changes apply right away.")

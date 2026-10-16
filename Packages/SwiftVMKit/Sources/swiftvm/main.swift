@@ -16,6 +16,8 @@ Usage: swiftvm <command> [arguments]
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
       --rosetta                     Linux: run x86-64 programs with Rosetta
+      --gpu                         Linux: draw with this Mac's GPU, for a smooth desktop. The machine runs
+                                    on QEMU, so it can't be suspended or use Rosetta
       --compressed                  Linux and Windows: keep the disk compressed, which usually takes less
                                     than half the space on this Mac and makes writing slower
       --ipsw <file>                 macOS: install this restore image instead of downloading the latest
@@ -395,6 +397,7 @@ case "create":
         case "--location": parameters.location = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--no-ssh-key": parameters.installsSSHKey = false
         case "--rosetta": parameters.rosetta = true
+        case "--gpu": parameters.acceleratesGraphics = true
         case "--compressed": parameters.compressed = true
         case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--iso": parameters.installerPath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path

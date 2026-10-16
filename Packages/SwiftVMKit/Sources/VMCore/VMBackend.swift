@@ -45,6 +45,9 @@ public enum VMBackendEvent: Sendable {
     case networkDisconnected(String)
     /// A USB device that the guest had been handed is gone: pulled out, or taken back by the host.
     case usbDeviceDisconnected(USBDevice.ID)
+    /// The window asked the guest's display for this size, in pixels, at `scale` pixels to a point.
+    /// For a desktop that doesn't take a new size from its display: Hyprland on QEMU.
+    case displaySizeRequested(width: Int, height: Int, scale: Double)
 }
 
 extension VMBackendEvent {
@@ -131,6 +134,8 @@ public protocol VMBackend: AnyObject {
 
     /// Whether the guest can be asked to shut down gracefully right now.
     var canRequestStop: Bool { get }
+    /// Whether the complete running machine, including its display device, can be saved to disk.
+    var canSaveState: Bool { get }
 
     /// Boots the guest, or restores it from saved state and resumes it.
     func start(options: VMStartOptions) async throws
@@ -180,6 +185,8 @@ public protocol VMBackend: AnyObject {
 }
 
 extension VMBackend {
+    public var canSaveState: Bool { true }
+
     // An engine with no way to a machine's display and input devices says so when asked.
     public func screenshot() async throws -> Data {
         throw MachineDeskError.unavailable

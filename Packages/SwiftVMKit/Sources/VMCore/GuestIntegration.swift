@@ -1,4 +1,5 @@
 import Foundation
+import GuestChannel
 
 /// Where a guest's agent is told to find the shared folders, and where to put them.
 public struct SharedFoldersPlace: Sendable, Hashable {
@@ -6,10 +7,14 @@ public struct SharedFoldersPlace: Sendable, Hashable {
     public var tag: String
     /// The folder to mount them at, or for a Windows guest the drive.
     public var mountPoint: String
+    /// The folders with a device each, as a Linux guest on QEMU has them. Empty where one device
+    /// carries them all.
+    public var folders: [SharedFolderDevice]
 
-    public init(tag: String, mountPoint: String) {
+    public init(tag: String, mountPoint: String, folders: [SharedFolderDevice] = []) {
         self.tag = tag
         self.mountPoint = mountPoint
+        self.folders = folders
     }
 }
 
@@ -29,6 +34,33 @@ public enum GuestIntegration {
     /// Makes a Linux guest mount the shared folders at every start.
     public static var linuxPersistentMountCommand: String {
         "echo '\(sharedFoldersTag) \(sharedFoldersMountPoint) virtiofs rw,nofail 0 0' | sudo tee -a /etc/fstab"
+    }
+
+    /// The tag of a shared folder's own 9p device, in a Linux guest on QEMU, which has a device for each
+    /// folder. It comes from the folder's identifier, so that a folder keeps its tag whatever is shared
+    /// besides it. QEMU takes 31 characters at most.
+    public static func folderDeviceTag(for folder: SharedFolder) -> String {
+        "swiftvm-" + folder.id.uuidString.lowercased().prefix(8)
+    }
+
+    /// The folders of a Linux guest on QEMU, each with its device and the name it has in the guest.
+    /// Two of the same name are told apart by a number.
+    public static func folderDevices(of folders: [SharedFolder]) -> [SharedFolderDevice] {
+        var taken: Set<String> = []
+        return folders.map { folder in
+            // A name is one folder's, printable, and short enough for any file system.
+            let printable = String(String.UnicodeScalarView(folder.name.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }))
+            let cleaned = String(printable.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
+            let base = cleaned.isEmpty || cleaned == "." || cleaned == ".." ? "Shared" : cleaned
+            var name = base
+            var counter = 2
+            while taken.contains(name) {
+                name = "\(base) \(counter)"
+                counter += 1
+            }
+            taken.insert(name)
+            return SharedFolderDevice(tag: folderDeviceTag(for: folder), name: name, readOnly: folder.readOnly)
+        }
     }
 
     /// What a guest has to do before it can use space that was added to its disk.

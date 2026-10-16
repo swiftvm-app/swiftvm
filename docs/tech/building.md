@@ -9,14 +9,26 @@ Building the app, running a development copy, and signing.
 
 No Apple Developer account is needed to build and run virtual machines.
 
-For Windows support, install QEMU's build dependencies:
+For Windows guests and Linux
+[graphics acceleration](../features/linux-guests.md#graphics-acceleration),
+install QEMU's build dependencies and Xcode's Metal toolchain:
 
 ```bash
-brew install ninja meson pkgconf glib pixman python
+brew install cmake ninja meson pkgconf glib pixman openssl@3 python
+xcodebuild -downloadComponent MetalToolchain
 ```
 
-The build scripts build QEMU on the first run. Set `SWIFTVM_QEMU=-` to build
-without Windows support.
+The build scripts build QEMU on the first run with `scripts/build-qemu.sh`:
+QEMU 11 with SPICE, virglrenderer, and ANGLE, and the library the app shows
+accelerated screens with. The patches in `Native/QEMU` port UTM's graphics work
+to it, and `Native/QEMU/sources.tsv` pins every source by checksum. The first
+build takes several minutes; later ones reuse `.build/qemu`. Set
+`SWIFTVM_QEMU=-` to build without Windows guests or graphics acceleration.
+
+Windows' Direct3D driver also needs DXMT, which is built only with
+`SWIFTVM_QEMU_DIRECT3D=1`. It compiles LLVM 15 and takes much longer. Release
+builds leave it out. A Windows machine with the 3D driver falls back to its
+firmware framebuffer over VNC when started in a build without Direct3D.
 
 ## Build
 

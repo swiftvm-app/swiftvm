@@ -50,7 +50,7 @@ struct MachineCommands: Commands {
                 Task { await machine.suspend() }
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
-            .disabled(!(state == .running || state == .paused))
+            .disabled(machine?.canSuspend != true)
 
             Button("Pause") {
                 guard let machine else { return }

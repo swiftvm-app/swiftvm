@@ -36,7 +36,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.0";
+        public const string Version = "1.1";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -215,6 +215,7 @@ namespace SwiftVM
             });
             channel.Start();
             session.Start();
+            new SpiceDisplayAgent(session).Start();
             // Someone may be logged in already: the service was installed, or restarted, after they were.
             var starter = new Thread(delegate()
             {
@@ -245,6 +246,157 @@ namespace SwiftVM
         List<AgentLine> Lines()
         {
             lock (linesGate) return new List<AgentLine>(lines);
+        }
+    }
+
+    /// SPICE's monitor protocol. The server offers the requested mode to the virtio GPU before
+    /// forwarding it here; only the active Windows session can apply it and acknowledge success.
+    /// Clipboard, files, sound and pointer input use SwiftVM's existing channels instead.
+    class SpiceDisplayAgent
+    {
+        const uint Monitors = 2, Reply = 3, Capabilities = 6, Disconnected = 13;
+        const uint DisplayCapabilities = (1u << 1) | (1u << 2);
+        readonly SessionLink session;
+        readonly object writeGate = new object(), resizeGate = new object();
+        FileStream port;
+        long generation;
+        long latestResize;
+        uint peerCapabilities;
+
+        public SpiceDisplayAgent(SessionLink session) { this.session = session; }
+
+        public void Start()
+        {
+            var thread = new Thread(Run);
+            thread.IsBackground = true;
+            thread.Start();
+        }
+
+        void Run()
+        {
+            while (true)
+            {
+                try
+                {
+                    var handle = Native.CreateFile(@"\\.\Global\com.redhat.spice.0", Native.GenericRead | Native.GenericWrite,
+                        0, IntPtr.Zero, Native.OpenExisting, Native.FileFlagOverlapped, IntPtr.Zero);
+                    if (handle.IsInvalid) { handle.Dispose(); Thread.Sleep(2000); continue; }
+                    using (var connection = new FileStream(handle, FileAccess.ReadWrite, 1, true))
+                    {
+                        lock (writeGate)
+                        {
+                            port = connection;
+                            generation++;
+                            peerCapabilities = 0;
+                            Send(1, Capabilities, 1, DisplayCapabilities);
+                        }
+                        // Server and client messages can interleave between chunks of a message.
+                        var pending = new[] { new List<byte>(), new List<byte>() };
+                        while (true)
+                        {
+                            byte[] header = Read(connection, 8);
+                            uint source = BitConverter.ToUInt32(header, 0), size = BitConverter.ToUInt32(header, 4);
+                            if (source < 1 || source > 2 || size > 2048) throw new IOException("Invalid SPICE display chunk.");
+                            var buffer = pending[source - 1];
+                            buffer.AddRange(Read(connection, (int)size));
+                            while (buffer.Count >= 20)
+                            {
+                                byte[] bytes = buffer.ToArray();
+                                uint length = BitConverter.ToUInt32(bytes, 16);
+                                if (BitConverter.ToUInt32(bytes, 0) != 1 || length > 64 * 1024)
+                                    throw new IOException("Invalid SPICE display message.");
+                                if (buffer.Count < 20 + length) break;
+                                uint type = BitConverter.ToUInt32(bytes, 4);
+                                byte[] payload = buffer.GetRange(20, (int)length).ToArray();
+                                buffer.RemoveRange(0, 20 + (int)length);
+                                if (source == 2 && type == Disconnected)
+                                {
+                                    lock (writeGate) { generation++; peerCapabilities = 0; }
+                                    pending[0].Clear();
+                                }
+                                else if (source == 1) Handle(type, payload);
+                            }
+                        }
+                    }
+                }
+                catch (Exception error) { Log.Write("display agent: {0}", error.Message); }
+                finally { lock (writeGate) { port = null; generation++; } }
+                Thread.Sleep(2000);
+            }
+        }
+
+        static byte[] Read(Stream stream, int count)
+        {
+            var bytes = new byte[count];
+            for (int offset = 0; offset < count; )
+            {
+                int read = stream.Read(bytes, offset, count - offset);
+                if (read == 0) throw new EndOfStreamException();
+                offset += read;
+            }
+            return bytes;
+        }
+
+        void Handle(uint type, byte[] payload)
+        {
+            if (type == Capabilities)
+            {
+                if (payload.Length < 4 || payload.Length % 4 != 0) throw new IOException("Invalid SPICE display capabilities.");
+                lock (writeGate)
+                {
+                    peerCapabilities = payload.Length >= 8 ? BitConverter.ToUInt32(payload, 4) : 0;
+                    if (BitConverter.ToUInt32(payload, 0) != 0) Send(1, Capabilities, 0, DisplayCapabilities);
+                }
+            }
+            else if (type == Monitors)
+            {
+                int width = 0, height = 0;
+                bool valid = payload.Length >= 28 && BitConverter.ToUInt32(payload, 0) == 1;
+                if (valid)
+                {
+                    uint flags = BitConverter.ToUInt32(payload, 4);
+                    height = BitConverter.ToInt32(payload, 8);
+                    width = BitConverter.ToInt32(payload, 12);
+                    valid = (flags & ~3u) == 0 && payload.Length == ((flags & 2) != 0 ? 32 : 28)
+                        && BitConverter.ToUInt32(payload, 16) == 32 && BitConverter.ToInt32(payload, 20) == 0
+                        && BitConverter.ToInt32(payload, 24) == 0 && width >= 320 && width <= 16384
+                        && height >= 200 && height <= 16384;
+                }
+                long epoch, request;
+                lock (writeGate) { epoch = generation; request = ++latestResize; }
+                // Keep receiving negotiation/disconnect messages while the session switches mode.
+                // Skip queued obsolete sizes and never reply to a subsequent client.
+                ThreadPool.QueueUserWorkItem(delegate(object state)
+                {
+                    lock (resizeGate)
+                    {
+                        lock (writeGate) { if (port == null || generation != epoch || latestResize != request) return; }
+                        bool applied = false;
+                        try { applied = valid && session.ResizeDisplay(width, height); }
+                        catch (Exception error) { Log.Write("display resize: {0}", error.Message); }
+                        lock (writeGate)
+                        {
+                            if (port == null || generation != epoch || latestResize != request) return;
+                            try { if ((peerCapabilities & (1u << 2)) != 0) Send(1, Reply, Monitors, applied ? 1u : 2u); }
+                            catch (IOException) { }
+                            catch (ObjectDisposedException) { }
+                        }
+                    }
+                });
+            }
+        }
+
+        // These protocol messages all fit in one chunk. Call with writeGate held.
+        void Send(uint destination, uint type, uint first, uint second)
+        {
+            using (var bytes = new MemoryStream())
+            using (var writer = new BinaryWriter(bytes))
+            {
+                writer.Write(destination); writer.Write(28u);
+                writer.Write(1u); writer.Write(type); writer.Write(0ul); writer.Write(8u);
+                writer.Write(first); writer.Write(second);
+                port.Write(bytes.GetBuffer(), 0, (int)bytes.Length);
+            }
         }
     }
 
@@ -806,6 +958,7 @@ namespace SwiftVM
 
             var features = new List<object> { "clipboard", "time-zone", "exec" };
             if (HasResizableDisplayDriver()) features.Add("resizable-display");
+            if (HasDisplayDriver("viogpu3d.inf_*")) features.Add("accelerated-display");
 
             var hello = new Dictionary<string, object>();
             hello["type"] = "hello";
@@ -822,10 +975,15 @@ namespace SwiftVM
         /// it starts with one.
         static bool HasResizableDisplayDriver()
         {
+            return HasDisplayDriver("viogpudo.inf_*") || HasDisplayDriver("viogpu3d.inf_*");
+        }
+
+        static bool HasDisplayDriver(string pattern)
+        {
             try
             {
                 string store = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"DriverStore\FileRepository");
-                return Directory.GetDirectories(store, "viogpudo.inf_*").Length > 0;
+                return Directory.GetDirectories(store, pattern).Length > 0;
             }
             catch (Exception)
             {
@@ -1610,23 +1768,44 @@ namespace SwiftVM
             return Ask(message, TimeSpan.FromSeconds(60));
         }
 
+        public bool ResizeDisplay(int width, int height)
+        {
+            var message = new Dictionary<string, object>();
+            message["type"] = "resize-display";
+            message["width"] = width;
+            message["height"] = height;
+            return Ask(message, TimeSpan.FromSeconds(5));
+        }
+
         bool Ask(Dictionary<string, object> message, TimeSpan patience)
         {
             long id;
-            var done = new ManualResetEvent(false);
-            lock (gate)
+            using (var done = new ManualResetEvent(false))
             {
-                id = nextRequest++;
-                waiting[id] = done;
-            }
-            message["id"] = id;
-            if (!Send(message)) return false;
-            done.WaitOne(patience);
-            lock (gate)
-            {
-                waiting.Remove(id);
-                bool ok;
-                return answers.TryGetValue(id, out ok) && ok;
+                lock (gate)
+                {
+                    id = nextRequest++;
+                    waiting[id] = done;
+                }
+                try
+                {
+                    message["id"] = id;
+                    if (!Send(message)) return false;
+                    done.WaitOne(patience);
+                    lock (gate)
+                    {
+                        bool ok;
+                        return answers.TryGetValue(id, out ok) && ok;
+                    }
+                }
+                finally
+                {
+                    lock (gate)
+                    {
+                        waiting.Remove(id);
+                        answers.Remove(id);
+                    }
+                }
             }
         }
 
@@ -1716,6 +1895,14 @@ namespace SwiftVM
                                     answer["id"] = Json.Number(message, "id") ?? 0;
                                     answer["ok"] = MapDrive(Json.String(message, "location"), Json.String(message, "drive"));
                                     Send(answer);
+                                    break;
+                                case "resize-display":
+                                    var resized = new Dictionary<string, object>();
+                                    resized["type"] = "result";
+                                    resized["id"] = Json.Number(message, "id") ?? 0;
+                                    resized["ok"] = DisplayFollower.Resize((int)(Json.Number(message, "width") ?? 0),
+                                        (int)(Json.Number(message, "height") ?? 0));
+                                    Send(resized);
                                     break;
                             }
                         }
@@ -1818,6 +2005,21 @@ namespace SwiftVM
     {
         const string VirtioGPU = "VEN_1AF4&DEV_1050";
         const ushort GetCustomResolution = 1;
+        static readonly object ModeGate = new object();
+
+        public static bool Resize(int width, int height)
+        {
+            if (width < 320 || width > 16384 || height < 200 || height > 16384) return false;
+            // The host updates the GPU's modes before forwarding the SPICE request. Windows may
+            // still be handling that device notification when the request reaches the session.
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                string display = FindDisplay();
+                if (display != null && Switch(display, width, height)) return true;
+                Thread.Sleep(100);
+            }
+            return false;
+        }
 
         public static void Run()
         {
@@ -1870,14 +2072,18 @@ namespace SwiftVM
             height = 0;
             var adapter = new Native.OpenAdapterFromDisplayName { DeviceName = display };
             if (Native.D3DKMTOpenAdapterFromGdiDisplayName(ref adapter) != 0) return false;
-            IntPtr data = Marshal.AllocHGlobal(8);
+            // The 3D driver validates the whole escape union, including its larger resource-info
+            // requests, even when this request only uses the four-byte resolution member.
+            const int escapeSize = 128;
+            IntPtr data = Marshal.AllocHGlobal(escapeSize);
             try
             {
+                for (int index = 0; index < escapeSize; index++) Marshal.WriteByte(data, index, 0);
                 // VIOGPU_ESCAPE: its type, the length of what follows, and the width and height.
                 Marshal.WriteInt16(data, 0, (short)GetCustomResolution);
                 Marshal.WriteInt16(data, 2, 4);
                 Marshal.WriteInt32(data, 4, 0);
-                var escape = new Native.Escape { Adapter = adapter.Adapter, PrivateDriverData = data, PrivateDriverDataSize = 8 };
+                var escape = new Native.Escape { Adapter = adapter.Adapter, PrivateDriverData = data, PrivateDriverDataSize = escapeSize };
                 if (Native.D3DKMTEscape(ref escape) != 0) return false;
                 width = (ushort)Marshal.ReadInt16(data, 4);
                 height = (ushort)Marshal.ReadInt16(data, 6);
@@ -1893,14 +2099,70 @@ namespace SwiftVM
 
         static bool Switch(string display, int width, int height)
         {
-            var mode = new Native.DeviceMode();
-            mode.Size = (short)Marshal.SizeOf(typeof(Native.DeviceMode));
-            if (!Native.EnumDisplaySettings(display, Native.EnumCurrentSettings, ref mode)) return false;
-            if (mode.PelsWidth == width && mode.PelsHeight == height) return true;
-            mode.PelsWidth = width;
-            mode.PelsHeight = height;
-            mode.Fields = Native.DisplayModePelsWidth | Native.DisplayModePelsHeight;
-            return Native.ChangeDisplaySettingsEx(display, ref mode, IntPtr.Zero, Native.ChangeDisplayUpdateRegistry, IntPtr.Zero) == 0;
+            lock (ModeGate)
+            {
+                var adapter = new Native.OpenAdapterFromDisplayName { DeviceName = display };
+                if (Native.D3DKMTOpenAdapterFromGdiDisplayName(ref adapter) != 0) return false;
+                var closing = new Native.CloseAdapter { Adapter = adapter.Adapter };
+                Native.D3DKMTCloseAdapter(ref closing);
+                Native.DisplayPath[] paths;
+                Native.DisplayConfigMode[] modes;
+                if (!Configuration(out paths, out modes)) return false;
+                int path = FindPath(paths, adapter);
+                if (path < 0 || paths[path].Source.ModeIndex >= modes.Length) return false;
+                if (IsSize(paths[path], modes, width, height)) return true;
+                uint source = paths[path].Source.ModeIndex;
+                if (modes[source].Type != 1) return false;
+                modes[source].Source.Width = (uint)width;
+                modes[source].Source.Height = (uint)height;
+                // A connected monitor's custom mode can change without a hotplug notification.
+                // Refresh WDDM's mode list and select a matching target raster; keeping the old
+                // target merely scales the desktop and loses Retina detail.
+                paths[path].Target.ModeIndex = uint.MaxValue;
+                uint flags = Native.DisplayApply | Native.DisplayUseSupplied | Native.DisplayForceEnumeration | Native.DisplaySave;
+                if (Native.SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes, flags) != 0) return false;
+                if (!Configuration(out paths, out modes)) return false;
+                path = FindPath(paths, adapter);
+                return path >= 0 && IsSize(paths[path], modes, width, height);
+            }
+        }
+
+        static int FindPath(Native.DisplayPath[] paths, Native.OpenAdapterFromDisplayName adapter)
+        {
+            return Array.FindIndex(paths, delegate(Native.DisplayPath path)
+            {
+                return path.Source.Id == adapter.VidPnSourceId && path.Source.Adapter.Low == adapter.AdapterLuid.Low
+                    && path.Source.Adapter.High == adapter.AdapterLuid.High;
+            });
+        }
+
+        static bool IsSize(Native.DisplayPath path, Native.DisplayConfigMode[] modes, int width, int height)
+        {
+            if (path.Source.ModeIndex >= modes.Length || path.Target.ModeIndex >= modes.Length) return false;
+            var source = modes[path.Source.ModeIndex];
+            var target = modes[path.Target.ModeIndex];
+            return source.Type == 1 && target.Type == 2 && source.Source.Width == width && source.Source.Height == height
+                && target.Target.ActiveWidth == width && target.Target.ActiveHeight == height;
+        }
+
+        static bool Configuration(out Native.DisplayPath[] paths, out Native.DisplayConfigMode[] modes)
+        {
+            paths = null;
+            modes = null;
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                uint pathCount, modeCount;
+                if (Native.GetDisplayConfigBufferSizes(Native.DisplayActivePaths, out pathCount, out modeCount) != 0) return false;
+                paths = new Native.DisplayPath[pathCount];
+                modes = new Native.DisplayConfigMode[modeCount];
+                int result = Native.QueryDisplayConfig(Native.DisplayActivePaths, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
+                if (result == 122) continue; // The topology changed between sizing and querying.
+                if (result != 0) return false;
+                Array.Resize(ref paths, (int)pathCount);
+                Array.Resize(ref modes, (int)modeCount);
+                return true;
+            }
+            return false;
         }
     }
 
@@ -1914,9 +2176,9 @@ namespace SwiftVM
         public const int StartfUseStdHandles = 0x100;
         public const uint CreateUnicodeEnvironment = 0x400, CreateNoWindow = 0x08000000, CreateSuspended = 0x4;
         public const uint HandleFlagInherit = 1;
-        public const int DisplayDeviceAttachedToDesktop = 0x1, EnumCurrentSettings = -1;
-        public const int DisplayModePelsWidth = 0x80000, DisplayModePelsHeight = 0x100000;
-        public const uint ChangeDisplayUpdateRegistry = 0x1;
+        public const int DisplayDeviceAttachedToDesktop = 0x1;
+        public const uint DisplayActivePaths = 0x2, DisplayApply = 0x80, DisplayUseSupplied = 0x20;
+        public const uint DisplaySave = 0x200, DisplayForceEnumeration = 0x1000;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct DisplayDevice
@@ -1929,19 +2191,54 @@ namespace SwiftVM
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
         }
 
-        /// DEVMODEW, as a display has it.
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        public struct DeviceMode
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplaySourcePath
         {
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
-            public short SpecVersion, DriverVersion, Size, DriverExtra;
-            public int Fields;
-            public int PositionX, PositionY, DisplayOrientation, DisplayFixedOutput;
-            public short Color, Duplex, YResolution, TTOption, Collate;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
-            public short LogPixels;
-            public int BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
-            public int ICMMethod, ICMIntent, MediaType, DitherType, Reserved1, Reserved2, PanningWidth, PanningHeight;
+            public Luid Adapter;
+            public uint Id, ModeIndex, Status;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplayTargetPath
+        {
+            public Luid Adapter;
+            public uint Id, ModeIndex, Technology, Rotation, Scaling, RefreshNumerator, RefreshDenominator;
+            public uint ScanlineOrdering, Available, Status;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplayPath
+        {
+            public DisplaySourcePath Source;
+            public DisplayTargetPath Target;
+            public uint Flags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplaySourceMode
+        {
+            public uint Width, Height, PixelFormat;
+            public int X, Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplayTargetMode
+        {
+            public ulong PixelRate;
+            public uint HorizontalNumerator, HorizontalDenominator, VerticalNumerator, VerticalDenominator;
+            public uint ActiveWidth, ActiveHeight, TotalWidth, TotalHeight, VideoStandard, ScanlineOrdering;
+        }
+
+        // DISPLAYCONFIG_MODE_INFO contains a 48-byte union. Preserve target timing fields while
+        // changing a source mode; all members are blittable on both Windows ARM64 and x64.
+        [StructLayout(LayoutKind.Explicit, Size = 64)]
+        public struct DisplayConfigMode
+        {
+            [FieldOffset(0)] public uint Type;
+            [FieldOffset(4)] public uint Id;
+            [FieldOffset(8)] public Luid Adapter;
+            [FieldOffset(16)] public DisplaySourceMode Source;
+            [FieldOffset(16)] public DisplayTargetMode Target;
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -2115,11 +2412,16 @@ namespace SwiftVM
         [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "EnumDisplayDevicesW")]
         public static extern bool EnumDisplayDevices(string device, int index, ref DisplayDevice information, int flags);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "EnumDisplaySettingsW")]
-        public static extern bool EnumDisplaySettings(string device, int mode, ref DeviceMode information);
+        [DllImport("user32.dll")]
+        public static extern int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "ChangeDisplaySettingsExW")]
-        public static extern int ChangeDisplaySettingsEx(string device, ref DeviceMode mode, IntPtr window, uint flags, IntPtr parameter);
+        [DllImport("user32.dll")]
+        public static extern int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] DisplayPath[] paths,
+            ref uint modeCount, [Out] DisplayConfigMode[] modes, IntPtr topology);
+
+        [DllImport("user32.dll")]
+        public static extern int SetDisplayConfig(uint pathCount, [In] DisplayPath[] paths,
+            uint modeCount, [In] DisplayConfigMode[] modes, uint flags);
 
         [DllImport("gdi32.dll")]
         public static extern int D3DKMTOpenAdapterFromGdiDisplayName(ref OpenAdapterFromDisplayName adapter);

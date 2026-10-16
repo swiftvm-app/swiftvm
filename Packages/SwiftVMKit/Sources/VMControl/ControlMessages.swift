@@ -157,6 +157,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var rosetta: Bool?
         /// Linux: keep the machine's disk compressed from the start. `nil` is no.
         public var compressed: Bool?
+        /// Linux: draw with the Mac's GPU, on QEMU. `nil` is no.
+        public var acceleratesGraphics: Bool?
         /// Whether this Mac's SSH key lets into the account. `nil` is yes.
         public var installsSSHKey: Bool?
         /// Name or UUID of the template to make the machine from, instead of installing a system. It
@@ -175,7 +177,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
             installerPath: String? = nil,
             scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, compressed: Bool? = nil,
-            installsSSHKey: Bool? = nil, template: String? = nil, start: Bool = true
+            acceleratesGraphics: Bool? = nil, installsSSHKey: Bool? = nil, template: String? = nil, start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -190,6 +192,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.location = location
             self.rosetta = rosetta
             self.compressed = compressed
+            self.acceleratesGraphics = acceleratesGraphics
             self.installsSSHKey = installsSSHKey
             self.template = template
             self.start = start

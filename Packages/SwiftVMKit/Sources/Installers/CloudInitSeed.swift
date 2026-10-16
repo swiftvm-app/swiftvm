@@ -8,6 +8,9 @@ public struct CloudInitSeed: Sendable, Hashable {
     /// Changing the instance ID makes cloud-init run its first-boot setup again.
     public var instanceID: String
     public var userName: String
+    /// The account's user ID, where it has to be a particular one: that of the Mac's user, for folders
+    /// shared over 9p, which shows the Mac's owners as they are. `nil` is the system's choice.
+    public var userID: Int?
     public var fullName: String?
     /// Login password; `nil` allows key-based login only.
     public var password: String?
@@ -34,6 +37,7 @@ public struct CloudInitSeed: Sendable, Hashable {
         hostName: String,
         instanceID: String = UUID().uuidString.lowercased(),
         userName: String,
+        userID: Int? = nil,
         fullName: String? = nil,
         password: String? = nil,
         authorizedKeys: [String] = [],
@@ -48,6 +52,7 @@ public struct CloudInitSeed: Sendable, Hashable {
         self.hostName = hostName
         self.instanceID = instanceID
         self.userName = userName
+        self.userID = userID
         self.fullName = fullName
         self.password = password
         self.authorizedKeys = authorizedKeys
@@ -84,6 +89,9 @@ public struct CloudInitSeed: Sendable, Hashable {
 
         lines.append("users:")
         lines.append("  - name: \(yaml(userName))")
+        if let userID {
+            lines.append("    uid: \(userID)")
+        }
         if let fullName, !fullName.isEmpty {
             lines.append("    gecos: \(yaml(fullName))")
         }
@@ -129,6 +137,15 @@ public struct CloudInitSeed: Sendable, Hashable {
             lines.append(contentsOf: mounts)
         }
         var files: [String] = []
+        // Below 1000, as a Mac user's ID is, login screens take an account for one of the system's
+        // and leave it out of their list of people. These say it is a person's.
+        if let userID, userID < Self.firstPersonID {
+            files.append("  - path: \(yaml("/var/lib/AccountsService/users/" + userName))")
+            files.append("    content: \(yaml("[User]\nSystemAccount=false\n"))")
+            files.append("  - path: \(yaml(Self.loginScreenSettingsPath))")
+            // Below 1000 are also accounts of services, which have no shell to sign in with.
+            files.append("    content: \(yaml("[Users]\nMinimumUid=\(userID)\nHideShells=\(Self.shellsOfServices)\n"))")
+        }
         if kernelMessagesOnSerialConsole {
             files.append("  - path: \(yaml(Self.serialConsoleSettingsPath))")
             files.append("    content: \(yaml(Self.serialConsoleSettings))")
@@ -309,6 +326,13 @@ public struct CloudInitSeed: Sendable, Hashable {
         GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 console=tty1"
 
         """
+
+    /// The first user ID that systems give people rather than services.
+    static let firstPersonID = 1000
+    /// SDDM's settings for whom it lists. Read whenever it starts, and there to stay should it be
+    /// installed later.
+    static let loginScreenSettingsPath = "/etc/sddm.conf.d/90-swiftvm-users.conf"
+    static let shellsOfServices = "/usr/bin/nologin,/usr/sbin/nologin,/sbin/nologin,/bin/false,/usr/bin/false"
 
     static let bootMenuUpdateCommand = "command -v update-grub >/dev/null && update-grub || true"
 

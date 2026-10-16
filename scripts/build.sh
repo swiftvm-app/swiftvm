@@ -7,8 +7,8 @@
 # This is the app with your machines in it. For a copy to try changes in, with machines of its own,
 # use `swift run SwiftVM`. How the app is signed is described in scripts/bundle-app.sh.
 #
-# The QEMU that runs Windows guests is built too, by scripts/build-qemu.sh, which says what it needs.
-# SWIFTVM_QEMU=- builds the app without it.
+# The QEMU that runs Windows guests and Linux guests with graphics acceleration is built too, by
+# scripts/build-qemu.sh, which says what it needs. SWIFTVM_QEMU=- builds the app without it.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"

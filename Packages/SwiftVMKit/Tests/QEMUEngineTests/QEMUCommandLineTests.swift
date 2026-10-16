@@ -41,6 +41,60 @@ import VMCore
         values(of: option, in: arguments).compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
     }
 
+    /// A Linux machine that draws with the Mac's GPU, set up by its first-boot disc, with two folders.
+    @Test func aLinuxMachineHasItsOwnClockConsoleGPUSetupDiscAndFolders() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let disk = DiskConfiguration(fileName: "disk.img", capacity: 16 << 30, bus: .virtio, format: .raw)
+        let projects = directory.appending(path: "Projects, old").path
+        let music = directory.appending(path: "Music").path
+        for path in [projects, music] {
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        }
+        let folders = [
+            SharedFolder(name: "Projects", path: projects),
+            // On a disk that was ejected: QEMU wouldn't start with it, and the guest goes without.
+            SharedFolder(name: "Away", path: "/Volumes/Gone/Away"),
+            SharedFolder(name: "Music", path: music, readOnly: true),
+        ]
+        let configuration = VMConfiguration(
+            name: "Arch", os: GuestOS(family: .linux), engine: .qemu, cpuCount: 4, memorySize: 8 << 30, disks: [disk],
+            display: DisplayConfiguration(acceleratesGraphics: true), sharedFolders: folders,
+            installation: InstallationConfiguration(attachesSeedImage: true)
+        )
+        let bundle = try VMBundle.create(at: directory.appending(path: "Arch.swiftvm"), configuration: configuration)
+        FileManager.default.createFile(atPath: bundle.seedImageURL.path, contents: Data(count: 4096))
+        var accelerated = installation
+        accelerated.acceleratesGraphics = true
+        let arguments = try QEMUCommandLine(
+            configuration: configuration, bundle: bundle, installation: accelerated,
+            diskSources: [disk.id: .file(bundle.diskURL(for: disk))], display: .virtioGPU3D,
+            spiceSocket: URL(fileURLWithPath: "/tmp/display.sock")
+        ).arguments()
+
+        // Linux keeps its clock in UTC, and writes to hvc0 rather than a serial port.
+        #expect(values(of: "-rtc", in: arguments) == ["base=utc"])
+        // Its guest memory is mapped in the Mac's own pages: only Windows' Direct3D needs smaller ones.
+        #expect(values(of: "-accel", in: arguments) == ["hvf"])
+        #expect(!arguments.contains("-serial"))
+        let devices = objects("-device", in: arguments)
+        #expect(devices.contains { $0["driver"] as? String == "virtconsole" && $0["chardev"] as? String == "console" })
+        // OpenGL, which virglrenderer passes on to the Mac's GPU.
+        #expect(devices.first { $0["id"] as? String == "gpu" }?["driver"] as? String == "virtio-gpu-gl-pci")
+        // The setup disc is a virtio disk, there before cloud-init looks for it, and on no USB port.
+        let seed = try #require(devices.first { $0["serial"] as? String == "swiftvm-seed" })
+        #expect(seed["driver"] as? String == "virtio-blk-pci")
+        #expect(!devices.contains { $0["driver"] as? String == "usb-storage" || $0["driver"] as? String == "scsi-cd" })
+        // A 9p device for each folder, by the tag its agent mounts it by.
+        let fsdevs = values(of: "-fsdev", in: arguments)
+        #expect(fsdevs == [
+            "local,id=share0,path=\(projects.replacingOccurrences(of: ",", with: ",,")),security_model=none",
+            "local,id=share1,path=\(music),security_model=none,readonly=on",
+        ])
+        let shares = devices.filter { $0["driver"] as? String == "virtio-9p-pci" }
+        #expect(shares.compactMap { $0["mount_tag"] as? String } == [folders[0], folders[2]].map(GuestIntegration.folderDeviceTag(for:)))
+    }
+
     @Test func handsTheLinesToTheAppOverAsDescriptors() throws {
         let arguments = try commandLine().arguments()
         let chardevs = values(of: "-chardev", in: arguments)
@@ -85,6 +139,27 @@ import VMCore
         #expect(try commandLine().arguments().contains("-no-reboot"))
         #expect(!(try commandLine().arguments().contains("-incoming")))
         #expect(values(of: "-incoming", in: try commandLine(restoring: true).arguments()) == ["defer"])
+    }
+
+    @Test func acceleratedBootUsesLocalGraphicsAndCannotConsumeLegacyMemory() throws {
+        var line = commandLine(display: .virtioGPU3D)
+        #expect(throws: QEMUError.self) { try line.arguments() }
+        line.installation.acceleratesGraphics = true
+        line.spiceSocket = URL(fileURLWithPath: "/tmp/private,display/display.sock")
+        let arguments = try line.arguments()
+        #expect(values(of: "-accel", in: arguments) == ["hvf,ipa-granule-size=4096"])
+        #expect(!arguments.contains("-vnc"))
+        let spice = try #require(values(of: "-spice", in: arguments).first)
+        #expect(spice.contains("unix=on,addr=/tmp/private,,display/display.sock"))
+        #expect(spice.contains("gl=on") && spice.contains("disable-copy-paste=on") && spice.contains("disable-agent-file-xfer=on"))
+        #expect(spice.contains("agent-mouse=off"))
+        #expect(objects("-device", in: arguments).contains { $0["name"] as? String == "com.redhat.spice.0" })
+        let gpu = try #require(objects("-device", in: arguments).first { $0["id"] as? String == "gpu" })
+        #expect(gpu["driver"] as? String == "virtio-ramfb-gl")
+        #expect(gpu["neptune"] as? Bool == true && gpu["blob"] as? Bool == true)
+        line.restoresSavedState = true
+        #expect(throws: QEMUError.self) { try line.arguments() }
+        #expect(values(of: "-machine", in: try commandLine(restoring: true).arguments()) == [QEMUCommandLine.machineType])
     }
 
     @Test func aRestoredMachineHasEachDriveInThePortItWasSavedIn() throws {
@@ -142,6 +217,37 @@ import VMCore
 }
 
 @MainActor
+@Suite struct WindowsDisplayAdapterTests {
+    @Test func aWindowsMachineCanBootAfterItsDirect3DRuntimeIsRemoved() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var installation = QEMUInstallation(
+            program: directory.appending(path: "bin/qemu-system-aarch64"),
+            dataDirectory: directory.appending(path: "share"), acceleratesGraphics: true
+        )
+        let driver = InstallationConfiguration(hasDisplayDriver: true, hasAcceleratedDisplayDriver: true)
+        let dxmt = installation.libraryDirectory.appending(path: "libdxmt-native.dylib")
+        try FileManager.default.createDirectory(at: installation.libraryDirectory, withIntermediateDirectories: true)
+        try Data().write(to: dxmt)
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .virtioGPU3D)
+
+        // A copy without the graphics runtime must boot too, even if DXMT is still there.
+        installation.acceleratesGraphics = false
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)
+        installation.acceleratesGraphics = true
+
+        // Release builds have Linux graphics, but no Direct3D. The 3D installer removed the 2D driver,
+        // although the guest reported both display capabilities, so only the framebuffer is safe.
+        try FileManager.default.removeItem(at: dxmt)
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)
+
+        // Nothing about the guest's driver was forgotten: a Direct3D build can use it again.
+        try Data().write(to: dxmt)
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .virtioGPU3D)
+    }
+}
+
+@MainActor
 @Suite struct InstallerBootTests {
     private let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
 
@@ -163,6 +269,10 @@ import VMCore
         #expect(!QEMUBackendProvider.bootsInstaller(installed, bundle: installedBundle))
         let (noDisc, noDiscBundle) = try bundle(writing: 0, discs: [])
         #expect(!QEMUBackendProvider.bootsInstaller(noDisc, bundle: noDiscBundle))
+        // A key on a Linux disc would stop its boot menu's countdown.
+        var linux = fresh
+        linux.os = GuestOS(family: .linux)
+        #expect(!QEMUBackendProvider.bootsInstaller(linux, bundle: freshBundle))
     }
 }
 

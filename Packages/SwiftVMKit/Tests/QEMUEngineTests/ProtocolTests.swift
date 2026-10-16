@@ -288,6 +288,103 @@ private final class EventLog: @unchecked Sendable {
         #expect(message == Data([255, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xCD]))
         client.close()
     }
+
+    @Test func receivesFragmentedRectanglesAcrossReadBatches() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        // More than one receive batch, offset within a surface whose rows have padding.
+        let width = 513, height = 1025
+        let payload = Data((0..<(width * height * 4)).map { UInt8(truncatingIfNeeded: $0 / 7) })
+        let thread = Thread {
+            self.greet(server, width: 516, height: 1027)
+            _ = server.read(10)
+            var update = Data([0, 0, 0, 1])
+            for value: UInt16 in [1, 1, UInt16(width), UInt16(height)] { update.append(bigEndian: value) }
+            update.append(bigEndian: UInt32(0))
+            update.append(payload)
+            // Socket reads need not match either a row or the staging buffer's boundary.
+            for offset in stride(from: 0, to: update.count, by: 7919) {
+                server.write(update.subdata(in: offset..<min(offset + 7919, update.count)))
+            }
+            _ = server.read(10)
+            // A following update proves that consuming the rectangle preserved message boundaries.
+            server.write(Data([0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 9, 8, 7, 0]))
+        }
+        thread.start()
+
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: updated) && waitBriefly(for: updated) }.value)
+        let picture = try #require(client.picture)
+        picture.surface.lock(options: .readOnly, seed: nil)
+        defer { picture.surface.unlock(options: .readOnly, seed: nil) }
+        var received = Data()
+        for row in 0..<height {
+            received.append(Data(bytes: picture.surface.baseAddress + (row + 1) * picture.surface.bytesPerRow + 4, count: width * 4))
+        }
+        #expect(received == payload)
+        #expect(Data(bytes: picture.surface.baseAddress, count: 4) == Data([9, 8, 7, 0]))
+    }
+
+    @Test func closesWhenTheServerDisconnectsDuringARectangle() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let closed = DispatchSemaphore(value: 0)
+        client.onClose = { closed.signal() }
+        let thread = Thread {
+            self.greet(server, width: 512, height: 1024)
+            _ = server.read(10)
+            var update = Data([0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 4, 0, 0, 0, 0, 0])
+            // One complete batch, then part of the next; waiting for the rest must end on EOF.
+            update.append(Data(count: (1 << 20) + 17))
+            server.write(update)
+            shutdown(server.descriptor, SHUT_RDWR)
+        }
+        thread.start()
+
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: closed) }.value)
+    }
+
+    @Test func keepsTheLatestSizeRequestedBeforeResizeNegotiation() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        client.requestSize(width: 2048, height: 1152)
+        client.requestSize(width: 2560, height: 1440)
+        let thread = Thread { self.greet(server, width: 640, height: 480) }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        // Neither size may be sent until the server supports resizing.
+        #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 2, 128, 1, 224]))
+
+        func desktopSize(width: UInt16, height: UInt16) -> Data {
+            var update = Data([0, 0, 0, 1, 0, 0, 0, 0])
+            update.append(bigEndian: width)
+            update.append(bigEndian: height)
+            update.append(bigEndian: UInt32(bitPattern: RFBClient.Encoding.extendedDesktopSize.rawValue))
+            update.append(contentsOf: [1, 0, 0, 0])
+            update.append(bigEndian: UInt32(42))
+            update.append(contentsOf: [0, 0, 0, 0])
+            update.append(bigEndian: width)
+            update.append(bigEndian: height)
+            update.append(bigEndian: UInt32(0))
+            return update
+        }
+
+        server.write(desktopSize(width: 640, height: 480))
+        // The next update is asked for before this one is read, and then the latest size goes out.
+        #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 2, 128, 1, 224]))
+        #expect(server.read(24) == Data([251, 0, 10, 0, 5, 160, 1, 0, 0, 0, 0, 42, 0, 0, 0, 0, 10, 0, 5, 160, 0, 0, 0, 0]))
+        server.write(desktopSize(width: 2560, height: 1440))
+        #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 2, 128, 1, 224]))
+        // Acknowledging a size must not send it again and start a resize feedback loop: what follows is
+        // a request for the whole picture at the new size.
+        #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 10, 0, 5, 160]))
+    }
 }
 
 @Suite struct AgentChannelTests {
