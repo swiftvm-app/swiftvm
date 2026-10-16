@@ -217,6 +217,37 @@ import VMCore
 }
 
 @MainActor
+@Suite struct WindowsDisplayAdapterTests {
+    @Test func aWindowsMachineCanBootAfterItsDirect3DRuntimeIsRemoved() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var installation = QEMUInstallation(
+            program: directory.appending(path: "bin/qemu-system-aarch64"),
+            dataDirectory: directory.appending(path: "share"), acceleratesGraphics: true
+        )
+        let driver = InstallationConfiguration(hasDisplayDriver: true, hasAcceleratedDisplayDriver: true)
+        let dxmt = installation.libraryDirectory.appending(path: "libdxmt-native.dylib")
+        try FileManager.default.createDirectory(at: installation.libraryDirectory, withIntermediateDirectories: true)
+        try Data().write(to: dxmt)
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .virtioGPU3D)
+
+        // A copy without the graphics runtime must boot too, even if DXMT is still there.
+        installation.acceleratesGraphics = false
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)
+        installation.acceleratesGraphics = true
+
+        // Release builds have Linux graphics, but no Direct3D. The 3D installer removed the 2D driver,
+        // although the guest reported both display capabilities, so only the framebuffer is safe.
+        try FileManager.default.removeItem(at: dxmt)
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)
+
+        // Nothing about the guest's driver was forgotten: a Direct3D build can use it again.
+        try Data().write(to: dxmt)
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .virtioGPU3D)
+    }
+}
+
+@MainActor
 @Suite struct InstallerBootTests {
     private let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tests-\(UUID().uuidString)")
 

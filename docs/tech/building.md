@@ -27,7 +27,8 @@ build takes several minutes; later ones reuse `.build/qemu`. Set
 
 Windows' Direct3D driver also needs DXMT, which is built only with
 `SWIFTVM_QEMU_DIRECT3D=1`. It compiles LLVM 15 and takes much longer. Release
-builds leave it out.
+builds leave it out. A Windows machine with the 3D driver falls back to its
+firmware framebuffer over VNC when started in a build without Direct3D.
 
 ## Build
 

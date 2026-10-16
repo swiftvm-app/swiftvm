@@ -34,8 +34,7 @@ public final class QEMUBackendProvider: VMBackendProvider {
             // Linux brings the driver for a virtio GPU along, whether it draws with the Mac's GPU or not.
             current.display.acceleratesGraphics ? .virtioGPU3D : .virtioGPU
         } else {
-            current.installation.hasAcceleratedDisplayDriver ? .virtioGPU3D
-                : current.installation.hasDisplayDriver ? .virtioGPU : .framebuffer
+            Self.windowsDisplayAdapter(for: current.installation, installation: installation)
         }
         if adapter == .virtioGPU3D {
             guard !isRestoring else {
@@ -69,6 +68,15 @@ public final class QEMUBackendProvider: VMBackendProvider {
 
     public func backendDidStop(for machine: VirtualMachine) {
         networkManager.release(user: machine.id)
+    }
+
+    static func windowsDisplayAdapter(for configuration: InstallationConfiguration, installation: QEMUInstallation) -> DisplayAdapter {
+        if configuration.hasAcceleratedDisplayDriver {
+            // The 3D installer removes the display-only driver. Without Direct3D in this copy of the
+            // app, the firmware's framebuffer still works; a plain virtio GPU may have no driver.
+            return installation.acceleratesGraphics && installation.supportsDirect3D ? .virtioGPU3D : .framebuffer
+        }
+        return configuration.hasDisplayDriver ? .virtioGPU : .framebuffer
     }
 
     /// Whether the machine is about to start an installer disc: one is plugged in, and nothing has
