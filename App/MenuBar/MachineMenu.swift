@@ -84,6 +84,7 @@ struct MachineMenu: View {
             Button("Discard Saved State", systemImage: "arrow.counterclockwise") { machine.discardSavedState() }
         case .running:
             Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
+                .disabled(!machine.canSuspend)
             Button("Pause", systemImage: "pause") { Task { await machine.pause() } }
             // A guest that asks for confirmation on its screen has its window brought forward, also
             // when the request came from the menu bar.
@@ -97,6 +98,7 @@ struct MachineMenu: View {
         case .paused:
             Button("Resume", systemImage: "play") { Task { await machine.resume() } }
             Button("Suspend", systemImage: "pause.circle") { Task { await machine.suspend() } }
+                .disabled(!machine.canSuspend)
             Button("Force Stop", systemImage: "xmark.octagon", role: .destructive) { Task { await machine.forceStop() } }
         case .stopping:
             // A guest that ignores the shutdown request can still be stopped.

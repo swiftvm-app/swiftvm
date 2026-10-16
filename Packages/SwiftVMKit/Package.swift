@@ -37,7 +37,8 @@ let package = Package(
         // Shares the Mac's folders with guests that have no device for it, over WebDAV.
         .target(name: "FileSharing"),
         // Runs Windows guests on QEMU, which the app carries in Contents/Helpers.
-        .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel"]),
+        .target(name: "GuestDisplayBridge"),
+        .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel", "GuestDisplayBridge"]),
         .target(name: "VMControl", dependencies: ["GuestChannel"]),
         // Not named `swiftvm`: a target's build folder is named after it, and on a disk that doesn't tell
         // upper case from lower, that of the app's `SwiftVM` target would be the same folder. Builds that

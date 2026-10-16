@@ -1,0 +1,114 @@
+An `ipa-granule-size` option for HVF (-accel hvf,ipa-granule-size=4096), after UTM's
+QEMU 10.0.12. Guest memory is then mapped in 4K pages, so that GPU memory the host hands
+out at 4K offsets can be mapped into the guest, which Windows' Direct3D driver needs.
+
+diff --git a/accel/hvf/hvf-all.c b/accel/hvf/hvf-all.c
+index 8bd9154a5..c8415ece1 100644
+--- a/accel/hvf/hvf-all.c
++++ b/accel/hvf/hvf-all.c
+@@ -23,6 +23,7 @@
+ #include "trace.h"
+ 
+ bool hvf_allowed;
++uint32_t hvf_ipa_granule_size;
+ bool hvf_kernel_irqchip;
+ bool hvf_nested_virt;
+ static bool hvf_kernel_irqchip_override;
+@@ -93,7 +94,7 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
+     MemoryRegion *area = section->mr;
+     bool writable = !area->readonly && !area->rom_device;
+     hv_memory_flags_t flags;
+-    uint64_t page_size = qemu_real_host_page_size();
++    uint64_t page_size = hvf_ipa_granule_size ?: qemu_real_host_page_size();
+     uint64_t gpa = section->offset_within_address_space;
+     uint64_t size = int128_get64(section->size);
+     hv_return_t ret;
+@@ -269,6 +270,31 @@ static void hvf_set_kernel_irqchip(Object *obj, Visitor *v,
+     }
+ }
+ 
++static void hvf_get_ipa_granule_size(Object *obj, Visitor *v,
++                                     const char *name, void *opaque,
++                                     Error **errp)
++{
++    uint32_t value = hvf_ipa_granule_size;
++
++    visit_type_uint32(v, name, &value, errp);
++}
++
++static void hvf_set_ipa_granule_size(Object *obj, Visitor *v,
++                                     const char *name, void *opaque,
++                                     Error **errp)
++{
++    uint32_t value;
++
++    if (!visit_type_uint32(v, name, &value, errp)) {
++        return;
++    }
++    if (value != 0 && value != 4096 && value != 16384) {
++        error_setg(errp, "ipa-granule-size must be 4096 or 16384");
++        return;
++    }
++    hvf_ipa_granule_size = value;
++}
++
+ static void hvf_accel_class_init(ObjectClass *oc, const void *data)
+ {
+     AccelClass *ac = ACCEL_CLASS(oc);
+@@ -282,6 +308,11 @@ static void hvf_accel_class_init(ObjectClass *oc, const void *data)
+         NULL, NULL);
+     object_class_property_set_description(oc, "kernel-irqchip",
+         "Configure HVF irqchip");
++    object_class_property_add(oc, "ipa-granule-size", "uint32",
++        hvf_get_ipa_granule_size, hvf_set_ipa_granule_size,
++        NULL, NULL);
++    object_class_property_set_description(oc, "ipa-granule-size",
++        "Size of the pages guest memory is mapped in (4096 or 16384)");
+ }
+ 
+ static const TypeInfo hvf_accel_type = {
+diff --git a/include/system/hvf_int.h b/include/system/hvf_int.h
+index a01691ce1..8890eac01 100644
+--- a/include/system/hvf_int.h
++++ b/include/system/hvf_int.h
+@@ -42,6 +42,12 @@ struct HVFState {
+     QTAILQ_HEAD(, hvf_sw_breakpoint) hvf_sw_breakpoints;
+ };
+ extern HVFState *hvf_state;
++/*
++ * The size of the pages the guest's memory is mapped in, or 0 for the host's.
++ * Mapping in 4K pages lets the guest place GPU memory the host hands out at
++ * 4K offsets, which a 16K host page can't follow.
++ */
++extern uint32_t hvf_ipa_granule_size;
+ 
+ struct AccelCPUState {
+     hvf_vcpuid fd;
+diff --git a/target/arm/hvf/hvf.c b/target/arm/hvf/hvf.c
+index b00a7e1a8..2470eedb8 100644
+--- a/target/arm/hvf/hvf.c
++++ b/target/arm/hvf/hvf.c
+@@ -1332,6 +1332,23 @@ hv_return_t hvf_arch_vm_create(MachineState *ms, uint32_t pa_range)
+     }
+     chosen_ipa_bit_size = pa_range;
+ 
++    if (hvf_ipa_granule_size) {
++        if (__builtin_available(macOS 26.0, *)) {
++            ret = hv_vm_config_set_ipa_granule(config,
++                hvf_ipa_granule_size == 4096 ? HV_IPA_GRANULE_4KB
++                                             : HV_IPA_GRANULE_16KB);
++            if (ret != HV_SUCCESS) {
++                error_report("Failed to set the IPA granule to %u bytes.",
++                             hvf_ipa_granule_size);
++                goto cleanup;
++            }
++        } else {
++            error_report("Setting the IPA granule needs macOS 26 or later.");
++            ret = HV_UNSUPPORTED;
++            goto cleanup;
++        }
++    }
++
+     if (__builtin_available(macOS 15.0, *)) {
+         if (hvf_nested_virt_enabled()) {
+             if (!hvf_arm_el2_supported()) {

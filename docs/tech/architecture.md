@@ -10,7 +10,7 @@ engines.
 | --- | --- | --- |
 | SwiftVM | Your Mac | Manages machines, windows, storage, and networking |
 | `swiftvm` | Your Mac | Sends commands to the running app |
-| `qemu-system-aarch64` | Your Mac | Runs Windows guests with hardware acceleration |
+| `qemu-system-aarch64` | Your Mac | Runs Windows guests, and Linux guests with graphics acceleration |
 | `swiftvm-agent` | macOS guests | Power, clock, clipboard, and automation |
 | `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, and automation |
 | `swiftvm-agent.exe` | Windows guests | Power, clock, clipboard, display resizing, setup progress, and commands |
@@ -27,7 +27,7 @@ in `Packages/SwiftVMKit`.
 | --- | --- |
 | `VMCore` | Machine configuration, state, library, snapshots, templates, and backend interfaces |
 | `VZEngine` | macOS and Linux guests using Apple's Virtualization framework |
-| `QEMUEngine` | Windows guests using QEMU, including display and input |
+| `QEMUEngine` | Windows guests, and Linux guests with graphics acceleration, using QEMU, including display and input |
 | `VMNetworking` | Shared NAT network, address reservations, and port forwarding |
 | `DiskTools` | Disk creation, resizing, conversion, compression, and ISO images |
 | `FileSharing` | WebDAV shared folders for Windows guests |

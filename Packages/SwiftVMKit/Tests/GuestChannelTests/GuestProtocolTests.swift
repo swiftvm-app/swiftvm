@@ -18,10 +18,17 @@ import Testing
             == #"{"id":7,"nanoseconds":1790000000123456789,"type":"set-clock"}"# + "\n")
         #expect(text(.mountSharedFolders(id: 8, tag: "swiftvm", mountPoint: "/mnt/shared"))
             == #"{"id":8,"mountPoint":"/mnt/shared","tag":"swiftvm","type":"mount-shared-folders"}"# + "\n")
+        // On QEMU, a device for each folder, mounted under the folder's name.
+        let folder = SharedFolderDevice(tag: "swiftvm-1a2b3c4d", name: "Projects", readOnly: true)
+        #expect(text(.mountSharedFolders(id: 8, tag: "swiftvm", mountPoint: "/mnt/shared", folders: [folder]))
+            == #"{"folders":[{"name":"Projects","readOnly":true,"tag":"swiftvm-1a2b3c4d"}],"id":8,"mountPoint":"/mnt/shared","tag":"swiftvm","type":"mount-shared-folders"}"# + "\n")
         #expect(text(.shutDown(id: 9)) == #"{"id":9,"type":"shut-down"}"# + "\n")
         #expect(text(.setTimeZone(id: 10, identifier: "Europe/Berlin"))
             == #"{"id":10,"identifier":"Europe/Berlin","type":"set-time-zone"}"# + "\n")
         #expect(text(.clipboard(text: "two\nlines")) == #"{"text":"two\nlines","type":"clipboard"}"# + "\n")
+        // Not a request: the size of a window changes many times, and nothing waits for an answer.
+        #expect(text(.displaySize(width: 2400, height: 1496, scale: 2)) == #"{"height":1496,"scale":2,"type":"display-size","width":2400}"# + "\n")
+        #expect(HostMessage.displaySize(width: 2400, height: 1496, scale: 2).requestID == nil)
     }
 
     @Test func onlyRequestsCarryAnID() {

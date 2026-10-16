@@ -158,6 +158,10 @@ public final class VirtualMachine: Identifiable {
     /// The guest display, available while the machine is active.
     public var displayView: NSView? { backend?.displayView }
 
+    public var canSuspend: Bool {
+        (state == .running || state == .paused) && backend?.canSaveState == true
+    }
+
     // MARK: Configuration
 
     /// Mutates and persists the configuration. Changes that can apply to a running guest are applied live.
@@ -172,6 +176,13 @@ public final class VirtualMachine: Identifiable {
         if let backend, state == .running || state == .paused {
             if previous.sharedFolders != updated.sharedFolders {
                 try backend.setSharedFolders(updated.sharedFolders)
+                // QEMU gives each folder of a Linux guest a device, and adds none while it runs.
+                if updated.engine == .qemu, updated.os.family == .linux {
+                    notice = VMErrorInfo(
+                        title: "“\(updated.name)” sees the change to its shared folders the next time it starts",
+                        message: "A machine with graphics acceleration gets its shared folders when it starts. Restart it to use them."
+                    )
+                }
             }
             for interface in updated.networkInterfaces {
                 let before = previous.networkInterfaces.first { $0.id == interface.id }
@@ -284,7 +295,13 @@ public final class VirtualMachine: Identifiable {
         }
     }
 
+    /// The size the window last asked the guest's display for, for an agent that fits its desktop to it.
+    private var requestedDisplaySize: (width: Int, height: Int, scale: Double)?
+
     private func agentDidConnect(_ hello: AgentHello) {
+        if let size = requestedDisplaySize {
+            agent.sendDisplaySize(width: size.width, height: size.height, scale: size.scale)
+        }
         // The guest knows best what it is. One that was upgraded says so here, and one that was installed
         // from a disc says it for the first time.
         if let name = hello.system.displayName {
@@ -302,6 +319,9 @@ public final class VirtualMachine: Identifiable {
         // hardware of a machine that runs doesn't change.
         if hello.features.contains(GuestFeature.resizableDisplay), !configuration.installation.hasDisplayDriver {
             try? updateConfiguration { $0.installation.hasDisplayDriver = true }
+        }
+        if hello.features.contains(GuestFeature.acceleratedDisplay), !configuration.installation.hasAcceleratedDisplayDriver {
+            try? updateConfiguration { $0.installation.hasAcceleratedDisplayDriver = true }
         }
         onGuestAgentChange?(self)
         Task { await lookAfterGuest() }
@@ -365,6 +385,22 @@ public final class VirtualMachine: Identifiable {
     /// Where the agent mounts the folders a guest has through its file-sharing device.
     private static let deviceSharedFoldersPlace = SharedFoldersPlace(tag: GuestIntegration.sharedFoldersTag, mountPoint: GuestIntegration.sharedFoldersMountPoint)
 
+    /// Where the guest finds its shared folders on a device of the machine's own: the one device of
+    /// Apple's virtualization, or on QEMU a Linux guest's device for each folder it started with. A
+    /// Windows guest on QEMU has none: the app serves its folders (``sharedFoldersPlace``).
+    private var ownSharedFoldersPlace: SharedFoldersPlace? {
+        switch (configuration.engine, configuration.os.family) {
+        case (.virtualization, _):
+            return Self.deviceSharedFoldersPlace
+        case (.qemu, .linux):
+            let folders = GuestIntegration.folderDevices(of: configuration.sharedFolders)
+            guard !folders.isEmpty else { return nil }
+            return SharedFoldersPlace(tag: GuestIntegration.sharedFoldersTag, mountPoint: GuestIntegration.sharedFoldersMountPoint, folders: folders)
+        case (.qemu, _):
+            return nil
+        }
+    }
+
     /// Does through the agent what the guest needs from the host right now: a clock that is right, its
     /// shared folders mounted, and once in its life this Mac's time zone. Called when the agent connects
     /// and whenever one of them may be due.
@@ -389,8 +425,8 @@ public final class VirtualMachine: Identifiable {
             // Looked up only when there is something to mount. A machine on QEMU has its folders where
             // the app serves them, and none while it can't.
             if !configuration.mountsSharedFoldersAutomatically, !hasAgentMountedSharedFolders,
-               let place = sharedFoldersPlace?(self) ?? (configuration.engine == .qemu ? nil : Self.deviceSharedFoldersPlace),
-               await agent.mountSharedFolders(tag: place.tag, at: place.mountPoint),
+               let place = sharedFoldersPlace?(self) ?? ownSharedFoldersPlace,
+               await agent.mountSharedFolders(tag: place.tag, at: place.mountPoint, folders: place.folders),
                // The answer may come after the guest has stopped, or stopped and started again.
                run == startCount, agent.isConnected {
                 hasAgentMountedSharedFolders = true
@@ -780,6 +816,9 @@ public final class VirtualMachine: Identifiable {
     /// Suspends a running or paused machine. If that fails, the machine is left as it was.
     private func performSuspend() async throws {
         guard state == .running || state == .paused, let backend else { return }
+        guard backend.canSaveState else {
+            throw VMError.invalidConfiguration("“\(name)” uses GPU acceleration, which can't save running graphics state. Shut it down before taking a snapshot or quitting SwiftVM.")
+        }
         let wasRunning = state == .running
         state = .suspending
         do {
@@ -1011,6 +1050,10 @@ public final class VirtualMachine: Identifiable {
         case .usbDeviceDisconnected(let id):
             // Pulling a device out is nothing to report.
             usbDevices.removeAll { $0.id == id }
+        case .displaySizeRequested(let width, let height, let scale):
+            // Kept for an agent that isn't there yet, or connects again.
+            requestedDisplaySize = (width, height, scale)
+            agent.sendDisplaySize(width: width, height: height, scale: scale)
         }
     }
 

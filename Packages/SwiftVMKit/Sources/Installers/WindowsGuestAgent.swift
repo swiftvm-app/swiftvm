@@ -46,6 +46,7 @@ public enum WindowsGuestAgent {
         for file in Self.files + [("setup.ps1", "windows-setup.ps1")] {
             files[file.name] = Data(windowsLines(try resource(file.resource)).utf8)
         }
+        try addGraphicsDriver(to: &files)
         return files
     }
 
@@ -55,7 +56,16 @@ public enum WindowsGuestAgent {
         for file in Self.files + [("install.cmd", "windows-install.cmd"), ("README.txt", "windows-readme.txt")] {
             files[file.name] = Data(windowsLines(try resource(file.resource)).utf8)
         }
+        try addGraphicsDriver(to: &files)
         return files
+    }
+
+    private static func addGraphicsDriver(to files: inout [String: Data]) throws {
+        guard let resources = Bundle.main.resourceURL else { return }
+        let driver = resources.appending(path: "QEMU/share/viogpu3d-arm64x-signed.zip")
+        if FileManager.default.fileExists(atPath: driver.path) {
+            files["graphics-driver.zip"] = try Data(contentsOf: driver)
+        }
     }
 
     /// Text with the line breaks Windows' own tools expect, whichever it was written with.

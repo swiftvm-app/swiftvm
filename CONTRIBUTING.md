@@ -10,9 +10,11 @@ Start with [Building](docs/tech/building.md) and [Architecture](docs/tech/archit
 
 - macOS 27 or newer, on Apple silicon
 - Xcode 27 or newer
-- For the QEMU that runs Windows guests, which the build scripts build the first
-  time: `brew install ninja meson pkgconf glib pixman python`. Without them,
-  `SWIFTVM_QEMU=-` builds the app without it
+- For the QEMU that runs Windows guests and Linux guests with graphics
+  acceleration, which the build scripts build the first time:
+  `brew install cmake ninja meson pkgconf glib pixman openssl@3 python`, plus
+  Xcode's Metal toolchain. Without them, `SWIFTVM_QEMU=-` builds the app
+  without it
 
 No Apple Developer account is needed, except for [USB devices](docs/tech/building.md#usb-devices).
 

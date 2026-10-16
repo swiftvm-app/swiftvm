@@ -1,0 +1,23 @@
+--- a/Sources/CocoaSpice/CSDisplay.m	2026-10-16 16:05:20
++++ b/Sources/CocoaSpice/CSDisplay.m	2026-10-16 16:05:20
+@@ -302,14 +302,18 @@
+         } else if (self.isGLEnabled && self.texture) {
+             // sample what we present rather than the scanout itself, which the
+             // server is free to overwrite as soon as a draw is acknowledged
+-            CIImage *ciimage = [[CIImage alloc] initWithMTLTexture:self.texture options:nil];
++            // the scanout holds sRGB values: said so, Core Image leaves them as they are rather
++            // than encoding them a second time, which washes the picture out
++            CGColorSpaceRef sRGB = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
++            CIImage *ciimage = [[CIImage alloc] initWithMTLTexture:self.texture options:@{kCIImageColorSpace: (__bridge id)sRGB}];
+             // the scanout carries no meaningful alpha -- it is zero for every
+             // pixel and the shader ignores it (`hasAlpha` is NO), so without
+             // this the image reads as fully transparent
+             ciimage = [ciimage imageBySettingAlphaOneInExtent:ciimage.extent];
+             CIImage *flipped = [ciimage imageByApplyingOrientation:kCGImagePropertyOrientationDownMirrored];
+             CIContext *cictx = self.device ? [CIContext contextWithMTLDevice:self.device] : [CIContext context];
+-            img = [cictx createCGImage:flipped fromRect:flipped.extent];
++            img = [cictx createCGImage:flipped fromRect:flipped.extent format:kCIFormatRGBA8 colorSpace:sRGB];
++            CGColorSpaceRelease(sRGB);
+         }
+ 
+         if (img) {

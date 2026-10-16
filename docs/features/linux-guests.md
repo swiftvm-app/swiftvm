@@ -80,6 +80,39 @@ SwiftVM doesn't set these guests up, so afterwards you may want to:
 - Install the [guest tools](guest-tools.md#installing).
 - Install an SSH server and add your key. See [SSH](ssh.md).
 
+## Graphics acceleration
+
+Turn on **Graphics acceleration** when creating a machine, or pass `--gpu` to
+`swiftvm create`, and the guest draws with your Mac's GPU. Desktops such as
+GNOME, Hyprland, or Omarchy then stay smooth at any window size, where they
+otherwise draw everything on the machine's processors.
+
+Apple's virtualization gives Linux no such GPU, so a machine with graphics
+acceleration runs on QEMU, as Windows guests do. The guest's OpenGL goes
+through virglrenderer to your Mac's GPU. That changes a few things:
+
+- The machine can't be suspended, and has no memory snapshots. Snapshots of
+  the machine while it is shut down work as usual.
+- It has no Rosetta, and no Secure Boot.
+- Each shared folder is a device of its own, mounted under
+  `/mnt/shared/<name>` by the [guest tools](guest-tools.md). Folders shared
+  while the machine runs appear after it restarts. On a Quick Create machine
+  the account has your Mac user's ID, so that what it writes there is yours on
+  the Mac.
+- The clipboard isn't shared.
+- The display follows the window at your Mac's full resolution: on a Retina
+  display, twice its size in points at a scale of 2. GNOME and KDE Plasma
+  follow it through `spice-vdagent`, and Hyprland through the guest tools.
+- Programs get OpenGL ES 3.0 and OpenGL 2.1, translated to Metal. A program
+  that needs a later desktop OpenGL doesn't start with it; started with
+  `LIBGL_ALWAYS_SOFTWARE=1` it draws on the machine's processors instead.
+- The guest tools talk to the app over a serial line instead of a socket
+  device. `swiftvm ssh --vsock` goes through them, to the SSH server on port 22.
+- USB devices can't be handed to it.
+
+The option needs a copy of SwiftVM built with QEMU, which releases are. It is
+chosen when the machine is created and stays with it.
+
 ## Rosetta
 
 With Rosetta, x86-64 Linux programs run in an ARM64 guest. Enable it when
@@ -113,9 +146,11 @@ there.
 
 ## Good to know
 
-- Linux guests draw without graphics acceleration. Xfce is a lighter option
-  than GNOME or KDE Plasma.
-- The shared clipboard works in desktop guests that run `spice-vdagent`, which
+- Without [graphics acceleration](#graphics-acceleration), Linux guests draw
+  on the machine's processors. Xfce is a lighter option than GNOME or KDE
+  Plasma.
+- The shared clipboard works in desktop guests that run `spice-vdagent`, without
+  [graphics acceleration](#graphics-acceleration), which
   the [desktops](#desktops-and-setup-scripts) SwiftVM installs bring.
 - SSH [without a network](ssh.md#without-a-network) works out of the box on
   Ubuntu 26.04 and Debian 13. Ubuntu 24.04 needs the guest tools for it.

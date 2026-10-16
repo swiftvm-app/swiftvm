@@ -55,6 +55,10 @@ public enum GuestFeature {
     /// The guest has a driver for a display whose size can change with the window. Said by agents in
     /// guests whose engine gives them a choice of display: Windows guests on QEMU.
     public static let resizableDisplay = "resizable-display"
+    /// Fits the desktop to the size of the window it is shown in: ``HostMessage/displaySize(width:height:scale:)``.
+    /// For desktops that don't take a new size from the display itself.
+    public static let displaySize = "display-size"
+    public static let acceleratedDisplay = "accelerated-display"
 
     /// The features that are kinds of ``GuestJob``.
     public static let jobs = [exec, screen, input, accessibility]
@@ -276,7 +280,9 @@ public enum HostMessage: Sendable, Hashable {
     /// Set the system's clock to this time, in nanoseconds since 1970.
     case setClock(id: Int, nanoseconds: Int64)
     /// Mount the shared folders (the virtio-fs device with this tag) unless they are mounted already.
-    case mountSharedFolders(id: Int, tag: String, mountPoint: String)
+    /// A machine on QEMU has a device for each folder instead, which `folders` names: each is mounted
+    /// in `mountPoint` under the folder's name.
+    case mountSharedFolders(id: Int, tag: String, mountPoint: String, folders: [SharedFolderDevice] = [])
     /// Shut the system down.
     case shutDown(id: Int)
     /// Give the system this time zone, named as in the time zone database (`Europe/Berlin`). Only to
@@ -284,6 +290,9 @@ public enum HostMessage: Sendable, Hashable {
     case setTimeZone(id: Int, identifier: String)
     /// Text was copied on the Mac. Only to an agent that offers ``GuestFeature/clipboard``.
     case clipboard(text: String)
+    /// The window the guest is shown in is this large, in pixels, at this many pixels to a point.
+    /// Only to an agent that offers ``GuestFeature/displaySize``.
+    case displaySize(width: Int, height: Int, scale: Double)
     /// A kind of message this build doesn't know.
     case unknown(type: String)
 }
@@ -291,7 +300,22 @@ public enum HostMessage: Sendable, Hashable {
 // MARK: - Coding
 
 private enum MessageKey: String, CodingKey {
-    case type, id, `protocol`, interfaces, nanoseconds, tag, mountPoint, identifier, text
+    case type, id, `protocol`, interfaces, nanoseconds, tag, mountPoint, identifier, text, folders, width, height, scale
+}
+
+/// A shared folder with a device of its own, as a Linux guest on QEMU has: a 9p device per folder.
+public struct SharedFolderDevice: Codable, Sendable, Hashable {
+    /// The device's tag, which the guest mounts it by.
+    public var tag: String
+    /// The name the folder has in the guest.
+    public var name: String
+    public var readOnly: Bool
+
+    public init(tag: String, name: String, readOnly: Bool) {
+        self.tag = tag
+        self.name = name
+        self.readOnly = readOnly
+    }
 }
 
 extension AgentMessage: Codable {
@@ -359,7 +383,8 @@ extension HostMessage: Codable {
             self = .mountSharedFolders(
                 id: try container.decode(Int.self, forKey: .id),
                 tag: try container.decode(String.self, forKey: .tag),
-                mountPoint: try container.decode(String.self, forKey: .mountPoint)
+                mountPoint: try container.decode(String.self, forKey: .mountPoint),
+                folders: try container.decodeIfPresent([SharedFolderDevice].self, forKey: .folders) ?? []
             )
         case "shut-down":
             self = .shutDown(id: try container.decode(Int.self, forKey: .id))
@@ -370,6 +395,12 @@ extension HostMessage: Codable {
             )
         case "clipboard":
             self = .clipboard(text: try container.decode(String.self, forKey: .text))
+        case "display-size":
+            self = .displaySize(
+                width: try container.decode(Int.self, forKey: .width),
+                height: try container.decode(Int.self, forKey: .height),
+                scale: try container.decode(Double.self, forKey: .scale)
+            )
         default:
             self = .unknown(type: type)
         }
@@ -385,11 +416,15 @@ extension HostMessage: Codable {
             try container.encode("set-clock", forKey: .type)
             try container.encode(id, forKey: .id)
             try container.encode(nanoseconds, forKey: .nanoseconds)
-        case .mountSharedFolders(let id, let tag, let mountPoint):
+        case .mountSharedFolders(let id, let tag, let mountPoint, let folders):
             try container.encode("mount-shared-folders", forKey: .type)
             try container.encode(id, forKey: .id)
             try container.encode(tag, forKey: .tag)
             try container.encode(mountPoint, forKey: .mountPoint)
+            // An agent that knows nothing of devices per folder never sees the word.
+            if !folders.isEmpty {
+                try container.encode(folders, forKey: .folders)
+            }
         case .shutDown(let id):
             try container.encode("shut-down", forKey: .type)
             try container.encode(id, forKey: .id)
@@ -400,6 +435,11 @@ extension HostMessage: Codable {
         case .clipboard(let text):
             try container.encode("clipboard", forKey: .type)
             try container.encode(text, forKey: .text)
+        case .displaySize(let width, let height, let scale):
+            try container.encode("display-size", forKey: .type)
+            try container.encode(width, forKey: .width)
+            try container.encode(height, forKey: .height)
+            try container.encode(scale, forKey: .scale)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }
@@ -410,8 +450,8 @@ extension HostMessage {
     /// The `id` an answer to this message has to carry, if it is a request.
     public var requestID: Int? {
         switch self {
-        case .setClock(let id, _), .mountSharedFolders(let id, _, _), .shutDown(let id), .setTimeZone(let id, _): id
-        case .hello, .clipboard, .unknown: nil
+        case .setClock(let id, _), .mountSharedFolders(let id, _, _, _), .shutDown(let id), .setTimeZone(let id, _): id
+        case .hello, .clipboard, .displaySize, .unknown: nil
         }
     }
 }

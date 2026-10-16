@@ -9,8 +9,9 @@
 #   --output        the app to make. A copy of SwiftVM that is there is replaced, unless it is running
 #   --development   make the development copy, "SwiftVM Dev": an app of its own to macOS, which keeps
 #                   its machines apart from the app's (AppIdentity in Packages/SwiftVMKit)
-#   --qemu          the QEMU that scripts/build-qemu.sh made, which runs Windows guests. Without it the
-#                   app runs every other guest, and says so when a Windows one is to start
+#   --qemu          the QEMU that scripts/build-qemu.sh made, which runs Windows guests and Linux guests
+#                   with graphics acceleration. Without it the app runs every other guest, and says so
+#                   when one of those is to start
 #
 # For a release, which scripts/build-release.sh makes:
 #   --version             what the app calls its version, in place of the one in Config/Info.plist
@@ -60,7 +61,8 @@ done
 for built in "$products/SwiftVM" "$products/SwiftVMKit_Installers.bundle" "$products/Sparkle.framework" "$helpers/swiftvm" "$helpers/swiftvm-agent"; do
     [[ -e $built ]] || fail "$built isn't there. Build first: scripts/build.sh, or swift run SwiftVM."
 done
-[[ -z $qemu || -x $qemu/bin/qemu-system-aarch64 ]] || fail "$qemu isn't a QEMU that scripts/build-qemu.sh made."
+[[ -z $qemu || ( -x $qemu/bin/qemu-system-aarch64 && -f $qemu/lib/libSwiftVMDisplay.dylib ) ]] \
+    || fail "$qemu isn't a QEMU that scripts/build-qemu.sh made."
 # The disk takes swiftvm and SwiftVM for one name. The swiftvm tool, built at the repository's root, lands
 # in the folder of the app's program and replaces it, and the next build of the app doesn't notice.
 built=("$products"/*(N:t))
@@ -95,6 +97,9 @@ if [[ -n $qemu ]]; then
     mkdir -p "$contents/Helpers/QEMU" "$contents/Resources/QEMU"
     cp -R "$qemu/bin" "$qemu/lib" "$contents/Helpers/QEMU/"
     cp -R "$qemu/share" "$qemu/licenses" "$qemu/README.txt" "$contents/Resources/QEMU/"
+    # CocoaSpice, which shows the screens of machines with graphics acceleration, looks for its Metal
+    # shaders in the app's resources.
+    mv "$contents/Resources/QEMU/share/CocoaSpice_CocoaSpiceRenderer.bundle" "$contents/Resources/"
 fi
 # The resources of the package's Installers module, where Bundle.module looks for them in an app.
 cp -R "$products/SwiftVMKit_Installers.bundle" "$contents/Resources/"
@@ -249,6 +254,13 @@ if [[ -n $qemu ]]; then
         /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/qemu-entitlements.plist"
     fi
     sign --identifier com.swiftvm.app.qemu --entitlements "$stage/qemu-entitlements.plist" "$contents/Helpers/QEMU/bin/qemu-system-aarch64"
+    # virglrenderer's render server, which QEMU starts for Windows' Direct3D, loads the same libraries
+    # and needs nothing else.
+    print '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict></dict></plist>' > "$stage/renderer-entitlements.plist"
+    if [[ $identity == - ]]; then
+        /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/renderer-entitlements.plist"
+    fi
+    sign --identifier com.swiftvm.app.qemu.renderer --entitlements "$stage/renderer-entitlements.plist" "$contents/Helpers/QEMU/bin/virgl_render_server"
 fi
 sign --entitlements "$stage/entitlements.plist" "$app"
 codesign --verify --deep --strict "$app" || fail "The signature of $app doesn't hold."

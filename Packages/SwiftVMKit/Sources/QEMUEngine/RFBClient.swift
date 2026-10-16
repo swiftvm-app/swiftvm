@@ -68,6 +68,8 @@ public final class RFBClient: @unchecked Sendable {
     /// The server takes requests for a size of the display: the guest's driver can change it.
     private var takesSizeRequests = false
     private var screenID: UInt32 = 0
+    /// The latest window size, including one requested before the server advertised resizing.
+    private var requestedSize: (width: UInt16, height: UInt16)?
     private var buttons: UInt8 = 0
     /// Reused by the reader thread. Socket reads must finish before locking the displayed surface.
     private var rectanglePixels = [UInt8]()
@@ -162,19 +164,32 @@ public final class RFBClient: @unchecked Sendable {
 
     /// Asks for the display to be this size. A guest without a driver that can change it stays as it is.
     public func requestSize(width: Int, height: Int) {
-        let screen = lock.withLock { takesSizeRequests ? screenID : nil }
-        guard let screen, width >= 320, height >= 240 else { return }
-        var message = Data([251, 0])
-        message.append(bigEndian: UInt16(clamping: width))
-        message.append(bigEndian: UInt16(clamping: height))
-        message.append(contentsOf: [1, 0])
-        message.append(bigEndian: screen)
-        message.append(bigEndian: UInt16(0))
-        message.append(bigEndian: UInt16(0))
-        message.append(bigEndian: UInt16(clamping: width))
-        message.append(bigEndian: UInt16(clamping: height))
-        message.append(bigEndian: UInt32(0))
-        send(message)
+        guard width >= 320, height >= 240 else { return }
+        lock.withLock { requestedSize = (UInt16(clamping: width), UInt16(clamping: height)) }
+        sendRequestedSize()
+    }
+
+    private func sendRequestedSize() {
+        writer.async { [self] in
+            // Read the latest size on the writer, so negotiation and a window resize racing each
+            // other cannot send an older size after the newer one.
+            let request = lock.withLock { () -> (UInt32, UInt16, UInt16)? in
+                guard !isClosed, takesSizeRequests, let requestedSize else { return nil }
+                return (screenID, requestedSize.width, requestedSize.height)
+            }
+            guard let (screen, width, height) = request else { return }
+            var message = Data([251, 0])
+            message.append(bigEndian: width)
+            message.append(bigEndian: height)
+            message.append(contentsOf: [1, 0])
+            message.append(bigEndian: screen)
+            message.append(bigEndian: UInt16(0))
+            message.append(bigEndian: UInt16(0))
+            message.append(bigEndian: width)
+            message.append(bigEndian: height)
+            message.append(bigEndian: UInt32(0))
+            _ = ByteRelay.writeAll(ArraySlice(message), to: descriptor)
+        }
     }
 
     private func send(_ message: Data) {
@@ -339,10 +354,13 @@ public final class RFBClient: @unchecked Sendable {
                     firstScreen = firstScreen ?? id
                 }
                 // The server says it takes requests for a size by sending one of these at all.
-                lock.withLock {
+                let firstSize = lock.withLock {
+                    let firstSize = !takesSizeRequests
                     takesSizeRequests = true
                     screenID = firstScreen ?? 0
+                    return firstSize
                 }
+                if firstSize { sendRequestedSize() }
                 // Also the answer to a request that changed nothing comes as one, with the size as it is.
                 if width > 0, height > 0, width != picture?.width || height != picture?.height {
                     try makePicture(width: width, height: height)

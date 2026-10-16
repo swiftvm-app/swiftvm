@@ -1,7 +1,8 @@
 import Foundation
 
-/// The QEMU that runs Windows guests, as it comes inside the app: its program with the libraries it
-/// loads in `Contents/Helpers/QEMU`, and its firmware in `Contents/Resources/QEMU`.
+/// The QEMU that runs Windows guests and Linux guests with graphics acceleration, as it comes inside the
+/// app: its program with the libraries it loads in `Contents/Helpers/QEMU`, and its firmware in
+/// `Contents/Resources/QEMU`.
 ///
 /// `scripts/build-qemu.sh` builds it and `scripts/bundle-app.sh` puts it there. A copy of the app that
 /// was built without it runs every other guest.
@@ -10,10 +11,33 @@ public struct QEMUInstallation: Sendable, Hashable {
     public var program: URL
     /// The folder QEMU looks for its data in: the firmware and the keyboard layout its VNC server wants.
     public var dataDirectory: URL
+    /// Whether it has what lets a guest draw with the Mac's GPU: SPICE with OpenGL, and the library the
+    /// app shows such a guest's screen with.
+    public var acceleratesGraphics: Bool
 
-    public init(program: URL, dataDirectory: URL) {
+    public init(program: URL, dataDirectory: URL, acceleratesGraphics: Bool = false) {
         self.program = program
         self.dataDirectory = dataDirectory
+        self.acceleratesGraphics = acceleratesGraphics
+    }
+
+    /// Whether it has DXMT, which Windows' Direct3D goes through. It is built in only when asked for.
+    public var supportsDirect3D: Bool {
+        FileManager.default.fileExists(atPath: libraryDirectory.appending(path: "libdxmt-native.dylib").path)
+    }
+
+    var libraryDirectory: URL { program.deletingLastPathComponent().deletingLastPathComponent().appending(path: "lib") }
+    var displayLibrary: URL { libraryDirectory.appending(path: "libSwiftVMDisplay.dylib") }
+
+    func environment(in directory: URL) -> [String: String] {
+        guard acceleratesGraphics else { return [:] }
+        let dxmt = libraryDirectory.appending(path: "libdxmt-native.dylib").path
+        return [
+            "ANGLE_DEFAULT_PLATFORM": "metal", "NPT_BACKEND": "dxmt",
+            "NPT_D3D11_LIBRARY_PATH": dxmt, "NPT_D3D12_LIBRARY_PATH": dxmt, "NPT_DXGI_LIBRARY_PATH": dxmt,
+            "RENDER_SERVER_EXEC_PATH": program.deletingLastPathComponent().appending(path: "virgl_render_server").path,
+            "XDG_RUNTIME_DIR": directory.path,
+        ]
     }
 
     /// The UEFI firmware, without the padding of the machine's flash.
@@ -24,10 +48,11 @@ public struct QEMUInstallation: Sendable, Hashable {
     /// The QEMU inside `bundle`, or `nil` if that copy of the app was built without it.
     public static func inApp(_ bundle: Bundle = .main) -> QEMUInstallation? {
         let contents = bundle.bundleURL.appending(path: "Contents")
-        let installation = QEMUInstallation(
+        var installation = QEMUInstallation(
             program: contents.appending(path: "Helpers/QEMU/bin/qemu-system-aarch64"),
             dataDirectory: contents.appending(path: "Resources/QEMU/share")
         )
+        installation.acceleratesGraphics = FileManager.default.fileExists(atPath: installation.displayLibrary.path)
         return installation.isComplete ? installation : nil
     }
 
@@ -36,6 +61,7 @@ public struct QEMUInstallation: Sendable, Hashable {
         let fileManager = FileManager.default
         return fileManager.isExecutableFile(atPath: program.path) && fileManager.fileExists(atPath: firmware.path)
             && fileManager.fileExists(atPath: variablesTemplate.path)
+            && (!acceleratesGraphics || fileManager.fileExists(atPath: displayLibrary.path))
     }
 
     /// The size of the flash a machine's variables are kept in. QEMU takes nothing else.
@@ -65,7 +91,7 @@ public enum QEMUError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .notInstalled:
-            "This copy of SwiftVM was built without QEMU, which runs Windows guests."
+            "This copy of SwiftVM was built without QEMU, which runs Windows guests and Linux guests with graphics acceleration."
         case .didNotStart(let reason):
             "QEMU couldn't start the virtual machine. \(reason)"
         case .refused(let reason):

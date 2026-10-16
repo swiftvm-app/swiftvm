@@ -102,7 +102,7 @@ struct AgentEnd: @unchecked Sendable {
         for request in requests.reversed() {
             switch request {
             case .setClock(let id, _): agent.send(.result(GuestRequestResult(id: id, ok: true)))
-            case .mountSharedFolders(let id, _, _): agent.send(.result(GuestRequestResult(id: id, ok: false, error: "no such device")))
+            case .mountSharedFolders(let id, _, _, _): agent.send(.result(GuestRequestResult(id: id, ok: false, error: "no such device")))
             default: Issue.record("unexpected \(request)")
             }
         }

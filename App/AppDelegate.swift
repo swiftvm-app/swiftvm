@@ -140,6 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText += " Either way their USB devices go back to this Mac, as if they were pulled out of the virtual machine."
         }
         alert.addButton(withTitle: "Suspend and Quit")
+        if active.contains(where: { !$0.canSuspend }) {
+            alert.buttons.first?.isEnabled = false
+            alert.informativeText = "A running virtual machine uses GPU acceleration and can't be suspended. Shut down the virtual machines before quitting."
+        }
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Shut Down and Quit")
 

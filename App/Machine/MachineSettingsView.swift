@@ -27,7 +27,10 @@ struct MachineSettingsView: View {
                 resourcesSection
                 storageSection
                 sharingSection
-                clipboardSection
+                // A Linux machine with graphics acceleration has no clipboard to share yet.
+                if !(configuration.os.family == .linux && configuration.engine == .qemu) {
+                    clipboardSection
+                }
                 automationSection
                 networkSection
                 if !configuration.networkInterfaces.isEmpty {
@@ -41,7 +44,9 @@ struct MachineSettingsView: View {
                 }
                 devicesSection
                 keyboardSection
-                if configuration.os.family == .linux {
+                // Secure Boot and Rosetta are Apple's virtualization's. A Linux machine with graphics
+                // acceleration runs on QEMU, which has neither.
+                if configuration.os.family == .linux, configuration.engine == .virtualization {
                     bootSection
                 }
             }

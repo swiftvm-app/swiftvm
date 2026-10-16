@@ -316,6 +316,7 @@ private struct LinuxMachineForm: View {
     @State private var password = ""
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
+    @State private var acceleratesGraphics = false
     @State private var compressesDisk = false
     @State private var startsWhenReady = true
     /// The folder to keep the machine in, if one was chosen.
@@ -402,6 +403,14 @@ private struct LinuxMachineForm: View {
             }
         }
 
+        if canAccelerateGraphics {
+            Section {
+                Toggle("Graphics acceleration", isOn: $acceleratesGraphics)
+            } footer: {
+                Text(graphicsNote)
+            }
+        }
+
         if isQuickCreate {
             Section {
                 SecureField("Password", text: $password, prompt: Text(isPasswordRequired ? "Required" : "Optional"))
@@ -428,6 +437,22 @@ private struct LinuxMachineForm: View {
     private var chosenUserName: String { userName.trimmingCharacters(in: .whitespaces) }
     private var chosenInstallsSSHKey: Bool { installsSSHKey }
     private var chosenLocation: URL? { location }
+    private var chosenAcceleratesGraphics: Bool { acceleratesGraphics && canAccelerateGraphics }
+
+    /// Whether this copy of the app can give a Linux machine the Mac's GPU to draw with.
+    private var canAccelerateGraphics: Bool {
+        model.qemuProvider?.canAccelerateGraphics == true
+    }
+
+    private var graphicsNote: String {
+        if acceleratesGraphics {
+            "Draws with your Mac's GPU. The machine runs on QEMU: it can't be suspended or use Rosetta, and shared folders added while it runs appear after a restart."
+        } else if isQuickCreate, selectedScripts.contains(where: \.isDesktop) {
+            "Recommended for a desktop. Without it, the machine's processors draw everything on the screen."
+        } else {
+            "Draws with your Mac's GPU, for a smooth desktop."
+        }
+    }
 
     private var diskProblem: String? {
         DiskSizeRow.problem(with: diskGigabytes, in: Self.diskRange)
@@ -466,7 +491,8 @@ private struct LinuxMachineForm: View {
             Section {
                 TextField("User Name", text: $userName)
                 Toggle("Sign in over SSH with my key", isOn: $installsSSHKey)
-                if VZLinuxRosettaDirectoryShare.availability == .installed {
+                // Rosetta is Apple's virtualization's, which a machine with graphics acceleration doesn't run on.
+                if VZLinuxRosettaDirectoryShare.availability == .installed, !chosenAcceleratesGraphics {
                     Toggle("Run x86-64 programs with Rosetta", isOn: $usesRosetta)
                 }
             } header: {
@@ -730,8 +756,9 @@ private struct LinuxMachineForm: View {
                 fullName: NSFullUserName(),
                 password: password,
                 installsSSHKey: chosenInstallsSSHKey,
-                rosetta: usesRosetta,
+                rosetta: usesRosetta && !chosenAcceleratesGraphics,
                 compressesDisk: compressesDisk,
+                acceleratesGraphics: chosenAcceleratesGraphics,
                 setupScripts: selectedScripts,
                 location: chosenLocation
             ), onReady: ready)
@@ -750,6 +777,7 @@ private struct LinuxMachineForm: View {
                 memorySize: memorySize,
                 diskCapacity: diskCapacity,
                 compressesDisk: compressesDisk,
+                acceleratesGraphics: chosenAcceleratesGraphics,
                 location: chosenLocation
             ), onReady: ready)
         }

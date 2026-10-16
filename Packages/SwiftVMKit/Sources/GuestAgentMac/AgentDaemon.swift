@@ -253,13 +253,17 @@ final class AgentDaemon: @unchecked Sendable {
             }
         case .shutDown(let id):
             answer(id) { try system.shutDown() }
-        case .mountSharedFolders(let id, _, _):
+        case .mountSharedFolders(let id, _, _, _):
             answer(id) { throw AgentFailure("macOS mounts the shared folders by itself, under /Volumes/My Shared Files.") }
         case .clipboard(let text):
             // Without anyone logged in there is no clipboard to put it on, and it goes nowhere.
             if let session, let line = GuestMessageCoding.clipboardLine(text, as: HostMessage.clipboard(text:)), session.send(line) {
                 sessionWantsClipboard = false
             }
+        case .displaySize:
+            // macOS fits its display to the window by itself. The app sends this only to an agent that
+            // offers it, which this one doesn't.
+            break
         case .unknown(let type):
             // Something from a later version of the app. If it asks for an answer, it gets a no.
             if let id = GuestMessageCoding.message(Identified.self, from: bytes)?.id {

@@ -32,6 +32,22 @@ import VMCore
         #expect(!text.contains("rosetta"))
     }
 
+    @Test func anAccountWithTheMacUsersIDStillListsAtTheLoginScreen() {
+        // The system picks the ID unless one is asked for.
+        #expect(!seed.userData.contains("uid:"))
+        #expect(!seed.userData.contains("AccountsService"))
+        var shared = seed
+        shared.userID = 501
+        let text = shared.userData
+        #expect(text.contains("  - name: \"saeed\"\n    uid: 501\n"))
+        // Below 1000, login screens would take it for a service's account.
+        #expect(text.contains("  - path: \"/var/lib/AccountsService/users/saeed\"\n    content: \"[User]\\nSystemAccount=false\\n\""))
+        #expect(text.contains("  - path: \"/etc/sddm.conf.d/90-swiftvm-users.conf\"\n    content: \"[Users]\\nMinimumUid=501\\nHideShells="))
+        shared.userID = 1001
+        #expect(shared.userData.contains("    uid: 1001\n"))
+        #expect(!shared.userData.contains("MinimumUid"))
+    }
+
     @Test func keyOnlyLoginLocksPassword() {
         var keyOnly = seed
         keyOnly.password = nil

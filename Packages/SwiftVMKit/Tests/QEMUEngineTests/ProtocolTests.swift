@@ -288,6 +288,103 @@ private final class EventLog: @unchecked Sendable {
         #expect(message == Data([255, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xCD]))
         client.close()
     }
+
+    @Test func receivesFragmentedRectanglesAcrossReadBatches() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        // More than one receive batch, offset within a surface whose rows have padding.
+        let width = 513, height = 1025
+        let payload = Data((0..<(width * height * 4)).map { UInt8(truncatingIfNeeded: $0 / 7) })
+        let thread = Thread {
+            self.greet(server, width: 516, height: 1027)
+            _ = server.read(10)
+            var update = Data([0, 0, 0, 1])
+            for value: UInt16 in [1, 1, UInt16(width), UInt16(height)] { update.append(bigEndian: value) }
+            update.append(bigEndian: UInt32(0))
+            update.append(payload)
+            // Socket reads need not match either a row or the staging buffer's boundary.
+            for offset in stride(from: 0, to: update.count, by: 7919) {
+                server.write(update.subdata(in: offset..<min(offset + 7919, update.count)))
+            }
+            _ = server.read(10)
+            // A following update proves that consuming the rectangle preserved message boundaries.
+            server.write(Data([0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 9, 8, 7, 0]))
+        }
+        thread.start()
+
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: updated) && waitBriefly(for: updated) }.value)
+        let picture = try #require(client.picture)
+        picture.surface.lock(options: .readOnly, seed: nil)
+        defer { picture.surface.unlock(options: .readOnly, seed: nil) }
+        var received = Data()
+        for row in 0..<height {
+            received.append(Data(bytes: picture.surface.baseAddress + (row + 1) * picture.surface.bytesPerRow + 4, count: width * 4))
+        }
+        #expect(received == payload)
+        #expect(Data(bytes: picture.surface.baseAddress, count: 4) == Data([9, 8, 7, 0]))
+    }
+
+    @Test func closesWhenTheServerDisconnectsDuringARectangle() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let closed = DispatchSemaphore(value: 0)
+        client.onClose = { closed.signal() }
+        let thread = Thread {
+            self.greet(server, width: 512, height: 1024)
+            _ = server.read(10)
+            var update = Data([0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 4, 0, 0, 0, 0, 0])
+            // One complete batch, then part of the next; waiting for the rest must end on EOF.
+            update.append(Data(count: (1 << 20) + 17))
+            server.write(update)
+            shutdown(server.descriptor, SHUT_RDWR)
+        }
+        thread.start()
+
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: closed) }.value)
+    }
+
+    @Test func keepsTheLatestSizeRequestedBeforeResizeNegotiation() async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        client.requestSize(width: 2048, height: 1152)
+        client.requestSize(width: 2560, height: 1440)
+        let thread = Thread { self.greet(server, width: 640, height: 480) }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        // Neither size may be sent until the server supports resizing.
+        #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 2, 128, 1, 224]))
+
+        func desktopSize(width: UInt16, height: UInt16) -> Data {
+            var update = Data([0, 0, 0, 1, 0, 0, 0, 0])
+            update.append(bigEndian: width)
+            update.append(bigEndian: height)
+            update.append(bigEndian: UInt32(bitPattern: RFBClient.Encoding.extendedDesktopSize.rawValue))
+            update.append(contentsOf: [1, 0, 0, 0])
+            update.append(bigEndian: UInt32(42))
+            update.append(contentsOf: [0, 0, 0, 0])
+            update.append(bigEndian: width)
+            update.append(bigEndian: height)
+            update.append(bigEndian: UInt32(0))
+            return update
+        }
+
+        server.write(desktopSize(width: 640, height: 480))
+        // The next update is asked for before this one is read, and then the latest size goes out.
+        #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 2, 128, 1, 224]))
+        #expect(server.read(24) == Data([251, 0, 10, 0, 5, 160, 1, 0, 0, 0, 0, 42, 0, 0, 0, 0, 10, 0, 5, 160, 0, 0, 0, 0]))
+        server.write(desktopSize(width: 2560, height: 1440))
+        #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 2, 128, 1, 224]))
+        // Acknowledging a size must not send it again and start a resize feedback loop: what follows is
+        // a request for the whole picture at the new size.
+        #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 10, 0, 5, 160]))
+    }
 }
 
 @Suite struct AgentChannelTests {
@@ -362,5 +459,73 @@ private final class EventLog: @unchecked Sendable {
         refusing.start()
         await #expect(throws: AgentChannel.ChannelError.self) { _ = try await channel.connect(port: 9, timeout: 2) }
         channel.close()
+    }
+}
+
+/// The Linux guest agent itself, on the serial line that a machine on QEMU has instead of a socket
+/// device, as the app talks to it.
+@Suite struct LinuxAgentOnTheLineTests {
+    /// The agent's script, where the sources keep it.
+    private static let agent = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appending(path: "Sources/Installers/Resources/GuestAgent/swiftvm-agent.py")
+
+    @Test func servesTheAppOverTheLine() async throws {
+        // Unix socket paths are short; the agent connects to this one as its line.
+        let path = "/tmp/swiftvm-line-\(UInt32.random(in: 0...UInt32.max))"
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        defer { close(listener); unlink(path) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { bytes in
+            bytes.copyBytes(from: Array(path.utf8) + [0])
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        #expect(bound == 0)
+        #expect(listen(listener, 1) == 0)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-I", Self.agent.path, "--pretend-on-line", path]
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { process.terminate() }
+
+        let line = accept(listener, nil, nil)
+        #expect(line >= 0)
+        let channel = AgentChannel(descriptor: line)
+        let greeted = DispatchSemaphore(value: 0)
+        channel.onAgent = { greeted.signal() }
+        channel.start()
+        defer { channel.close() }
+        #expect(await Task.detached { waitBriefly(for: greeted, timeout: .now() + 10) }.value)
+
+        // The app's port: the agent says hello, and answers what it is asked, here to mount the
+        // folders that QEMU shares one device each.
+        let connection = try await channel.connect(port: 717, timeout: 5)
+        let hello = try #require(Self.readLine(connection))
+        #expect(hello.contains(#""type":"hello""#))
+        let request = #"{"type":"mount-shared-folders","id":1,"tag":"swiftvm","mountPoint":"/mnt/shared","folders":[{"tag":"swiftvm-1a2b3c4d","name":"Projects","readOnly":true}]}"#
+        try connection.write(contentsOf: Data((request + "\n").utf8))
+        var answer: String?
+        while answer == nil, let next = Self.readLine(connection) {
+            if next.contains(#""type":"result""#) { answer = next }
+        }
+        #expect(answer?.contains(#""ok":true"#) == true)
+
+        // A port nobody listens on is refused, as over a socket device.
+        await #expect(throws: AgentChannel.ChannelError.self) { _ = try await channel.connect(port: 9, timeout: 5) }
+    }
+
+    /// The next line from `connection`, without its line break.
+    private static func readLine(_ connection: FileHandle) -> String? {
+        var bytes = Data()
+        while let byte = try? connection.read(upToCount: 1), let first = byte.first {
+            if first == UInt8(ascii: "\n") { return String(decoding: bytes, as: UTF8.self) }
+            bytes.append(first)
+        }
+        return nil
     }
 }

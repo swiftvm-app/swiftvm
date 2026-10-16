@@ -9,10 +9,14 @@ import QuartzCore
 /// a view of the part of the display that app's window is in.
 @MainActor
 public final class GuestScreenView: NSView {
-    private let client: RFBClient
+    private let client: any GuestScreenInput
+    private var displaySize: CGSize = .zero
     /// The part of the display shown, in its pixels from the top left corner. `nil` is all of it.
     public var region: CGRect? {
-        didSet { applyPicture() }
+        didSet {
+            applyPicture()
+            updateCursor()
+        }
     }
     /// Send shortcuts such as Command-C to the guest, as the Windows key with C, instead of to the app's
     /// menus. Those macOS itself takes, Command-Tab for one, never come.
@@ -23,6 +27,7 @@ public final class GuestScreenView: NSView {
     }
 
     private var picture: RFBClient.Picture?
+    private var guestCursor: RFBClient.Cursor?
     private var cursor: NSCursor
     private var buttons: RFBClient.Buttons = []
     /// The PC keys that are down, by their scancode, to let go of when the view loses the keyboard.
@@ -40,8 +45,12 @@ public final class GuestScreenView: NSView {
     /// A pointer that isn't there. Until the guest hands one over, it draws its own into the picture.
     private static let hiddenCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
 
-    public init(client: RFBClient) {
-        self.client = client
+    public convenience init(client: RFBClient) {
+        self.init(input: client)
+    }
+
+    init(input: any GuestScreenInput, content: NSView? = nil) {
+        self.client = input
         cursor = Self.hiddenCursor
         super.init(frame: NSRect(x: 0, y: 0, width: 1024, height: 768))
         wantsLayer = true
@@ -49,6 +58,11 @@ public final class GuestScreenView: NSView {
         layer?.contentsGravity = .resizeAspect
         layer?.magnificationFilter = .linear
         layerContentsRedrawPolicy = .never
+        if let content {
+            content.frame = bounds
+            content.autoresizingMask = [.width, .height]
+            addSubview(content)
+        }
     }
 
     @available(*, unavailable)
@@ -59,12 +73,18 @@ public final class GuestScreenView: NSView {
     override public var acceptsFirstResponder: Bool { true }
     override public func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    override public func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
     // MARK: The picture
 
     /// The display has a new picture, of a new size.
     func show(_ picture: RFBClient.Picture) {
         self.picture = picture
+        displaySize = CGSize(width: picture.width, height: picture.height)
         applyPicture()
+        updateCursor()
     }
 
     /// Part of the picture has changed.
@@ -80,11 +100,22 @@ public final class GuestScreenView: NSView {
     }
 
     func show(cursor: RFBClient.Cursor?) {
-        if let cursor {
-            let image = NSImage(cgImage: cursor.image, size: NSSize(width: cursor.image.width, height: cursor.image.height))
-            self.cursor = NSCursor(image: image, hotSpot: cursor.hotSpot)
+        guestCursor = cursor
+        updateCursor()
+    }
+
+    private func updateCursor() {
+        if let guestCursor, let picture {
+            // The guest's cursor and hotspot are in pixels too. On Retina, two guest pixels usually
+            // occupy one point of the view, just as they do in the rest of the picture.
+            let width = region?.width ?? CGFloat(picture.width)
+            let scale = width > 0 ? shownRect.width / width : 1
+            let size = NSSize(width: CGFloat(guestCursor.image.width) * scale, height: CGFloat(guestCursor.image.height) * scale)
+            let image = NSImage(cgImage: guestCursor.image, size: size)
+            let hotSpot = NSPoint(x: guestCursor.hotSpot.x * scale, y: guestCursor.hotSpot.y * scale)
+            cursor = NSCursor(image: image, hotSpot: hotSpot)
         } else {
-            self.cursor = Self.hiddenCursor
+            cursor = Self.hiddenCursor
         }
         window?.invalidateCursorRects(for: self)
     }
@@ -110,20 +141,28 @@ public final class GuestScreenView: NSView {
 
     override public func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        updateCursor()
         requestFittingSize()
     }
 
-    /// Asks the guest for a display the size of the view in points, a moment after it last changed:
-    /// a window that is being dragged larger changes size many times a second.
+    /// A window moved to another display can change pixel density without changing its size in points.
+    override public func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        requestFittingSize()
+    }
+
+    /// The guest draws at the view's backing resolution; Windows' own Scale setting controls text
+    /// size. Asking for points instead stretches a low-resolution picture on a Retina display.
     private func requestFittingSize() {
         resizeRequest?.cancel()
         guard resizesGuest, region == nil, window != nil else { return }
-        let size = bounds.size
+        let size = convertToBacking(bounds).size
+        let scale = window?.backingScaleFactor ?? 1
         resizeRequest = Task { [client] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             // Even sizes: some drivers round odd ones down and then don't fit.
-            client.requestSize(width: Int(size.width) & ~1, height: Int(size.height) & ~1)
+            client.requestSize(width: Int(size.width) & ~1, height: Int(size.height) & ~1, scale: scale)
         }
     }
 
@@ -134,11 +173,12 @@ public final class GuestScreenView: NSView {
 
     // MARK: Places
 
+    func show(size: CGSize) { displaySize = size }
+
     /// The rectangle in the view that the shown part of the picture takes up, letterboxed as the layer
     /// shows it.
     private var shownRect: CGRect {
-        guard let picture else { return bounds }
-        let shown = region ?? CGRect(x: 0, y: 0, width: picture.width, height: picture.height)
+        let shown = region ?? CGRect(origin: .zero, size: displaySize)
         guard shown.width > 0, shown.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
         let scale = min(bounds.width / shown.width, bounds.height / shown.height)
         let size = CGSize(width: shown.width * scale, height: shown.height * scale)
@@ -148,8 +188,8 @@ public final class GuestScreenView: NSView {
     /// The pixel of the display under a point of the view. The view counts up from its bottom, and the
     /// display down from its top.
     private func pixel(at point: NSPoint) -> (x: Int, y: Int)? {
-        guard let picture else { return nil }
-        let shown = region ?? CGRect(x: 0, y: 0, width: picture.width, height: picture.height)
+        guard displaySize.width > 0, displaySize.height > 0 else { return nil }
+        let shown = region ?? CGRect(origin: .zero, size: displaySize)
         let rect = shownRect
         guard rect.width > 0, rect.height > 0 else { return nil }
         let x = shown.minX + (point.x - rect.minX) / rect.width * shown.width

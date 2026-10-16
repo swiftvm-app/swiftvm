@@ -45,9 +45,21 @@ jobs:
       - name: Install create-dmg
         run: npm install --global create-dmg
 
-      # What scripts/build-qemu.sh builds the QEMU for Windows guests with.
+      # What scripts/build-qemu.sh builds the QEMU for Windows guests and accelerated Linux guests with.
       - name: Install QEMU's build tools and libraries
-        run: brew install ninja meson pkgconf glib pixman python
+        run: |
+          brew install cmake ninja meson pkgconf glib pixman openssl@3 python
+          xcodebuild -downloadComponent MetalToolchain
+
+      # Its sources and the libraries made from them, which take most of its first build. The script
+      # itself tells whether what it finds still fits.
+      - name: Cache QEMU's build
+        uses: actions/cache@v4
+        with:
+          path: .build/qemu
+          key: qemu-${{ runner.os }}-${{ hashFiles('scripts/build-qemu.sh', 'Native/QEMU/**', 'Packages/SwiftVMKit/Sources/GuestDisplayBridge/include/**') }}
+          restore-keys: |
+            qemu-${{ runner.os }}-
 
       - name: Import signing certificate
         env:

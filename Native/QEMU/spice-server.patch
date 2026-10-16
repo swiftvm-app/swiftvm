@@ -1,0 +1,42 @@
+SPICE server 0.16.0 for a local client on macOS.
+
+- meson: macOS has no separate librt or libm.
+- reds: a monitors config from the client also reaches the guest agent, which lays out
+  the displays (from UTM's spice-0.14.3.patch).
+- red-qxl: a new GL scanout may replace one whose draw is still pending; the scanout is
+  no longer dropped then (from UTM's spice-0.14.3.patch).
+
+--- a/meson.build
++++ b/meson.build
+@@ -106,7 +106,9 @@
+   spice_server_deps += dependency(dep)
+ endforeach
+ 
+-if host_machine.system() != 'windows'
++if host_machine.system() == 'darwin'
++  # The C library has what librt and libm hold elsewhere.
++elif host_machine.system() != 'windows'
+   foreach dep : ['rt', 'm']
+     spice_server_deps += compiler.find_library(dep)
+   endforeach
+--- a/server/red-qxl.cpp
++++ b/server/red-qxl.cpp
+@@ -514,7 +514,6 @@
+         red_qxl_async_complete(qxl, cookie);
+         return;
+     }
+-    spice_return_if_fail(qxl_state->gl_draw_cookie == GL_DRAW_COOKIE_INVALID);
+ 
+     qxl_state->gl_draw_cookie = cookie;
+     qxl_state->send_message(draw);
+--- a/server/reds.cpp
++++ b/server/reds.cpp
+@@ -1177,7 +1177,7 @@
+         return;
+     case AGENT_MSG_FILTER_MONITORS_CONFIG:
+         reds_on_main_agent_monitors_config(reds, mcc, message, size);
+-        return;
++        break;
+     case AGENT_MSG_FILTER_PROTO_ERROR:
+         mcc->shutdown();
+         return;

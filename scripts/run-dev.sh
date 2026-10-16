@@ -15,7 +15,8 @@
 # The copy is at ".build/SwiftVM Dev.app", with its swiftvm tool in Contents/Helpers. A copy that is
 # still running from there is asked to quit once the new one is ready to take its place. SWIFTVM_HOME
 # gives the copy another data directory; for SWIFTVM_SIGN_IDENTITY see scripts/bundle-app.sh. The QEMU
-# that runs Windows guests is built the first time, by scripts/build-qemu.sh; SWIFTVM_QEMU=- leaves it out.
+# that runs Windows guests and Linux guests with graphics acceleration is built the first time, by
+# scripts/build-qemu.sh; SWIFTVM_QEMU=- leaves it out.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
