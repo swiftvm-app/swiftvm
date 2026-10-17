@@ -56,7 +56,7 @@ and `swiftvm info <machine>`. You can use the machine while setup runs.
 | Xfce | `xfce` | All | 2 GB / 16 GB |
 | Cinnamon | `cinnamon` | All | 4 GB / 24 GB |
 | Hyprland | `hyprland` | Arch Linux | 4 GB / 16 GB |
-| Omarchy (experimental) | `omarchy` | Arch Linux | 8 GB / 32 GB |
+| Omarchy (experimental) | `omarchy` | Arch Linux | 8 GB / 64 GB |
 | Docker | `docker` | All | 2 GB / 16 GB |
 | Web Server | `web-server` | All | Default machine settings |
 | Updates | `updates` | All | Default machine settings |
@@ -71,46 +71,60 @@ are only partly built. It remains available on Ubuntu and Debian.
 
 ## Desktops
 
-A desktop needs an account password. Installation can take about ten minutes,
-then the machine restarts into its login screen. Scripts selected after the
-desktop finish before that restart.
+A desktop needs an account password. Installation takes about ten minutes
+(longer for Omarchy), then the machine restarts into its login screen.
+Scripts selected after the desktop finish before that restart.
 
-Desktop scripts install the distribution's desktop packages, a browser
-(Firefox, or Chromium for Omarchy), and `spice-vdagent` for [clipboard sharing](sharing.md#clipboard). They keep the
-machine's network and SSH configuration and disable guest sleep; suspend the
-machine from SwiftVM instead.
+Desktop scripts install the desktop, a browser, and `spice-vdagent` for
+[clipboard sharing](sharing.md#clipboard). They keep the machine's network and
+SSH configuration, and turn off guest sleep; suspend the machine from SwiftVM
+instead.
 
-Linux guests have no graphics acceleration. Xfce uses fewer resources than
-GNOME or KDE Plasma. Hyprland and Omarchy draw with OpenGL on the machine's
-processors; give them four or more. In both, Super is the Command key:
-Command-Q opens a terminal in Hyprland, and Command-Space the menu in
-Omarchy. Clipboard sharing may not work in every Wayland session;
-use X11, Xfce, or Cinnamon if you need it. If the display goes dark, click in
-the window or press a key to wake it.
+**Graphics acceleration** (`--gpu`) draws with the Mac's GPU and is
+recommended for Hyprland and Omarchy. Without it, the processors draw every
+pixel, so a large Retina window can be slow; Xfce is the lightest choice.
+
+| | With graphics acceleration | Without |
+| --- | --- | --- |
+| Drawing | Mac's GPU | Machine's processors |
+| Suspend | Pause only | Yes |
+| Rosetta | No | Optional |
+| OpenGL | ES 3.0 and 2.1; apps needing newer OpenGL, such as kitty, don't start | Full, in software |
+
+In Hyprland and Omarchy:
+
+- Super is the Command key. Command-Q opens a terminal (foot) in Hyprland;
+  Command-Space opens the menu in Omarchy.
+- Animations, blur, and shadows are off. Remove the `hl.config` block SwiftVM
+  added to `~/.config/hypr/hyprland.lua` (Hyprland) or
+  `~/.config/hypr/looknfeel.lua` (Omarchy) to turn them on.
+- Hyprland starts through `/usr/local/bin/Hyprland`. Without graphics
+  acceleration, this makes it finish drawing each frame before showing it;
+  otherwise closed windows and half-drawn areas stay on screen.
+- Clipboard sharing may not work in every Wayland session; use Xfce or
+  Cinnamon if you need it. If the display goes dark, click in the window or
+  press a key.
 
 ### Omarchy
 
-[Omarchy](https://omarchy.org) is made for Arch Linux on PCs, and its package
-repository has nothing for ARM64 yet. The `omarchy` script installs one
-release of Omarchy's own source on Arch Linux ARM's packages, the way
-[Try Omarchy](https://github.com/omacom/try-omarchy) does. It is
-experimental:
+The `omarchy` script is an experimental ARM adaptation of
+[Omarchy](https://omarchy.org) 4.0.4, built from its pinned source rather
+than the PC installer. SwiftVM keeps the machine's bootloader, network, SSH,
+and firewall setup.
 
-- What Omarchy installs from its own repository or the AUR isn't there,
-  including Walker, mise, yay, Omarchy's own apps, and some fonts and icons.
-- Animations, blur, and shadows are off, as they cost the most without a GPU.
-  Remove the lines SwiftVM added to `~/.config/hypr/looknfeel.lua` to turn
-  them on.
-- Everything on the screen is drawn by the machine's processors, so the
-  work grows with the number of pixels. A full-screen window on a Retina
-  display is over twice the pixels of 1920×1200. For a smoother desktop, give
-  the machine six or more processors, and keep its window smaller or turn off
-  **Resize Display with Window** in its settings and pick a resolution such
-  as 1920×1200.
-- Omarchy's update puts its package configuration for PCs in place. A hook
-  in `~/.config/omarchy/hooks/pre-refresh-pacman.d` puts Arch Linux ARM's
-  back before anything is installed.
-- Omarchy finishes setting up the account the first time it signs in.
+- **Needs** 8 GB of memory, a 64 GB disk, and internet access during setup
+  and on the first login, when Omarchy finishes setting up the account.
+- **Apps** come from Arch Linux ARM; those it lacks are built from
+  [Omarchy's package recipes](https://github.com/omacom-io/omarchy-pkgs), and
+  Mise and Obsidian come from their official ARM releases.
+- **Not available:** OBS Studio, Pinta, Tensaku, `tzupdate`,
+  `hyprland-preview-share-picker`, and `asdcontrol`. The reasons are in
+  `/usr/local/share/swiftvm/omarchy/unavailable-packages.txt`.
+- **The screensaver is off**: without a GPU it keeps every processor busy
+  until the screen locks. Turn it on with `omarchy-toggle-screensaver`.
+- **Updates** keep Omarchy and the apps SwiftVM built at the versions setup
+  installed; everything else updates from Arch Linux ARM. A newer Omarchy
+  needs a new machine.
 
 ## Your own scripts
 

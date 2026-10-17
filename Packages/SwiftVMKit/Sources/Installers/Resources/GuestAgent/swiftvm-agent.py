@@ -40,7 +40,7 @@ import threading
 import time
 import zlib
 
-AGENT_VERSION = "1.2"
+AGENT_VERSION = "1.3"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
@@ -406,36 +406,66 @@ class System:
                 environment[key] = value
         return environment
 
+    # The size the app last asked for, and the Hyprland that was given it. A Hyprland that starts
+    # afterwards, at a login for one, would otherwise keep the size the display had at its start.
+    display_request = None
+    fitted_hyprland = None
+    fitting = threading.Lock()
+    watching_hyprland = False
+
     def fit_display(self, width, height, scale):
         """Gives the desktop the size of the window it is shown in on the Mac, in pixels and at its
         scale. Most desktops take a new size from the display itself. Hyprland keeps the sizes it
-        was given when it started, and is told: as the user whose desktop it is."""
-        user = self.session_user()
-        if user is None:
-            return
-        sockets = glob.glob("/run/user/%d/hypr/*/.socket.sock" % user)
-        if not sockets:
-            return
-        account = pwd.getpwuid(user)
-        # The newest, should an older session have left its folder behind.
-        signature = os.path.basename(os.path.dirname(max(sockets, key=os.path.getmtime)))
-        environment = dict(self.environment(account), HYPRLAND_INSTANCE_SIGNATURE=signature)
-        mode = "%dx%d@60" % (width, height)
-        scale = ("%.2f" % scale).rstrip("0").rstrip(".")
-        # Its configuration in Lua, from 0.56 on, and before that in its own language.
-        for command in (
-            ["hyprctl", "eval", 'hl.monitor({ output = "", mode = "%s", position = "auto", scale = %s })' % (mode, scale)],
-            ["hyprctl", "keyword", "monitor", ",%s,auto,%s" % (mode, scale)],
-        ):
-            try:
-                answer = subprocess.run(
-                    command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=5, env=environment, **self.identity(account),
-                ).stdout.decode("utf-8", "replace").strip()
-            except (OSError, subprocess.SubprocessError):
+        was given when it started, and is told: as the user whose desktop it is, and again whenever
+        a new one starts."""
+        with self.fitting:
+            self.display_request = (width, height, scale)
+            self.fitted_hyprland = None
+            if not self.watching_hyprland:
+                self.watching_hyprland = True
+                threading.Thread(target=self.watch_hyprland, daemon=True).start()
+        self.fit_hyprland()
+
+    def watch_hyprland(self):
+        while True:
+            time.sleep(3)
+            self.fit_hyprland()
+
+    def fit_hyprland(self):
+        """Gives the newest Hyprland of the user at the screen the size last asked for, unless it has it."""
+        with self.fitting:
+            if self.display_request is None:
                 return
-            if answer in ("", "ok"):
+            user = self.session_user()
+            if user is None:
                 return
+            sockets = glob.glob("/run/user/%d/hypr/*/.socket.sock" % user)
+            if not sockets:
+                return
+            # The newest, should an older session have left its folder behind.
+            signature = os.path.basename(os.path.dirname(max(sockets, key=os.path.getmtime)))
+            if signature == self.fitted_hyprland:
+                return
+            account = pwd.getpwuid(user)
+            environment = dict(self.environment(account), HYPRLAND_INSTANCE_SIGNATURE=signature)
+            width, height, scale = self.display_request
+            mode = "%dx%d@60" % (width, height)
+            scale = ("%.2f" % scale).rstrip("0").rstrip(".")
+            # Its configuration in Lua, from 0.56 on, and before that in its own language.
+            for command in (
+                ["hyprctl", "eval", 'hl.monitor({ output = "", mode = "%s", position = "auto", scale = %s })' % (mode, scale)],
+                ["hyprctl", "keyword", "monitor", ",%s,auto,%s" % (mode, scale)],
+            ):
+                try:
+                    answer = subprocess.run(
+                        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=5, env=environment, **self.identity(account),
+                    ).stdout.decode("utf-8", "replace").strip()
+                except (OSError, subprocess.SubprocessError):
+                    return
+                if answer in ("", "ok"):
+                    self.fitted_hyprland = signature
+                    return
 
     # The screen, the mouse and the keyboard
 

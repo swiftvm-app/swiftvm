@@ -3,14 +3,28 @@
 #import "CSSession+Protected.h"
 @import CocoaSpiceRenderer;
 @import MetalKit;
+@import QuartzCore;
 #include <gst/gst.h>
 
 // Windows sound goes through QEMU's CoreAudio device. SPICE carries local surfaces, with streaming
 // video disabled, so it needs no statically registered GStreamer audio or video plugins.
 void gst_ios_init(void) { gst_init(NULL, NULL); }
 
+// An MTKView that says when it moves to another window, or out of one.
+@interface SVMMetalView : MTKView
+@property (nonatomic, copy) void (^movedToWindow)(void);
+@end
+
+@implementation SVMMetalView
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.movedToWindow) self.movedToWindow();
+}
+@end
+
 @interface SVMSpiceDisplay : NSObject <SVMGuestDisplay, CSConnectionDelegate, MTKViewDelegate>
-@property (nonatomic, strong) MTKView *metalView;
+@property (nonatomic, strong) SVMMetalView *metalView;
+@property (nonatomic, strong) CADisplayLink *displayLink;
 @property (nonatomic, strong) CSMetalRenderer *renderer;
 @property (nonatomic, strong) CSConnection *connection;
 @property (nonatomic, strong) CSDisplay *display;
@@ -32,8 +46,14 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     if (!(self = [super init])) return nil;
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device || ![CSMain.sharedInstance spiceStart]) return nil;
-    _metalView = [[MTKView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) device:device];
-    _metalView.preferredFramesPerSecond = 60;
+    _metalView = [[SVMMetalView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) device:device];
+    // MTKView's own timer never restarts once its view has left a window, so a machine's window
+    // that was closed and opened again stayed on its last frame. A display link of the view's
+    // window draws instead, made anew whenever the view moves into one.
+    _metalView.paused = YES;
+    _metalView.enableSetNeedsDisplay = NO;
+    __weak SVMSpiceDisplay *weakSelf = self;
+    _metalView.movedToWindow = ^{ [weakSelf viewMovedToWindow]; };
     _metalView.clearColor = MTLClearColorMake(0, 0, 0, 1);
     _renderer = [[CSMetalRenderer alloc] initWithMetalKitView:_metalView];
     [_renderer changeUpscaler:MTLSamplerMinMagFilterNearest downscaler:MTLSamplerMinMagFilterLinear];
@@ -49,6 +69,19 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
 }
 
 - (NSView *)view { return self.metalView; }
+
+- (void)viewMovedToWindow {
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    if (!self.metalView.window || self.closed) return;
+    self.displayLink = [self.metalView displayLinkWithTarget:self selector:@selector(drawFrame:)];
+    self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
+    [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    // The new window shows nothing until the next frame, which an idle guest doesn't send.
+    if (self.display) [self.renderer invalidateRenderSource:self.display withCompletion:nil];
+}
+
+- (void)drawFrame:(CADisplayLink *)link { [self.metalView draw]; }
 
 - (void)connect {
     if (![self.connection connect]) {
@@ -74,7 +107,10 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     [self.display removeRenderer:self.renderer];
     [self.connection disconnect];
     self.connection.delegate = nil;
-    self.metalView.paused = YES;
+    // The link holds on to this display; it goes first.
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    self.metalView.movedToWindow = nil;
     self.metalView.delegate = nil;
     self.display = nil;
     self.input = nil;
