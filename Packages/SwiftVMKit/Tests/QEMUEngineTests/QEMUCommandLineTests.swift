@@ -66,11 +66,12 @@ import VMCore
         FileManager.default.createFile(atPath: bundle.seedImageURL.path, contents: Data(count: 4096))
         var accelerated = installation
         accelerated.acceleratesGraphics = true
-        let arguments = try QEMUCommandLine(
+        var commandLine = QEMUCommandLine(
             configuration: configuration, bundle: bundle, installation: accelerated,
             diskSources: [disk.id: .file(bundle.diskURL(for: disk))], display: .virtioGPU3D,
             spiceSocket: URL(fileURLWithPath: "/tmp/display.sock")
-        ).arguments()
+        )
+        let arguments = try commandLine.arguments()
 
         // Linux keeps its clock in UTC, and writes to hvc0 rather than a serial port.
         #expect(values(of: "-rtc", in: arguments) == ["base=utc"])
@@ -93,6 +94,10 @@ import VMCore
         ])
         let shares = devices.filter { $0["driver"] as? String == "virtio-9p-pci" }
         #expect(shares.compactMap { $0["mount_tag"] as? String } == [folders[0], folders[2]].map(GuestIntegration.folderDeviceTag(for:)))
+
+        // VirGL's GPU state can't be restored, even when the rest of the machine has saved memory.
+        commandLine.restoresSavedState = true
+        #expect(throws: QEMUError.self) { try commandLine.arguments() }
     }
 
     @Test func handsTheLinesToTheAppOverAsDescriptors() throws {

@@ -90,18 +90,27 @@ SwiftVM doesn't set these guests up, so afterwards you may want to:
 
 ## Graphics acceleration
 
-Turn on **Graphics acceleration** when creating a machine, or pass `--gpu` to
-`swiftvm create`, and the guest draws with your Mac's GPU. Desktops such as
-GNOME, Hyprland, or Omarchy then stay smooth at any window size, where they
-otherwise draw everything on the machine's processors.
+**Graphics acceleration** is on by default for new Linux machines when this
+copy of SwiftVM supports it, in both the creation window and `swiftvm create`.
+The guest draws with your Mac's GPU instead of drawing everything on its
+processors, making desktops such as GNOME, Hyprland, or Omarchy smoother.
+Existing machines and machines made from templates keep their graphics settings.
+
+Turn it off before creating the machine, or pass `--no-gpu`, if you need suspend
+or Rosetta. `--rosetta` selects Apple's backend without GPU acceleration unless
+you also explicitly pass `--gpu`, which is rejected. `--gpu` requires acceleration
+and reports an error if this copy of SwiftVM was built without it.
 
 Apple's virtualization gives Linux no such GPU, so a machine with graphics
 acceleration runs on QEMU, as Windows guests do. The guest's OpenGL goes
 through virglrenderer to your Mac's GPU. That changes a few things:
 
-- The machine can't be suspended, and has no memory snapshots. Snapshots of
-  the machine while it is shut down work as usual.
-- It has no Rosetta, and no Secure Boot.
+- The machine can't be suspended, and has no memory snapshots: QEMU can't
+  save and restore VirGL's GPU state. Pause works while SwiftVM stays open,
+  but keeps the machine in memory. Snapshots while it is shut down work as usual.
+- It has no Rosetta, and no Secure Boot. Apple's supported Rosetta integration
+  requires its Virtualization backend, whose Linux graphics device has no 3D
+  acceleration; sharing a directory through QEMU doesn't provide that integration.
 - Each shared folder is a device of its own, mounted under
   `/mnt/shared/<name>` by the [guest tools](guest-tools.md). Folders shared
   while the machine runs appear after it restarts. On a Quick Create machine

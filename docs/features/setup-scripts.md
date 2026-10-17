@@ -77,12 +77,14 @@ Scripts selected after the desktop finish before that restart.
 
 Desktop scripts install the desktop, a browser, and `spice-vdagent` for
 [clipboard sharing](sharing.md#clipboard). They keep the machine's network and
-SSH configuration, and turn off guest sleep; suspend the machine from SwiftVM
-instead.
+SSH configuration, and turn off guest sleep. Use SwiftVM's power controls
+instead; machines with graphics acceleration can pause, but not suspend to disk.
 
-**Graphics acceleration** (`--gpu`) draws with the Mac's GPU and is
-recommended for Hyprland and Omarchy. Without it, the processors draw every
-pixel, so a large Retina window can be slow; Xfce is the lightest choice.
+**Graphics acceleration** draws with the Mac's GPU and is on by default for
+new Linux machines when available. It is recommended for Hyprland and Omarchy.
+Turn it off, or pass `--no-gpu`, to use suspend or Rosetta instead. Without it,
+the processors draw every pixel, so a large Retina window can be slow; Xfce
+is the lightest choice.
 
 | | With graphics acceleration | Without |
 | --- | --- | --- |
