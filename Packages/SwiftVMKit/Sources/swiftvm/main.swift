@@ -15,9 +15,10 @@ Usage: swiftvm <command> [arguments]
       --location <folder>           Keep the machine in this folder, on an external disk for one, instead
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
-      --rosetta                     Linux: run x86-64 programs with Rosetta
-      --gpu                         Linux: draw with this Mac's GPU, for a smooth desktop. The machine runs
-                                    on QEMU, so it can't be suspended or use Rosetta
+      --rosetta                     Linux: run x86-64 programs with Rosetta, using Apple's backend without GPU acceleration
+      --gpu                         Linux: draw with this Mac's GPU (on by default when available, unless --rosetta).
+                                    The machine runs on QEMU, so it can't be suspended or use Rosetta
+      --no-gpu                      Linux: use Apple's backend without GPU acceleration, with suspend support
       --compressed                  Linux and Windows: keep the disk compressed, which usually takes less
                                     than half the space on this Mac and makes writing slower
       --ipsw <file>                 macOS: install this restore image instead of downloading the latest
@@ -398,6 +399,7 @@ case "create":
         case "--no-ssh-key": parameters.installsSSHKey = false
         case "--rosetta": parameters.rosetta = true
         case "--gpu": parameters.acceleratesGraphics = true
+        case "--no-gpu": parameters.acceleratesGraphics = false
         case "--compressed": parameters.compressed = true
         case "--ipsw": parameters.restoreImagePath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--iso": parameters.installerPath = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
@@ -410,6 +412,9 @@ case "create":
         default: fail("Unknown option \(option).")
         }
         index += 1
+    }
+    if options.contains("--gpu"), options.contains("--no-gpu") {
+        fail("Use --gpu or --no-gpu, not both.")
     }
     if parameters.template != nil {
         guard system == nil else { fail("Give a system to install or a template, not both.") }

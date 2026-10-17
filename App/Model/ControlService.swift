@@ -726,10 +726,14 @@ extension AppModel {
             }
         }
 
-        let acceleratesGraphics = parameters.acceleratesGraphics ?? false
+        if isMac, parameters.acceleratesGraphics != nil {
+            return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.")
+        }
+        // An explicit Rosetta request keeps Apple's backend; otherwise use the GPU when it is available.
+        let acceleratesGraphics = parameters.acceleratesGraphics
+            ?? (!isMac && !usesRosetta && qemuProvider?.canAccelerateGraphics == true)
         if acceleratesGraphics {
-            guard !isMac else { return .failure("--gpu is for Linux guests. A macOS guest draws with this Mac's GPU by itself.") }
-            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Leave out one of the two.") }
+            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Leave out --gpu to use Rosetta, or --rosetta to use the GPU.") }
             guard qemuProvider?.canAccelerateGraphics == true else {
                 return .failure("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.")
             }
@@ -817,7 +821,7 @@ extension AppModel {
     private func createWindowsMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.") }
         guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.") }
-        guard parameters.acceleratesGraphics == nil else { return .failure("--gpu is for Linux guests.") }
+        guard parameters.acceleratesGraphics == nil else { return .failure("--gpu and --no-gpu are for Linux guests.") }
         guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.") }
         guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription) }
         var name = parameters.name ?? "Windows 11"

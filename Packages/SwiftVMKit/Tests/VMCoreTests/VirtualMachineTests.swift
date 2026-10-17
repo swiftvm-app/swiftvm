@@ -169,9 +169,10 @@ private final class FakeProvider: VMBackendProvider {
         #expect(!machine.bundle.hasSavedState)
     }
 
-    @Test func unsaveableGraphicsRejectsSuspendAndLiveSnapshotsBeforePausing() async throws {
+    @Test(arguments: [GuestFamily.linux, .windows])
+    func unsaveableGraphicsRejectsSuspendAndLiveSnapshotsBeforePausing(family: GuestFamily) async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let machine = try makeMachine(family: .windows)
+        let machine = try makeMachine(family: family)
         provider.backend.canSaveState = false
         await machine.start()
         #expect(!machine.canSuspend)

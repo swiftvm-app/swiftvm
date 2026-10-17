@@ -56,8 +56,9 @@ SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 | `--password <password>` | The account's password. Required for automatic macOS setup, Windows, and Linux desktop scripts |
 | `--location <folder>` | Keep the machine in this folder instead of the one for new machines |
 | `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs `--password`; macOS leaves Remote Login off |
-| `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta) |
-| `--gpu` | Linux: draw with the Mac's GPU, with [graphics acceleration](linux-guests.md#graphics-acceleration) |
+| `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta), using Apple's backend without GPU acceleration; can't be combined with `--gpu` |
+| `--gpu` | Linux: require [graphics acceleration](linux-guests.md#graphics-acceleration), which is on by default when available unless `--rosetta` is requested |
+| `--no-gpu` | Linux: use Apple's backend without GPU acceleration, with suspend support |
 | `--compressed` | Linux and Windows: keep the disk [compressed](disks.md#keeping-the-disk-compressed) from the start |
 | `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |
 | `--iso <file>` | Windows: install this Windows 11 Arm64 ISO instead of downloading |
