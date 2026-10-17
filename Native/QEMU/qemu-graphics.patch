@@ -1288,7 +1288,7 @@ index ba27efcf4..ba1734a34 100644
  
  static void egl_cursor_dmabuf(DisplayChangeListener *dcl,
 diff --git a/ui/egl-helpers.c b/ui/egl-helpers.c
-index d689f187c..b46032451 100644
+index d689f187c..0637f4190 100644
 --- a/ui/egl-helpers.c
 +++ b/ui/egl-helpers.c
 @@ -28,7 +28,7 @@
@@ -1505,7 +1505,18 @@ index d689f187c..b46032451 100644
  #if defined(CONFIG_X11) || defined(CONFIG_GBM) || defined(WIN32)
  
  /*
-@@ -539,63 +675,18 @@ EGLDisplay qemu_egl_get_display(EGLNativeDisplayType native,
+@@ -528,7 +664,9 @@ EGLDisplay qemu_egl_get_display(EGLNativeDisplayType native,
+     /* In practise any EGL 1.5 implementation would support the EXT extension */
+     if (epoxy_has_egl_extension(NULL, "EGL_EXT_platform_base")) {
+         if (platform != 0) {
+-            dpy = eglGetPlatformDisplayEXT(platform, native, NULL);
++            /* EGLNativeDisplayType is an integer on macOS. */
++            dpy = eglGetPlatformDisplayEXT(platform,
++                                          (void *)(uintptr_t)native, NULL);
+         }
+     }
+
+@@ -539,63 +677,18 @@ EGLDisplay qemu_egl_get_display(EGLNativeDisplayType native,
      return dpy;
  }
  
@@ -1575,7 +1586,7 @@ index d689f187c..b46032451 100644
  }
  
  #endif
-@@ -604,18 +695,18 @@ static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
+@@ -604,18 +697,18 @@ static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
  int qemu_egl_init_dpy_x11(EGLNativeDisplayType dpy, DisplayGLMode mode)
  {
  #ifdef EGL_KHR_platform_x11
@@ -1598,7 +1609,7 @@ index d689f187c..b46032451 100644
  #endif
  }
  #endif
-@@ -629,7 +720,7 @@ int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode)
+@@ -629,7 +722,7 @@ int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode)
          mode = DISPLAY_GL_MODE_ES;
      }
  
@@ -1607,7 +1618,7 @@ index d689f187c..b46032451 100644
          return -1;
      }
  
-@@ -651,7 +742,7 @@ int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode)
+@@ -651,7 +744,7 @@ int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode)
          }
  
          trace_egl_init_d3d11_device(device);
