@@ -59,6 +59,7 @@ extension AppModel {
     func exitSeamlessMode(_ machine: VirtualMachine, reopeningWindow: Bool = true) {
         guard let session = seamlessSessions.removeValue(forKey: machine.id) else { return }
         seamlessMachineIDs.removeAll { $0 == machine.id }
+        updateDockIcon()
         session.stop()
         if reopeningWindow, machine.state.isActive {
             windows.showMachine(machine.id)
@@ -78,5 +79,11 @@ extension AppModel {
         guard seamlessMachineIDs.last != id else { return }
         seamlessMachineIDs.removeAll { $0 == id }
         seamlessMachineIDs.append(id)
+        updateDockIcon()
+    }
+
+    /// The Dock icon shows the Windows key while it opens a Start menu, and the app's own icon otherwise.
+    private func updateDockIcon() {
+        NSApp.applicationIconImage = seamlessMachineIDs.isEmpty ? nil : .startMenu
     }
 }
