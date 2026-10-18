@@ -90,16 +90,16 @@ SwiftVM doesn't set these guests up, so afterwards you may want to:
 
 ## Graphics acceleration
 
-**Graphics acceleration** is on by default for new Linux machines when this
-copy of SwiftVM supports it, in both the creation window and `swiftvm create`.
-The guest draws with your Mac's GPU instead of drawing everything on its
-processors, making desktops such as GNOME, Hyprland, or Omarchy smoother.
+**Graphics acceleration** is off by default for new Linux machines, in both
+the creation window and `swiftvm create`. When enabled, the guest draws with
+your Mac's GPU instead of drawing everything on its processors, making desktops
+such as GNOME, Hyprland, or Omarchy smoother.
 Existing machines and machines made from templates keep their graphics settings.
 
-Turn it off before creating the machine, or pass `--no-gpu`, if you need suspend
-or Rosetta. `--rosetta` selects Apple's backend without GPU acceleration unless
-you also explicitly pass `--gpu`, which is rejected. `--gpu` requires acceleration
-and reports an error if this copy of SwiftVM was built without it.
+Turn it on before creating the machine, or pass `--gpu`, to use acceleration.
+`--gpu` reports an error if this copy of SwiftVM was built without it and can't
+be combined with `--rosetta`. Leave acceleration off, or pass `--no-gpu`, to
+keep suspend and Rosetta support.
 
 Apple's virtualization gives Linux no such GPU, so a machine with graphics
 acceleration runs on QEMU, as Windows guests do. The guest's OpenGL goes

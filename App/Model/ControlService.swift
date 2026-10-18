@@ -729,9 +729,7 @@ extension AppModel {
         if isMac, parameters.acceleratesGraphics != nil {
             return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.")
         }
-        // An explicit Rosetta request keeps Apple's backend; otherwise use the GPU when it is available.
-        let acceleratesGraphics = parameters.acceleratesGraphics
-            ?? (!isMac && !usesRosetta && qemuProvider?.canAccelerateGraphics == true)
+        let acceleratesGraphics = parameters.acceleratesGraphics ?? false
         if acceleratesGraphics {
             guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Leave out --gpu to use Rosetta, or --rosetta to use the GPU.") }
             guard qemuProvider?.canAccelerateGraphics == true else {

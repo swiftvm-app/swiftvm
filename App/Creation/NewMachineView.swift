@@ -316,7 +316,7 @@ private struct LinuxMachineForm: View {
     @State private var password = ""
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
-    @State private var acceleratesGraphics = true
+    @State private var acceleratesGraphics = false
     @State private var compressesDisk = false
     @State private var startsWhenReady = true
     /// The folder to keep the machine in, if one was chosen.

@@ -157,7 +157,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var rosetta: Bool?
         /// Linux: keep the machine's disk compressed from the start. `nil` is no.
         public var compressed: Bool?
-        /// Linux: draw with the Mac's GPU, on QEMU. `nil` uses it when available, unless Rosetta is requested.
+        /// Linux: draw with the Mac's GPU, on QEMU. `nil` is no.
         public var acceleratesGraphics: Bool?
         /// Whether this Mac's SSH key lets into the account. `nil` is yes.
         public var installsSSHKey: Bool?

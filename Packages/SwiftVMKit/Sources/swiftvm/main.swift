@@ -16,7 +16,7 @@ Usage: swiftvm <command> [arguments]
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
       --rosetta                     Linux: run x86-64 programs with Rosetta, using Apple's backend without GPU acceleration
-      --gpu                         Linux: draw with this Mac's GPU (on by default when available, unless --rosetta).
+      --gpu                         Linux: draw with this Mac's GPU (off by default).
                                     The machine runs on QEMU, so it can't be suspended or use Rosetta.
                                     Windows: install the experimental 3D driver (on by default when available).
                                     Windows is sharp at the size it starts at; a new window size takes a restart
