@@ -43,7 +43,12 @@ See [Networking](../features/networking.md) for addresses and port forwarding.
 
 ## Guest features
 
-- Linux and Windows guests have no graphics acceleration.
+- Linux and Windows guests with graphics acceleration cannot suspend or take
+  live snapshots. Windows acceleration is experimental and enabled by default
+  for new guests; graphics load can cause rendering failures or Windows crashes.
+  Shut accelerated guests down before taking a snapshot or quitting SwiftVM.
+  See [Linux graphics](../features/linux-guests.md#graphics-acceleration)
+  and [Windows graphics](../features/windows-guests.md#graphics-acceleration).
 - macOS needs the guest tools for unattended shutdown. Without them, confirm
   shutdown in the guest's window.
 - Linux clipboard sharing requires `spice-vdagent` and may not work in every

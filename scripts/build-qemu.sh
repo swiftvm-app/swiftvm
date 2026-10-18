@@ -10,8 +10,9 @@
 # GPU by virglrenderer through ANGLE, which draws with Metal, and the app shows it with CocoaSpice. The
 # patches in Native/QEMU carry what that takes on macOS, after UTM's.
 #
-# SWIFTVM_QEMU_DIRECT3D=1 adds Direct3D for Windows guests: DXMT, which turns it into Metal, and the
-# LLVM 15 that DXMT's shader translator is built with, which makes the first build far longer.
+# Experimental Direct3D for Windows guests is included by default: DXMT turns it into Metal, and its
+# shader translator is built with LLVM 15, which makes the first build far longer. Set
+# SWIFTVM_QEMU_DIRECT3D=0 to leave it out while keeping Linux graphics acceleration.
 #
 # Every source is pinned in Native/QEMU/sources.tsv by its checksum. The libraries the build doesn't
 # make itself are Homebrew's, and so are the tools to build with:
@@ -29,7 +30,7 @@ source "$root/scripts/common.sh"
 qemu_version=11.1.2
 native=$root/Native/QEMU
 bridge=$root/Packages/SwiftVMKit/Sources/GuestDisplayBridge/include
-direct3d=$([[ ${SWIFTVM_QEMU_DIRECT3D:-} == 1 ]] && print yes || print no)
+direct3d=$([[ ${SWIFTVM_QEMU_DIRECT3D:-1} == 1 ]] && print yes || print no)
 # The app runs on macOS 27 and later, as its packages say, and so has what it brings.
 export MACOSX_DEPLOYMENT_TARGET=27.0
 # Everything that isn't asked for here is left out.
@@ -163,7 +164,7 @@ build_libraries() {
     meson_build "$sources/gstreamer" -Dgst_parse=false -Dtests=disabled -Dexamples=disabled -Dbenchmarks=disabled -Dtools=disabled -Dintrospection=disabled
     unpack gst-plugins-base-1.19.1.tar.xz gst-plugins-base "$sources/gst-plugins-base-1.19.1.patch"
     meson_build "$sources/gst-plugins-base" -Dtests=disabled -Dexamples=disabled -Dtools=disabled -Dgl=disabled -Dintrospection=disabled
-    unpack spice-0.16.0.tar.bz2 spice "$native/spice-server.patch"
+    unpack spice-0.16.0.tar.bz2 spice "$native/spice-server.patch" "$native/spice-input-lifetime.patch"
     meson_build "$sources/spice" -Dlz4=false -Dsasl=false -Dgstreamer=no -Dmanual=false -Dtests=false
     unpack spice-gtk-0.42.tar.xz spice-gtk "$sources/spice-gtk-0.42.patch"
     meson_build "$sources/spice-gtk" -Dcoroutine=libucontext -Dintrospection=disabled -Dgtk=disabled -Dwebdav=disabled -Dusbredir=disabled -Dwayland-protocols=disabled
@@ -203,7 +204,7 @@ build_libraries() {
     cmake --build "$sources/llvm-project/build"
     cmake --install "$sources/llvm-project/build"
     unpack directx.tar.gz directx-headers
-    unpack dxmt.tar.gz dxmt
+    unpack dxmt.tar.gz dxmt "$native/dxmt-shared-resource-initialization.patch" "$native/dxmt-shared-resource-tests.patch"
     if [[ ! -e $sources/dxmt/include/native/directx/d3d11.h ]]; then
         rmdir "$sources/dxmt/include/native/directx"
         ln -s ../../../directx-headers "$sources/dxmt/include/native/directx"

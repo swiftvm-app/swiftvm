@@ -60,10 +60,10 @@ SDK.
 
 ## What a release build does
 
-1. `scripts/build-release.sh` builds the app, including QEMU for Windows guests
-   and Linux graphics acceleration (without Direct3D), sets its version and
-   update feed, and signs it with the Developer ID certificate and the USB
-   provisioning profile. It then creates the disk image.
+1. `scripts/build-release.sh` builds the app, including QEMU with Linux graphics
+   acceleration and experimental Windows Direct3D enabled by default, sets its
+   version and update feed, and signs it with the Developer ID certificate and
+   the USB provisioning profile. It then creates the disk image.
 2. The workflow has Apple notarize the disk image and staples the ticket to
    it.
 3. `scripts/generate-appcast.sh` signs the disk image with the update key and
