@@ -41,12 +41,17 @@ public enum WindowsGuestAgent {
 
     /// The files a new machine's setup disc carries in its `swiftvm` folder: the agent, its installer,
     /// and the runner that Windows Setup starts.
-    static func setupFiles() throws -> [String: Data] {
+    ///
+    /// - Parameter includesGraphicsDriver: Bring the 3D driver, with which the machine draws with this
+    ///   Mac's GPU. Without it, setup installs the driver for a display only.
+    static func setupFiles(includesGraphicsDriver: Bool = true) throws -> [String: Data] {
         var files: [String: Data] = [:]
         for file in Self.files + [("setup.ps1", "windows-setup.ps1")] {
             files[file.name] = Data(windowsLines(try resource(file.resource)).utf8)
         }
-        try addGraphicsDriver(to: &files)
+        if includesGraphicsDriver {
+            try addGraphicsDriver(to: &files)
+        }
         return files
     }
 

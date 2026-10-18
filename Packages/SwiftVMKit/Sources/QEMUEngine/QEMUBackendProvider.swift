@@ -19,6 +19,8 @@ public final class QEMUBackendProvider: VMBackendProvider {
 
     /// Whether this copy of the app's QEMU lets a guest draw with the Mac's GPU.
     public var canAccelerateGraphics: Bool { installation?.acceleratesGraphics ?? false }
+    /// Whether it lets a Windows guest do so, which takes Direct3D besides.
+    public var canAccelerateWindowsGraphics: Bool { canAccelerateGraphics && installation?.supportsDirect3D == true }
 
     public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
         guard machine.configuration.engine == .qemu else { throw VMError.unsupportedEngine(machine.configuration.engine) }

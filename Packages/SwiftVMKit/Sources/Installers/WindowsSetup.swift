@@ -18,14 +18,21 @@ public struct WindowsSetup: Sendable, Hashable {
     public var language: String
     /// Public keys that may sign in over SSH, once Windows has set SSH up.
     public var authorizedKeys: [String]
+    /// Install the 3D driver, with which Windows draws with this Mac's GPU, rather than the driver for
+    /// a display only.
+    public var acceleratesGraphics: Bool
 
-    public init(computerName: String, userName: String, fullName: String? = nil, password: String, language: String, authorizedKeys: [String] = []) {
+    public init(
+        computerName: String, userName: String, fullName: String? = nil, password: String, language: String,
+        authorizedKeys: [String] = [], acceleratesGraphics: Bool = true
+    ) {
         self.computerName = computerName
         self.userName = userName
         self.fullName = fullName
         self.password = password
         self.language = language
         self.authorizedKeys = authorizedKeys
+        self.acceleratesGraphics = acceleratesGraphics
     }
 
     /// The volume label of the setup disc.
@@ -39,7 +46,7 @@ public struct WindowsSetup: Sendable, Hashable {
     /// SwiftVM's setup in a folder of its own.
     public func writeDisc(to url: URL) throws {
         var files: [String: Data] = ["autounattend.xml": Data(answerFile.utf8)]
-        for (name, contents) in try WindowsGuestAgent.setupFiles() {
+        for (name, contents) in try WindowsGuestAgent.setupFiles(includesGraphicsDriver: acceleratesGraphics) {
             files["swiftvm/" + name] = contents
         }
         if !authorizedKeys.isEmpty {

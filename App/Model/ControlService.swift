@@ -821,9 +821,12 @@ extension AppModel {
     private func createWindowsMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.") }
         guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.") }
-        guard parameters.acceleratesGraphics == nil else { return .failure("--gpu and --no-gpu are for Linux guests.") }
         guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.") }
         guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription) }
+        let canAccelerateGraphics = qemuProvider?.canAccelerateWindowsGraphics == true
+        if parameters.acceleratesGraphics == true, !canAccelerateGraphics {
+            return .failure("This copy of SwiftVM can't give Windows the Mac's GPU: its QEMU was built without Direct3D. Leave out --gpu.")
+        }
         var name = parameters.name ?? "Windows 11"
         if parameters.name == nil {
             let base = name
@@ -875,6 +878,7 @@ extension AppModel {
             password: password,
             installsSSHKey: parameters.installsSSHKey ?? true,
             compressesDisk: parameters.compressed ?? false,
+            acceleratesGraphics: parameters.acceleratesGraphics ?? canAccelerateGraphics,
             location: location
         )
         return await finishCreating(named: name, starting: parameters.start) { self.create(request) }

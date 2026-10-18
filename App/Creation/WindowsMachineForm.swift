@@ -13,6 +13,7 @@ struct WindowsMachineSettings {
     var password = ""
     var installsSSHKey = true
     var compressesDisk = false
+    var acceleratesGraphics = true
     var location: URL?
 
     init(hostUserName: String = NSUserName(), hostFullName: String = NSFullUserName()) {
@@ -32,6 +33,7 @@ struct WindowsMachineSettings {
             password: password,
             installsSSHKey: installsSSHKey,
             compressesDisk: compressesDisk,
+            acceleratesGraphics: acceleratesGraphics,
             location: location
         )
     }
@@ -66,6 +68,9 @@ struct WindowsMachineForm: View {
             Form {
                 sourceSection
                 accountSection
+                if canAccelerateGraphics {
+                    graphicsSection
+                }
                 NewMachineAdvancedToggle(selection: $mode, summary: hardwareSummary)
                 if mode == .advanced {
                     hardwareSection
@@ -124,6 +129,21 @@ struct WindowsMachineForm: View {
             } else {
                 Text("Windows creates the account “\(settings.userName)” and logs in to it by itself. Expand Advanced to change the account.")
             }
+        }
+    }
+
+    /// Whether this copy of the app can give a Windows machine the Mac's GPU to draw with.
+    private var canAccelerateGraphics: Bool {
+        model.qemuProvider?.canAccelerateWindowsGraphics == true
+    }
+
+    private var graphicsSection: some View {
+        Section {
+            Toggle("Graphics acceleration (experimental)", isOn: $settings.acceleratesGraphics)
+        } footer: {
+            Text(settings.acceleratesGraphics
+                ? "Draws with your Mac's GPU, for smooth 3D and video. Windows is sharp at the size its window opens at; after you resize the window, restart Windows to make it sharp at the new size."
+                : "Windows is sharp at any window size, and follows the window as you resize it. Graphics are drawn by the processors, so 3D apps and video are slower.")
         }
     }
 

@@ -223,6 +223,62 @@ private final class FakeProvider: VMBackendProvider {
         #expect(machine.lastError == nil)
     }
 
+    @Test func aRestartThatEndsInACrashStillStartsTheGuest() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeRunningMachine(family: .windows)
+
+        // QEMU can end abruptly while the guest shuts down for the restart that was asked for.
+        await machine.restart()
+        provider.backend.eventHandler?(.stoppedWithError("QEMU stopped unexpectedly."))
+        await wait(for: machine, toBe: .running)
+        #expect(provider.backend.starts.count == 2)
+        #expect(machine.lastError == nil)
+
+        // Without a restart asked for, it is what it is: an error.
+        provider.backend.eventHandler?(.stoppedWithError("QEMU stopped unexpectedly."))
+        #expect(machine.state == .stopped)
+        #expect(machine.lastError != nil)
+        #expect(provider.backend.starts.count == 2)
+    }
+
+    @Test func aWindowsGuestOnTheGPUIsSharpOnlyAtTheSizeItStartedAt() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeRunningMachine(family: .windows)
+        try machine.updateConfiguration { configuration in
+            configuration.engine = .qemu
+            configuration.display = DisplayConfiguration(widthInPixels: 2560, heightInPixels: 1560, pixelsPerInch: 144, adapter: .virtioGPU3D)
+        }
+        // Started again, at that size.
+        await machine.forceStop()
+        await machine.start()
+        #expect(machine.startsAtDisplaySize)
+        let send = provider.backend.eventHandler
+
+        // On its way to its size the display shows the firmware's: nothing to say about that.
+        send?(.displayResized(width: 1280, height: 800))
+        send?(.displaySizeWanted(DisplayPixels(width: 2560, height: 1560, scale: 2)))
+        #expect(machine.isDisplaySharp)
+
+        send?(.displayResized(width: 2560, height: 1560))
+        #expect(machine.hasStartingDisplaySize)
+        #expect(machine.isDisplaySharp)
+
+        // The window grew: the display is shown scaled until the guest starts at the window's size.
+        send?(.displaySizeWanted(DisplayPixels(width: 3200, height: 1800, scale: 2)))
+        #expect(!machine.isDisplaySharp)
+        try machine.startAtWantedDisplaySize()
+        #expect(machine.configuration.display.widthInPixels == 3200)
+        #expect(machine.configuration.display.heightInPixels == 1800)
+        #expect(machine.configuration.display.pixelsPerInch == 144)
+        // Until it has started again, it is still at the old size, and still shown scaled.
+        #expect(!machine.isDisplaySharp)
+
+        // A guest that follows its window is never shown scaled.
+        try machine.updateConfiguration { $0.display.automaticallyResizes = false }
+        #expect(!machine.startsAtDisplaySize)
+        #expect(machine.isDisplaySharp)
+    }
+
     @Test func goesBackToRunningWhenTheGuestDoesNotShutDown() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try await makeRunningMachine()

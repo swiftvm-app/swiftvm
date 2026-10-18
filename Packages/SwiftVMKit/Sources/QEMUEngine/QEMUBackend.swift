@@ -32,6 +32,9 @@ public final class QEMUBackend: VMBackend {
     /// QEMU's end of the display's line, until it has been handed over.
     private var screenEnd: Int32
     private let view: GuestScreenView
+    /// The guest takes a new size of display only as it starts: Windows with its 3D driver. See
+    /// ``VirtualMachine/startsAtDisplaySize``.
+    private let startsAtDisplaySize: Bool
     private var process: QEMUProcess?
     private var monitor: QMPConnection?
     private var agentChannel: AgentChannel?
@@ -75,7 +78,6 @@ public final class QEMUBackend: VMBackend {
             screenEnd = -1
             input = spice
             view = GuestScreenView(input: spice, content: spice.view)
-            spice.onResize = { [weak view] size in view?.show(size: size) }
         } else {
             let (app, engine) = try Self.socketPair(SOCK_STREAM)
             // macOS gives a local stream just 8 KB by default. A frame is several MB: give QEMU's
@@ -90,8 +92,11 @@ public final class QEMUBackend: VMBackend {
             screenEnd = engine
             view = GuestScreenView(client: screen)
         }
+        startsAtDisplaySize = adapter == .virtioGPU3D && configuration.os.family == .windows
+            && configuration.display.automaticallyResizes
         view.capturesSystemKeys = configuration.keyboard.capturesSystemKeys
-        view.resizesGuest = adapter != .framebuffer && configuration.display.automaticallyResizes
+        // A size asked for while it runs only has Windows pick another, which the window shows scaled.
+        view.resizesGuest = adapter != .framebuffer && configuration.display.automaticallyResizes && !startsAtDisplaySize
         connectScreen()
     }
 
@@ -102,10 +107,30 @@ public final class QEMUBackend: VMBackend {
     /// Passes what the display's client hears on to the view, on the main thread. A display that
     /// changes faster than the screen is drawn is drawn once for all of it.
     private func connectScreen() {
+        view.onFittingSize = { [weak self] size in
+            guard let self else { return }
+            if startsAtDisplaySize {
+                eventHandler?(.displaySizeWanted(size))
+            } else if screen != nil, view.resizesGuest {
+                // The agent sets the scale that goes with the size. SPICE says itself what it asked for.
+                eventHandler?(.displaySizeRequested(width: size.width, height: size.height, scale: size.scale))
+            }
+        }
+        spice?.onResize = { [weak self] size in
+            guard let self else { return }
+            view.show(size: size)
+            eventHandler?(.displayResized(width: Int(size.width), height: Int(size.height)))
+        }
         guard let screen else { return }
         let redraw = Redraw()
-        screen.onResize = { [weak view] picture in
-            DispatchQueue.main.async { MainActor.assumeIsolated { view?.show(picture) } }
+        screen.onResize = { [weak self] picture in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.view.show(picture)
+                    self.eventHandler?(.displayResized(width: picture.width, height: picture.height))
+                }
+            }
         }
         screen.onUpdate = { [weak view] _ in
             guard redraw.claim() else { return }

@@ -4,14 +4,18 @@
 #
 # The agent is built here, from its source next to this script, by the C# compiler that comes with
 # Windows. The drivers are on the virtio-win disc, which SwiftVM plugs in next to this one.
-param([string]$Source = $PSScriptRoot)
+#
+# A machine keeps the display driver it was made with. The 3D driver comes with a new machine's setup
+# only when it was made to draw with the Mac's GPU; later, the guest tools only bring it up to date.
+param([string]$Source = $PSScriptRoot, [switch]$NewMachine)
 $ErrorActionPreference = 'Stop'
 
 $program = Join-Path $env:ProgramFiles 'SwiftVM'
 $executable = Join-Path $program 'swiftvm-agent.exe'
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $graphicsArchive = Join-Path $Source 'graphics-driver.zip'
-$hasGraphicsDriver = Test-Path $graphicsArchive
+$hasAcceleratedDriver = Test-Path (Join-Path $env:WINDIR 'System32\DriverStore\FileRepository\viogpu3d.inf_*')
+$hasGraphicsDriver = (Test-Path $graphicsArchive) -and ($NewMachine -or $hasAcceleratedDriver)
 
 # The drivers. Windows on ARM has none of its own for these devices: the network card, the agent's
 # serial line, the display that follows the window, and the rest.

@@ -6,6 +6,8 @@ struct MachineToolbar: ToolbarContent {
     let machine: VirtualMachine
     @Binding var isShowingSettings: Bool
     @Binding var isShowingSnapshots: Bool
+    /// Gives the window the size that shows the guest's display pixel for pixel.
+    var onReturnToSharpSize: () -> Void = {}
 
     @Environment(AppModel.self) private var model
     @State private var isShowingNetwork = false
@@ -22,6 +24,13 @@ struct MachineToolbar: ToolbarContent {
     }
 
     var body: some ToolbarContent {
+        if machine.state == .running, !machine.isDisplaySharp {
+            ToolbarItem(placement: .primaryAction) {
+                SharpDisplayButton(machine: machine, onReturnToSharpSize: onReturnToSharpSize)
+            }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
+
         ToolbarItemGroup(placement: .primaryAction) {
             Menu("Power", systemImage: "power") {
                 MachineMenu(

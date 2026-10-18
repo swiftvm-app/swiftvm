@@ -48,6 +48,25 @@ public enum VMBackendEvent: Sendable {
     /// The window asked the guest's display for this size, in pixels, at `scale` pixels to a point.
     /// For a desktop that doesn't take a new size from its display: Hyprland on QEMU.
     case displaySizeRequested(width: Int, height: Int, scale: Double)
+    /// The window would show a display of this size pixel for pixel, but doesn't ask the guest for it:
+    /// the guest takes a new size only as it starts. See ``VirtualMachine/startsAtDisplaySize``.
+    case displaySizeWanted(DisplayPixels)
+    /// The guest's display is this many pixels now.
+    case displayResized(width: Int, height: Int)
+}
+
+/// A size of a guest's display, in pixels, and how many of them there are to a point of the window it
+/// is shown in.
+public struct DisplayPixels: Sendable, Hashable {
+    public var width: Int
+    public var height: Int
+    public var scale: Double
+
+    public init(width: Int, height: Int, scale: Double) {
+        self.width = width
+        self.height = height
+        self.scale = scale
+    }
 }
 
 extension VMBackendEvent {

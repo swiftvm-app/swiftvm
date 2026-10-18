@@ -36,7 +36,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.2";
+        public const string Version = "1.3";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -56,6 +56,7 @@ namespace SwiftVM
             }
             if (args.Contains("--session"))
             {
+                Log.FileName = "session.log";
                 return SessionHalf.Run();
             }
             if (args.Contains("--console"))
@@ -79,6 +80,9 @@ namespace SwiftVM
     static class Log
     {
         static readonly object Gate = new object();
+        /// The half in someone's session can't write to the service's log, which is SYSTEM's: it keeps
+        /// one of its own next to it.
+        public static string FileName = "agent.log";
 
         public static void Write(string format, params object[] values)
         {
@@ -87,7 +91,7 @@ namespace SwiftVM
                 lock (Gate)
                 {
                     Directory.CreateDirectory(Program.DataDirectory);
-                    string path = Path.Combine(Program.DataDirectory, "agent.log");
+                    string path = Path.Combine(Program.DataDirectory, FileName);
                     // What is written is kept short: the log only says what went wrong lately.
                     if (File.Exists(path) && new FileInfo(path).Length > 1024 * 1024)
                     {
@@ -217,6 +221,7 @@ namespace SwiftVM
         public void Start()
         {
             Log.Write("agent {0} starting", Program.Version);
+            ResolutionHelper.TurnOff();
             channel.Listen(Program.AgentPort, delegate(Connection connection)
             {
                 var line = new AgentLine(connection, this);
@@ -261,6 +266,36 @@ namespace SwiftVM
         List<AgentLine> Lines()
         {
             lock (linesGate) return new List<AgentLine>(lines);
+        }
+    }
+
+    /// The resolution service that comes with the 3D display driver. It has Windows switch to the size
+    /// the Mac last asked for, which that driver offers Windows only as it starts: Windows puts another,
+    /// smaller size in its place, which the Mac's window can only show scaled. The machine starts at
+    /// the size its window shows it at instead, and this agent gives Windows the scale for it.
+    static class ResolutionHelper
+    {
+        const string ServiceName = "vgpusrv";
+
+        public static void TurnOff()
+        {
+            try
+            {
+                using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + ServiceName, true))
+                {
+                    if (key == null) return;
+                    // Disabled, as the driver's next installation would start it again.
+                    key.SetValue("Start", 4, RegistryValueKind.DWord);
+                }
+                using (var service = new ServiceController(ServiceName))
+                {
+                    if (service.Status != ServiceControllerStatus.Stopped) service.Stop();
+                }
+            }
+            catch (Exception error)
+            {
+                Log.Write("resolution service: {0}", error.Message);
+            }
         }
     }
 
@@ -2134,9 +2169,15 @@ namespace SwiftVM
                                         else if (switched == SwitchResult.Substituted) abandoned = true;
                                     }
                                     // A DPI retry must not undo a size subsequently chosen in Windows.
-                                    if (sized == request) applied = SetScale(display, width, height, scale) != ScaleResult.Retry;
+                                    if (sized == request)
+                                    {
+                                        var scaled = SetScale(display, width, height, scale);
+                                        applied = scaled != ScaleResult.Retry;
+                                        if (applied) Log.Write("display {0}x{1} at {2}x: scale {3}", width, height, scale, scaled);
+                                    }
                                 }
                             }
+                            if (abandoned) Log.Write("display {0}x{1}: Windows put another size in its place", width, height);
                             if (applied || abandoned) { handled = request; failures = 0; }
                             else failures++;
                         }
@@ -2327,8 +2368,10 @@ namespace SwiftVM
             if (path.Source.ModeIndex >= modes.Length || path.Target.ModeIndex >= modes.Length) return false;
             var source = modes[path.Source.ModeIndex];
             var target = modes[path.Target.ModeIndex];
+            // The display-only driver doesn't say what its target shows. The source's size is what is shown then.
+            bool unspecified = target.Target.ActiveWidth == uint.MaxValue && target.Target.ActiveHeight == uint.MaxValue;
             return source.Type == 1 && target.Type == 2 && source.Source.Width == width && source.Source.Height == height
-                && target.Target.ActiveWidth == width && target.Target.ActiveHeight == height;
+                && (unspecified || (target.Target.ActiveWidth == width && target.Target.ActiveHeight == height));
         }
 
         static bool Configuration(out Native.DisplayPath[] paths, out Native.DisplayConfigMode[] modes)

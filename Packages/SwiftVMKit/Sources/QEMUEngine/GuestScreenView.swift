@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import VMCore
 
 /// Shows what a QEMU machine's display shows, and hands it what the Mac's keyboard and mouse do over it.
 ///
@@ -25,6 +26,9 @@ public final class GuestScreenView: NSView {
     public var resizesGuest = false {
         didSet { requestFittingSize() }
     }
+    /// Called with the size the guest's display would have to be to fill the view pixel for pixel,
+    /// whenever that changes, whether or not ``resizesGuest`` asks the guest for it.
+    var onFittingSize: ((DisplayPixels) -> Void)?
 
     private var picture: RFBClient.Picture?
     private var guestCursor: RFBClient.Cursor?
@@ -155,14 +159,18 @@ public final class GuestScreenView: NSView {
     /// size. Asking for points instead stretches a low-resolution picture on a Retina display.
     private func requestFittingSize() {
         resizeRequest?.cancel()
-        guard resizesGuest, region == nil, window != nil else { return }
+        guard resizesGuest || onFittingSize != nil, region == nil, window != nil else { return }
         let size = convertToBacking(bounds).size
         let scale = window?.backingScaleFactor ?? 1
-        resizeRequest = Task { [client] in
+        resizeRequest = Task { [client, resizesGuest, weak self] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             // Even sizes: some drivers round odd ones down and then don't fit.
-            client.requestSize(width: Int(size.width) & ~1, height: Int(size.height) & ~1, scale: scale)
+            let fitting = DisplayPixels(width: Int(size.width) & ~1, height: Int(size.height) & ~1, scale: scale)
+            self?.onFittingSize?(fitting)
+            if resizesGuest {
+                client.requestSize(width: fitting.width, height: fitting.height, scale: scale)
+            }
         }
     }
 

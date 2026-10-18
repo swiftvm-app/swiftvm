@@ -158,6 +158,51 @@ public final class VirtualMachine: Identifiable {
     /// The guest display, available while the machine is active.
     public var displayView: NSView? { backend?.displayView }
 
+    /// Whether the guest's display takes a new size only as the guest starts, and so starts at the size
+    /// its window last showed it at, pixel for pixel: a Windows guest that draws with the Mac's GPU.
+    ///
+    /// Its driver offers Windows a new size only when the driver starts. One asked for while Windows
+    /// runs is never offered, and Windows picks another, which the window can only show scaled.
+    public var startsAtDisplaySize: Bool {
+        configuration.engine == .qemu && configuration.os.family == .windows
+            && configuration.display.adapter == .virtioGPU3D && configuration.display.automaticallyResizes
+    }
+
+    /// The size the machine's window would show the guest's display at pixel for pixel, for a guest that
+    /// ``startsAtDisplaySize``. `nil` until the window has said, and while the machine isn't running.
+    public private(set) var wantedDisplaySize: DisplayPixels?
+    /// The size of the guest's display now. `nil` until the engine has said, and while the machine
+    /// isn't running.
+    public private(set) var displaySize: DisplayPixels?
+    /// The size the guest's display started at in this run. A new size in the configuration is the
+    /// next run's.
+    @ObservationIgnored private var startingDisplaySize = DisplayPixels(width: 0, height: 0, scale: 1)
+
+    /// Whether the guest's display has come to the size it starts at. On its way there it shows the
+    /// firmware's sizes.
+    public var hasStartingDisplaySize: Bool {
+        guard let displaySize else { return false }
+        return displaySize.width == startingDisplaySize.width && displaySize.height == startingDisplaySize.height
+    }
+
+    /// Whether the window shows the guest's display pixel for pixel. Only a guest that
+    /// ``startsAtDisplaySize`` can be shown otherwise, after its window changed size.
+    public var isDisplaySharp: Bool {
+        guard startsAtDisplaySize, hasStartingDisplaySize, let wantedDisplaySize, let displaySize else { return true }
+        return wantedDisplaySize.width == displaySize.width && wantedDisplaySize.height == displaySize.height
+    }
+
+    /// Has the guest start at the size its window shows it at pixel for pixel, from its next start on.
+    /// The caller restarts it.
+    public func startAtWantedDisplaySize() throws {
+        guard let wantedDisplaySize else { return }
+        try updateConfiguration { configuration in
+            configuration.display.widthInPixels = wantedDisplaySize.width
+            configuration.display.heightInPixels = wantedDisplaySize.height
+            configuration.display.pixelsPerInch = Int((wantedDisplaySize.scale * 72).rounded())
+        }
+    }
+
     public var canSuspend: Bool {
         (state == .running || state == .paused) && backend?.canSaveState == true
     }
@@ -299,7 +344,11 @@ public final class VirtualMachine: Identifiable {
     private var requestedDisplaySize: (width: Int, height: Int, scale: Double)?
 
     private func agentDidConnect(_ hello: AgentHello) {
-        if let size = requestedDisplaySize {
+        if startsAtDisplaySize {
+            // The size the guest started at, so that its agent gives Windows the scale for it.
+            let size = startingDisplaySize
+            agent.sendDisplaySize(width: size.width, height: size.height, scale: size.scale)
+        } else if let size = requestedDisplaySize {
             agent.sendDisplaySize(width: size.width, height: size.height, scale: size.scale)
         }
         // The guest knows best what it is. One that was upgraded says so here, and one that was installed
@@ -642,6 +691,10 @@ public final class VirtualMachine: Identifiable {
             let backend = try await backendProvider.makeBackend(for: self, console: console.connect(continuing: restoring))
             backend.eventHandler = { [weak self] event in self?.handle(event) }
             self.backend = backend
+            let display = configuration.display
+            startingDisplaySize = DisplayPixels(
+                width: display.widthInPixels, height: display.heightInPixels, scale: Double(display.pixelsPerInch) / 72
+            )
 
             var options = VMStartOptions()
             if restoring {
@@ -1043,8 +1096,19 @@ public final class VirtualMachine: Identifiable {
                 }
             }
         case .stoppedWithError(let message):
+            let restart = restartsAfterStop
             finishStop()
-            lastError = VMErrorInfo(title: "“\(name)” stopped unexpectedly", message: message)
+            if restart {
+                // QEMU on Apple silicon can end abruptly while a guest shuts down. The guest was going
+                // down to start again anyway: it does, as it was asked to.
+                isAboutToRestart = true
+                Task {
+                    isAboutToRestart = false
+                    await performStart()
+                }
+            } else {
+                lastError = VMErrorInfo(title: "“\(name)” stopped unexpectedly", message: message)
+            }
         case .networkDisconnected(let message):
             lastError = VMErrorInfo(title: "Network disconnected in “\(name)”", message: message)
         case .usbDeviceDisconnected(let id):
@@ -1054,6 +1118,10 @@ public final class VirtualMachine: Identifiable {
             // Kept for an agent that isn't there yet, or connects again.
             requestedDisplaySize = (width, height, scale)
             agent.sendDisplaySize(width: width, height: height, scale: scale)
+        case .displaySizeWanted(let size):
+            wantedDisplaySize = size
+        case .displayResized(let width, let height):
+            displaySize = DisplayPixels(width: width, height: height, scale: startingDisplaySize.scale)
         }
     }
 
@@ -1072,6 +1140,8 @@ public final class VirtualMachine: Identifiable {
 
     private func tearDownBackend() {
         guard backend != nil else { return }
+        wantedDisplaySize = nil
+        displaySize = nil
         agent.stop()
         isGuestClockStale = false
         hasAgentMountedSharedFolders = false
