@@ -162,6 +162,9 @@ import Testing
             .hello(protocol: 1), .setClock(id: 1, nanoseconds: .max), .mountSharedFolders(id: 2, tag: "swiftvm", mountPoint: "/mnt/a b"),
             .shutDown(id: 3), .setTimeZone(id: 4, identifier: "America/Argentina/Buenos_Aires"),
             .clipboard(text: "Über “quotes”\n\ttab \u{1F642} \\ / \u{0}"), .unknown(type: "later"),
+            .seamless(enabled: true), .activateWindow(.max),
+            .hitTest(GuestHitTest(request: 7, window: 197_402, x: -8, y: 40)), .moveWindow(197_402, x: -300, y: 12),
+            .resizeWindow(197_402, x: -300, y: 12, width: 1200, height: 800),
         ]
         for message in fromTheApp {
             #expect(GuestMessageCoding.message(HostMessage.self, from: GuestMessageCoding.line(for: message).dropLast()) == message)
@@ -173,6 +176,11 @@ import Testing
             .result(GuestRequestResult(id: 5, ok: false, error: "Line one\nline “two”")),
             .clipboard(text: "one\r\ntwo\u{2028}three"), .clipboardRequest, .unknown(type: "later"),
             .setup(GuestSetupStatus(state: .running, name: "GNOME", step: "Installing “GNOME”")), .setup(GuestSetupStatus(state: .failed)),
+            .windows(GuestWindowList(width: 1920, height: 1080, windows: [])),
+            .windows(GuestWindowList(width: 1920, height: 1080, windows: [
+                GuestWindow(id: 9, title: "Start", x: 600, y: 200, width: 700, height: 800, isPopup: true, isMaximized: true, isResizable: true, isFocused: true),
+            ])),
+            .hit(GuestHit(request: 7, area: GuestHit.titleBar)),
         ]
         for message in fromTheAgent {
             let line = GuestMessageCoding.line(for: message)
@@ -180,6 +188,34 @@ import Testing
             #expect(line.filter { $0 == UInt8(ascii: "\n") }.count == 1)
             #expect(GuestMessageCoding.message(AgentMessage.self, from: line.dropLast()) == message)
         }
+    }
+
+    @Test func seamlessModeIsAskedForWithoutRequests() {
+        // What the agent for Windows parses. Neither is a request: a window's id is not a request's.
+        #expect(text(.seamless(enabled: true)) == #"{"enabled":true,"type":"seamless"}"# + "\n")
+        #expect(text(.activateWindow(197_402)) == #"{"type":"activate-window","window":197402}"# + "\n")
+        #expect(HostMessage.seamless(enabled: false).requestID == nil)
+        #expect(HostMessage.activateWindow(5).requestID == nil)
+    }
+
+    @Test func readsTheGuestsWindows() throws {
+        let message = decode(#"{"type":"windows","width":3024,"height":1890,"windows":[{"id":197402,"title":"Notepad","x":-8,"y":40,"width":1200,"height":800,"focused":true},{"id":65890,"title":"","x":100,"y":200,"width":300,"height":400,"popup":true,"maximized":false,"shadow":2}]}"#)
+        #expect(message == .windows(GuestWindowList(width: 3024, height: 1890, windows: [
+            GuestWindow(id: 197_402, title: "Notepad", x: -8, y: 40, width: 1200, height: 800, isFocused: true),
+            GuestWindow(id: 65890, x: 100, y: 200, width: 300, height: 400, isPopup: true),
+        ])))
+        // A title is shown on the Mac, as one short line.
+        let window = try JSONDecoder().decode(GuestWindow.self, from: Data(#"{"id":1,"title":"‮evil\nname","x":0,"y":0,"width":1,"height":1}"#.utf8))
+        #expect(window.title == "evilname")
+        // However many windows a guest says it has, the Mac opens no more than so many.
+        let many = (0..<1000).map { #"{"id":\#($0),"x":0,"y":0,"width":10,"height":10}"# }.joined(separator: ",")
+        guard case .windows(let list) = decode(#"{"type":"windows","width":10,"height":10,"windows":["# + many + "]}") else {
+            Issue.record("not a window list")
+            return
+        }
+        #expect(list.windows.count == GuestWindowList.maximumWindows)
+        // A window that doesn't say where it is isn't one.
+        #expect(decode(#"{"type":"windows","width":10,"height":10,"windows":[{"id":1,"title":"x"}]}"#) == nil)
     }
 
     @Test func aSystemIsShownByItsOwnName() {

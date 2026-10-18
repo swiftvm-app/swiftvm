@@ -44,6 +44,8 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public var onGuestClipboard: (@MainActor (VirtualMachine, String) -> Void)?
     /// Called when the guest asks for what is on this Mac's clipboard.
     @ObservationIgnored public var onGuestClipboardRequest: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when the windows the guest's agent reports have changed. See ``GuestAgent/reportWindows(_:)``.
+    @ObservationIgnored public var onGuestWindowsChange: (@MainActor (VirtualMachine) -> Void)?
     /// Where the guest's agent finds the shared folders, for a guest that can't have them through a
     /// file-sharing device: a Windows guest, which maps them as a drive over WebDAV. `nil` is the
     /// device's tag, mounted where a Linux guest mounts it.
@@ -132,6 +134,10 @@ public final class VirtualMachine: Identifiable {
             onGuestClipboardRequest?(self)
         }
         agent.onSetupChange = { [weak self] status in self?.guestSetupDidChange(to: status) }
+        agent.onWindowsChange = { [weak self] in
+            guard let self else { return }
+            onGuestWindowsChange?(self)
+        }
     }
 
     public convenience init(bundle: VMBundle) throws {
@@ -192,6 +198,7 @@ public final class VirtualMachine: Identifiable {
         return wantedDisplaySize.width == displaySize.width && wantedDisplaySize.height == displaySize.height
     }
 
+
     /// Has the guest start at the size its window shows it at pixel for pixel, from its next start on.
     /// The caller restarts it.
     public func startAtWantedDisplaySize() throws {
@@ -201,6 +208,43 @@ public final class VirtualMachine: Identifiable {
             configuration.display.heightInPixels = wantedDisplaySize.height
             configuration.display.pixelsPerInch = Int((wantedDisplaySize.scale * 72).rounded())
         }
+    }
+
+    /// Whether the guest's windows can be shown one by one on the Mac, each in a window of its own:
+    /// a Windows guest on QEMU whose agent reports them.
+    public var canShowGuestWindows: Bool {
+        state == .running && configuration.engine == .qemu && configuration.os.family == .windows
+            && agent.offers(GuestFeature.seamless)
+    }
+
+    /// A new view of part of the guest's display, for one of its windows. `nil` while the machine isn't
+    /// active, or its engine can't show part of the display.
+    public func makeRegionView() -> (any GuestRegionView)? {
+        guard state.isActive else { return nil }
+        return backend?.makeRegionView()
+    }
+
+    /// Asks the guest's display to be this many pixels, at `scale` pixels to a point, as the machine's
+    /// window does when it changes size.
+    public func requestDisplaySize(width: Int, height: Int, scale: Double) {
+        backend?.requestDisplaySize(width: width, height: height, scale: scale)
+    }
+
+    /// Calls `body` once the guest's display has next been drawn anew, or soon after if nothing changes
+    /// on it; at once while the machine isn't active. See ``VMBackend/afterDisplayUpdate(_:)``.
+    public func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void) {
+        guard let backend else {
+            body()
+            return
+        }
+        backend.afterDisplayUpdate(body)
+    }
+
+    /// Presses keys of the machine's own keyboard, for someone at this Mac: the Windows key that opens
+    /// the Start menu. Unlike a ``GuestJob``, not something the command line asks for.
+    public func pressKeys(_ keys: GuestJob.Keys) async throws {
+        guard state == .running, let backend else { throw VMError.notRunning(name: name) }
+        try await backend.keys(keys)
     }
 
     public var canSuspend: Bool {

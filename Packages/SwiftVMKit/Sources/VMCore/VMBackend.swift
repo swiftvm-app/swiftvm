@@ -201,6 +201,27 @@ public protocol VMBackend: AnyObject {
     /// Lets go of host resources (network attachments, the display) after the guest has stopped, without
     /// waiting for the backend object itself to be deallocated.
     func invalidate()
+
+    /// A new view of part of the guest's display, which takes input over that part as ``displayView``
+    /// does over all of it: one window of the guest on the Mac. `nil` for an engine that can't show one.
+    func makeRegionView() -> (any GuestRegionView)?
+    /// Asks the guest's display to be this many pixels, at `scale` pixels to a point, as a window that
+    /// shows it would.
+    func requestDisplaySize(width: Int, height: Int, scale: Double)
+    /// Calls `body` once the display has next been drawn anew, or soon after if nothing changes on it:
+    /// for something the guest says on another line than its display's, such as where its windows
+    /// are, to be shown together with the picture that goes with it.
+    func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void)
+}
+
+/// A view that shows one part of a machine's display, and passes on what the mouse and the keyboard do
+/// over it. See ``VMBackend/makeRegionView()``.
+@MainActor
+public protocol GuestRegionView: NSView {
+    /// The part of the display shown, in its pixels from the top left corner. `nil` is all of it.
+    var region: CGRect? { get set }
+    /// Lets go of what the view draws with. It shows nothing after that.
+    func close()
 }
 
 extension VMBackend {
@@ -225,6 +246,14 @@ extension VMBackend {
     }
 
     public func detachUSBDevice(_ id: USBDevice.ID) async throws {}
+
+    public func makeRegionView() -> (any GuestRegionView)? { nil }
+
+    public func requestDisplaySize(width: Int, height: Int, scale: Double) {}
+
+    public func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void) {
+        body()
+    }
 }
 
 /// Creates backends and manages the host resources (networks, …) they hold.

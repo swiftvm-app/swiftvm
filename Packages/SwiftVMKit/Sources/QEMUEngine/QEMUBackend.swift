@@ -35,6 +35,14 @@ public final class QEMUBackend: VMBackend {
     /// The guest takes a new size of display only as it starts: Windows with its 3D driver. See
     /// ``VirtualMachine/startsAtDisplaySize``.
     private let startsAtDisplaySize: Bool
+    /// The views of parts of the display that are open: windows of the guest's apps on the Mac.
+    private let regionViews = NSHashTable<GuestScreenView>.weakObjects()
+    /// The views of part of the VNC client's picture that haven't been closed.
+    private var openRegions = 0
+    /// The guest's pointer as the display last drew it, for a view of part of it that opens later.
+    private var cursor: RFBClient.Cursor?
+    /// What waits for the display's next picture. See ``afterDisplayUpdate(_:)``.
+    private var afterUpdate: [@MainActor () -> Void] = []
     private var process: QEMUProcess?
     private var monitor: QMPConnection?
     private var agentChannel: AgentChannel?
@@ -104,7 +112,12 @@ public final class QEMUBackend: VMBackend {
 
     public var displayView: NSView { view }
 
-    /// Passes what the display's client hears on to the view, on the main thread. A display that
+    /// Every view that shows the display, all of it or part of it.
+    private var screenViews: [GuestScreenView] {
+        [view] + regionViews.allObjects
+    }
+
+    /// Passes what the display's client hears on to the views, on the main thread. A display that
     /// changes faster than the screen is drawn is drawn once for all of it.
     private func connectScreen() {
         view.onFittingSize = { [weak self] size in
@@ -118,7 +131,7 @@ public final class QEMUBackend: VMBackend {
         }
         spice?.onResize = { [weak self] size in
             guard let self else { return }
-            view.show(size: size)
+            screenViews.forEach { $0.show(size: size) }
             eventHandler?(.displayResized(width: Int(size.width), height: Int(size.height)))
         }
         guard let screen else { return }
@@ -127,21 +140,91 @@ public final class QEMUBackend: VMBackend {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.view.show(picture)
+                    self.screenViews.forEach { $0.show(picture) }
                     self.eventHandler?(.displayResized(width: picture.width, height: picture.height))
                 }
             }
         }
-        screen.onUpdate = { [weak view] _ in
+        screen.onUpdate = { [weak self] _ in
             guard redraw.claim() else { return }
             DispatchQueue.main.async {
                 redraw.release()
-                MainActor.assumeIsolated { view?.pictureDidChange() }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.screenViews.forEach { $0.pictureDidChange() }
+                    self.displayDidUpdate()
+                }
             }
         }
-        screen.onCursor = { [weak view] cursor in
-            DispatchQueue.main.async { MainActor.assumeIsolated { view?.show(cursor: cursor) } }
+        screen.onCursor = { [weak self] cursor in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.cursor = cursor
+                    self.screenViews.forEach { $0.show(cursor: cursor) }
+                }
+            }
         }
+    }
+
+    public func makeRegionView() -> (any GuestRegionView)? {
+        let region: GuestScreenView
+        if let spice {
+            // A display library from before views of part of the display has none to give.
+            guard let content = spice.makeRegion() else { return nil }
+            region = GuestScreenView(input: spice, content: content.view)
+            region.onRegionChange = { content.region = $0 ?? .zero }
+            region.onClose = { content.close() }
+            region.show(size: spice.size)
+        } else if let screen {
+            region = GuestScreenView(client: screen)
+            if let picture = screen.picture {
+                region.show(picture)
+            }
+            region.show(cursor: cursor)
+            // What the guest has behind its windows is no part of any of them.
+            openRegions += 1
+            screen.clearsBackdrop = true
+            region.onClose = { [weak self, weak screen] in
+                guard let self else { return }
+                openRegions -= 1
+                if openRegions == 0 { screen?.clearsBackdrop = false }
+            }
+        } else {
+            return nil
+        }
+        region.capturesSystemKeys = view.capturesSystemKeys
+        regionViews.add(region)
+        return region
+    }
+
+    public func requestDisplaySize(width: Int, height: Int, scale: Double) {
+        // Such a guest takes its size as it starts. What shows it fits itself to that one.
+        guard !startsAtDisplaySize else { return }
+        // Even sizes, as the window asks for: some drivers round odd ones down and then don't fit.
+        input.requestSize(width: width & ~1, height: height & ~1, scale: scale)
+        if screen != nil {
+            // Windows switches to it through its agent, as it does for the window. SPICE says itself.
+            eventHandler?(.displaySizeRequested(width: width & ~1, height: height & ~1, scale: scale))
+        }
+    }
+
+    public func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void) {
+        afterUpdate.append(body)
+        // A display that doesn't change says nothing. SPICE's draws without saying at all: what the
+        // guest says comes about a picture before the picture does.
+        let wait: Duration = screen == nil ? .milliseconds(40) : .milliseconds(100)
+        Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            self?.displayDidUpdate()
+        }
+    }
+
+    private func displayDidUpdate() {
+        guard !afterUpdate.isEmpty else { return }
+        let waiting = afterUpdate
+        afterUpdate = []
+        waiting.forEach { $0() }
     }
 
     // MARK: Lifecycle
@@ -560,7 +643,7 @@ public final class QEMUBackend: VMBackend {
     }
 
     public func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {
-        view.capturesSystemKeys = capturesSystemKeys
+        screenViews.forEach { $0.capturesSystemKeys = capturesSystemKeys }
     }
 
     // MARK: Guest socket

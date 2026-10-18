@@ -108,6 +108,12 @@ struct MachineCommands: Commands {
             Button("Settings…") { actions?.showSettings() }
                 .disabled(machine == nil || actions == nil)
 
+            Button("Enter Seamless Mode") {
+                guard let machine else { return }
+                AppModel.shared.enterSeamlessMode(machine)
+            }
+            .disabled(machine?.canShowGuestWindows != true || state != .running || machine.map(AppModel.shared.isSeamless) == true)
+
             Divider()
 
             Button("Copy SSH Command") {

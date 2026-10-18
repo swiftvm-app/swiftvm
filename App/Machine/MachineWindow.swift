@@ -96,6 +96,16 @@ struct MachineView: View {
         case .starting, .restoring:
             display
                 .overlay { progressOverlay(machine.state == .restoring ? "Resuming…" : "Starting…") }
+        case .running where model.isSeamless(machine):
+            // Its windows are on the Mac one by one. The whole screen here would ask for a size of
+            // its own, and take the guest's windows away from where they are.
+            placeholder(
+                title: "\(machine.name) is in Seamless Mode",
+                detail: "Its windows are on your desktop. Click SwiftVM in the Dock for the Start menu.",
+                actionTitle: "Exit Seamless Mode",
+                actionImage: "macwindow",
+                action: { model.exitSeamlessMode(machine, reopeningWindow: false) }
+            )
         case .running, .stopping:
             display
                 .overlay(alignment: .bottom) {
@@ -179,7 +189,9 @@ struct MachineView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func placeholder(title: String, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {
+    private func placeholder(
+        title: String, detail: String, actionTitle: String, actionImage: String = "play.fill", action: @escaping () -> Void
+    ) -> some View {
         VStack(spacing: 18) {
             OSGlyph(os: machine.configuration.os, size: 74)
             VStack(spacing: 6) {
@@ -192,7 +204,7 @@ struct MachineView: View {
                     .multilineTextAlignment(.center)
             }
             Button(action: action) {
-                Label(actionTitle, systemImage: "play.fill")
+                Label(actionTitle, systemImage: actionImage)
                     .padding(.horizontal, 10)
             }
             .buttonStyle(.glassProminent)

@@ -54,6 +54,8 @@ public final class VMLibrary {
     @ObservationIgnored public var onGuestClipboard: (@MainActor (VirtualMachine, String) -> Void)?
     /// Called when a machine's guest asks for what is on this Mac's clipboard.
     @ObservationIgnored public var onGuestClipboardRequest: (@MainActor (VirtualMachine) -> Void)?
+    /// Called when the windows a machine's guest reports have changed.
+    @ObservationIgnored public var onGuestWindowsChange: (@MainActor (VirtualMachine) -> Void)?
     /// Where a machine whose guest can't have its shared folders through a device gets them instead.
     /// See ``VirtualMachine/sharedFoldersPlace``.
     @ObservationIgnored public var sharedFoldersPlace: (@MainActor (VirtualMachine) -> SharedFoldersPlace?)?
@@ -491,6 +493,7 @@ public final class VMLibrary {
         machine.onGuestAgentChange = { [weak self] machine in self?.onGuestAgentChange?(machine) }
         machine.onGuestClipboard = { [weak self] machine, text in self?.onGuestClipboard?(machine, text) }
         machine.onGuestClipboardRequest = { [weak self] machine in self?.onGuestClipboardRequest?(machine) }
+        machine.onGuestWindowsChange = { [weak self] machine in self?.onGuestWindowsChange?(machine) }
         machine.sharedFoldersPlace = { [weak self] machine in self?.sharedFoldersPlace?(machine) }
         machine.isStartAllowed = { [weak self] in self?.allowsStarting ?? true }
     }

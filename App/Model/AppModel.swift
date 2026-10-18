@@ -43,6 +43,10 @@ final class AppModel {
     var creations: [MachineCreation] = []
     /// Machines whose own window is open; their errors are shown there instead of in the menu bar panel.
     var openMachineWindows: Set<UUID> = []
+    /// Machines in Seamless Mode, whose guest's windows are on the Mac one by one. The one used last is
+    /// at the end.
+    var seamlessMachineIDs: [UUID] = []
+    @ObservationIgnored var seamlessSessions: [UUID: SeamlessSession] = [:]
     /// Machines whose guest is being asked to let the guest tools read its screen right now. The app
     /// uses the guest's mouse and keyboard for that, which two askers would do across each other.
     @ObservationIgnored var machinesBeingAllowed: Set<UUID> = []
@@ -137,6 +141,7 @@ final class AppModel {
         library.onGuestAgentChange = { [weak self] machine in self?.clipboardSharing.update(machine) }
         library.onGuestClipboard = { [weak self] machine, text in self?.clipboardSharing.guest(machine, didCopy: text) }
         library.onGuestClipboardRequest = { [weak self] machine in self?.clipboardSharing.guestWantsClipboard(machine) }
+        library.onGuestWindowsChange = { [weak self] machine in self?.seamlessSessions[machine.id]?.scheduleUpdate() }
         library.sharedFoldersPlace = { [weak self] machine in self?.sharedFoldersPlace(for: machine) }
         library.onMachineResume = { [weak self] machine in self?.correctClock(of: machine) }
         library.onMachineStart = { [weak self] machine in self?.usb.machineDidStart(machine) }

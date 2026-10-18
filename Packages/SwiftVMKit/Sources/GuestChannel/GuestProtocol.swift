@@ -59,6 +59,12 @@ public enum GuestFeature {
     /// For desktops that don't take a new size from the display itself.
     public static let displaySize = "display-size"
     public static let acceleratedDisplay = "accelerated-display"
+    /// Shows the guest's windows one by one on the Mac: reports them with ``AgentMessage/windows(_:)``
+    /// while asked to with ``HostMessage/seamless(enabled:)``, brings one forward on
+    /// ``HostMessage/activateWindow(_:)``, says what is under a point with ``HostMessage/hitTest(_:)``,
+    /// and moves and resizes one with ``HostMessage/moveWindow(_:x:y:)`` and
+    /// ``HostMessage/resizeWindow(_:x:y:width:height:)``.
+    public static let seamless = "seamless"
 
     /// The features that are kinds of ``GuestJob``.
     public static let jobs = [exec, screen, input, accessibility]
@@ -237,6 +243,136 @@ public struct GuestSetupStatus: Codable, Sendable, Hashable {
     }
 }
 
+/// A window on the guest's screen, as an agent that offers ``GuestFeature/seamless`` reports it.
+public struct GuestWindow: Codable, Sendable, Hashable, Identifiable {
+    /// The guest's own name for the window, which it is brought forward by. It stays the same for as
+    /// long as the window is open.
+    public var id: Int64
+    public var title: String
+    /// Where the window is on the guest's screen, in its pixels from the top left corner, without the
+    /// shadow around it.
+    public var x: Int
+    public var y: Int
+    public var width: Int
+    public var height: Int
+    /// A menu, a tooltip or another window without a title bar, which doesn't take the keyboard unless
+    /// the guest gives it the keyboard.
+    public var isPopup: Bool
+    /// Fills the screen, and so has no rounded corners.
+    public var isMaximized: Bool
+    /// Has borders to make it larger or smaller by.
+    public var isResizable: Bool
+    /// The window in front, which has the guest's keyboard.
+    public var isFocused: Bool
+
+    /// The longest a title is kept at. A guest can say anything; what is shown of it is short.
+    public static let maximumTitleLength = 200
+
+    public init(
+        id: Int64, title: String = "", x: Int, y: Int, width: Int, height: Int,
+        isPopup: Bool = false, isMaximized: Bool = false, isResizable: Bool = false, isFocused: Bool = false
+    ) {
+        self.id = id
+        self.title = ShownText.line(title, limit: Self.maximumTitleLength)
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.isPopup = isPopup
+        self.isMaximized = isMaximized
+        self.isResizable = isResizable
+        self.isFocused = isFocused
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, x, y, width, height
+        case isPopup = "popup", isMaximized = "maximized", isResizable = "resizable", isFocused = "focused"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(Int64.self, forKey: .id),
+            title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
+            x: try container.decode(Int.self, forKey: .x),
+            y: try container.decode(Int.self, forKey: .y),
+            width: try container.decode(Int.self, forKey: .width),
+            height: try container.decode(Int.self, forKey: .height),
+            isPopup: try container.decodeIfPresent(Bool.self, forKey: .isPopup) ?? false,
+            isMaximized: try container.decodeIfPresent(Bool.self, forKey: .isMaximized) ?? false,
+            isResizable: try container.decodeIfPresent(Bool.self, forKey: .isResizable) ?? false,
+            isFocused: try container.decodeIfPresent(Bool.self, forKey: .isFocused) ?? false
+        )
+    }
+}
+
+/// The windows on a guest's screen, front to back, and the size of the screen they are on.
+public struct GuestWindowList: Codable, Sendable, Hashable {
+    /// The size of the guest's screen, in pixels.
+    public var width: Int
+    public var height: Int
+    /// The windows that are shown, the one in front first.
+    public var windows: [GuestWindow]
+
+    /// The most windows that are taken from a guest. Each is a window on the Mac, and a guest that
+    /// says it has thousands mustn't have the Mac open them all.
+    public static let maximumWindows = 64
+
+    public init(width: Int, height: Int, windows: [GuestWindow]) {
+        self.width = width
+        self.height = height
+        self.windows = Array(windows.prefix(Self.maximumWindows))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case width, height, windows
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            width: try container.decode(Int.self, forKey: .width),
+            height: try container.decode(Int.self, forKey: .height),
+            windows: try container.decode([GuestWindow].self, forKey: .windows)
+        )
+    }
+}
+
+/// A point on the guest's screen that the app asks about, before it passes on a click there: whether the
+/// click would take hold of a window's title bar, by which the Mac then moves its window itself.
+public struct GuestHitTest: Codable, Sendable, Hashable {
+    /// The app's own number for the question, which the answer repeats.
+    public var request: Int
+    /// The ``GuestWindow/id`` of the window the point is in on the Mac.
+    public var window: Int64
+    /// The point, in the guest's pixels from the top left corner of its screen.
+    public var x: Int
+    public var y: Int
+
+    public init(request: Int, window: Int64, x: Int, y: Int) {
+        self.request = request
+        self.window = window
+        self.x = x
+        self.y = y
+    }
+}
+
+/// What a ``GuestHitTest`` found.
+public struct GuestHit: Codable, Sendable, Hashable {
+    /// The ``GuestHitTest/request`` this answers.
+    public var request: Int
+    /// What is at the point: ``titleBar``, or anything else, which the click goes to as it is.
+    public var area: String
+
+    /// The part of the window it is moved by: Windows' own title bar, or one an app draws itself.
+    public static let titleBar = "caption"
+
+    public init(request: Int, area: String) {
+        self.request = request
+        self.area = area
+    }
+}
+
 /// The agent's answer to a request.
 public struct GuestRequestResult: Codable, Sendable, Hashable {
     /// The `id` of the request this answers.
@@ -268,6 +404,11 @@ public enum AgentMessage: Sendable, Hashable {
     /// How the guest's setup script is doing: once after `hello` in a guest that has one, and again
     /// whenever that changes.
     case setup(GuestSetupStatus)
+    /// The windows on the guest's screen: once when the app asks for them, and again whenever they
+    /// change. Only from an agent that offers ``GuestFeature/seamless``.
+    case windows(GuestWindowList)
+    /// What is at a point that the app asked about with ``HostMessage/hitTest(_:)``.
+    case hit(GuestHit)
     /// A kind of message this build doesn't know. It is ignored.
     case unknown(type: String)
 }
@@ -293,6 +434,22 @@ public enum HostMessage: Sendable, Hashable {
     /// The window the guest is shown in is this large, in pixels, at this many pixels to a point.
     /// Only to an agent that offers ``GuestFeature/displaySize``.
     case displaySize(width: Int, height: Int, scale: Double)
+    /// Report the guest's windows with ``AgentMessage/windows(_:)``, or stop. While it does, the guest
+    /// lets its windows take the whole screen: its taskbar isn't shown on the Mac. Only to an agent that
+    /// offers ``GuestFeature/seamless``.
+    case seamless(enabled: Bool)
+    /// Bring the window with this ``GuestWindow/id`` to the front, and give it the keyboard. Only to an
+    /// agent that offers ``GuestFeature/seamless``.
+    case activateWindow(Int64)
+    /// Say what is at a point of the screen with ``AgentMessage/hit(_:)``. Only to an agent that offers
+    /// ``GuestFeature/seamless``.
+    case hitTest(GuestHitTest)
+    /// Move the window with this ``GuestWindow/id`` so that its top left corner, without its shadow, is
+    /// at this point of the screen. Only to an agent that offers ``GuestFeature/seamless``.
+    case moveWindow(Int64, x: Int, y: Int)
+    /// Move the window with this ``GuestWindow/id`` and give it a size, both without its shadow, as
+    /// ``GuestWindow`` has them. Only to an agent that offers ``GuestFeature/seamless``.
+    case resizeWindow(Int64, x: Int, y: Int, width: Int, height: Int)
     /// A kind of message this build doesn't know.
     case unknown(type: String)
 }
@@ -301,6 +458,7 @@ public enum HostMessage: Sendable, Hashable {
 
 private enum MessageKey: String, CodingKey {
     case type, id, `protocol`, interfaces, nanoseconds, tag, mountPoint, identifier, text, folders, width, height, scale
+    case enabled, window, x, y
 }
 
 /// A shared folder with a device of its own, as a Linux guest on QEMU has: a 9p device per folder.
@@ -336,6 +494,10 @@ extension AgentMessage: Codable {
         case "setup":
             // A state that a later agent may know and this build doesn't is no news to it.
             self = (try? GuestSetupStatus(from: decoder)).map(AgentMessage.setup) ?? .unknown(type: type)
+        case "windows":
+            self = .windows(try GuestWindowList(from: decoder))
+        case "hit":
+            self = .hit(try GuestHit(from: decoder))
         default:
             self = .unknown(type: type)
         }
@@ -361,6 +523,12 @@ extension AgentMessage: Codable {
         case .setup(let status):
             try container.encode("setup", forKey: .type)
             try status.encode(to: encoder)
+        case .windows(let list):
+            try container.encode("windows", forKey: .type)
+            try list.encode(to: encoder)
+        case .hit(let hit):
+            try container.encode("hit", forKey: .type)
+            try hit.encode(to: encoder)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }
@@ -401,6 +569,26 @@ extension HostMessage: Codable {
                 height: try container.decode(Int.self, forKey: .height),
                 scale: try container.decode(Double.self, forKey: .scale)
             )
+        case "seamless":
+            self = .seamless(enabled: try container.decode(Bool.self, forKey: .enabled))
+        case "activate-window":
+            self = .activateWindow(try container.decode(Int64.self, forKey: .window))
+        case "hit-test":
+            self = .hitTest(try GuestHitTest(from: decoder))
+        case "move-window":
+            self = .moveWindow(
+                try container.decode(Int64.self, forKey: .window),
+                x: try container.decode(Int.self, forKey: .x),
+                y: try container.decode(Int.self, forKey: .y)
+            )
+        case "resize-window":
+            self = .resizeWindow(
+                try container.decode(Int64.self, forKey: .window),
+                x: try container.decode(Int.self, forKey: .x),
+                y: try container.decode(Int.self, forKey: .y),
+                width: try container.decode(Int.self, forKey: .width),
+                height: try container.decode(Int.self, forKey: .height)
+            )
         default:
             self = .unknown(type: type)
         }
@@ -440,6 +628,28 @@ extension HostMessage: Codable {
             try container.encode(width, forKey: .width)
             try container.encode(height, forKey: .height)
             try container.encode(scale, forKey: .scale)
+        case .seamless(let enabled):
+            try container.encode("seamless", forKey: .type)
+            try container.encode(enabled, forKey: .enabled)
+        case .activateWindow(let window):
+            // Not `id`, which would make it a request that the agent answers.
+            try container.encode("activate-window", forKey: .type)
+            try container.encode(window, forKey: .window)
+        case .hitTest(let test):
+            try container.encode("hit-test", forKey: .type)
+            try test.encode(to: encoder)
+        case .moveWindow(let window, let x, let y):
+            try container.encode("move-window", forKey: .type)
+            try container.encode(window, forKey: .window)
+            try container.encode(x, forKey: .x)
+            try container.encode(y, forKey: .y)
+        case .resizeWindow(let window, let x, let y, let width, let height):
+            try container.encode("resize-window", forKey: .type)
+            try container.encode(window, forKey: .window)
+            try container.encode(x, forKey: .x)
+            try container.encode(y, forKey: .y)
+            try container.encode(width, forKey: .width)
+            try container.encode(height, forKey: .height)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }
@@ -451,7 +661,7 @@ extension HostMessage {
     public var requestID: Int? {
         switch self {
         case .setClock(let id, _), .mountSharedFolders(let id, _, _, _), .shutDown(let id), .setTimeZone(let id, _): id
-        case .hello, .clipboard, .displaySize, .unknown: nil
+        case .hello, .clipboard, .displaySize, .seamless, .activateWindow, .hitTest, .moveWindow, .resizeWindow, .unknown: nil
         }
     }
 }

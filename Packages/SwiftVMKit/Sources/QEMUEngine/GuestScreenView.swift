@@ -4,21 +4,28 @@ import VMCore
 
 /// Shows what a QEMU machine's display shows, and hands it what the Mac's keyboard and mouse do over it.
 ///
-/// The picture is the surface the VNC client keeps it in, shown by a layer as it is. Several views can
-/// show one machine: each shows its ``region`` of the display, all of it unless told otherwise, and
-/// passes on places within that region. That is what a window of one Windows app on the Mac would be:
-/// a view of the part of the display that app's window is in.
+/// The picture is the surface the VNC client keeps it in, shown by a layer as it is, or a Metal view of
+/// the SPICE display that draws it. Several views can show one machine: each shows its ``region`` of
+/// the display, all of it unless told otherwise, and passes on places within that region. That is what
+/// a window of one Windows app on the Mac is: a view of the part of the display that app's window is in.
 @MainActor
-public final class GuestScreenView: NSView {
+public final class GuestScreenView: NSView, GuestRegionView {
     private let client: any GuestScreenInput
     private var displaySize: CGSize = .zero
-    /// The part of the display shown, in its pixels from the top left corner. `nil` is all of it.
+    /// The part of the display shown, in its pixels from the top left corner. `nil` is all of it. What
+    /// is see-through in the picture there shows what is behind the view, not black.
     public var region: CGRect? {
         didSet {
+            layer?.backgroundColor = region == nil ? NSColor.black.cgColor : nil
             applyPicture()
             updateCursor()
+            onRegionChange?(region)
         }
     }
+    /// Shows a new ``region`` in a view that draws the picture itself: the SPICE display's.
+    var onRegionChange: ((CGRect?) -> Void)?
+    /// Lets go of what such a view draws with.
+    var onClose: (() -> Void)?
     /// Send shortcuts such as Command-C to the guest, as the Windows key with C, instead of to the app's
     /// menus. Those macOS itself takes, Command-Tab for one, never come.
     public var capturesSystemKeys = true
@@ -81,6 +88,15 @@ public final class GuestScreenView: NSView {
         super.hitTest(point) == nil ? nil : self
     }
 
+    public func close() {
+        releaseEverything()
+        onClose?()
+        onClose = nil
+        onRegionChange = nil
+        picture = nil
+        applyPicture()
+    }
+
     // MARK: The picture
 
     /// The display has a new picture, of a new size.
@@ -136,7 +152,10 @@ public final class GuestScreenView: NSView {
         if let picture, let region {
             let width = Double(picture.width)
             let height = Double(picture.height)
-            layer.contentsRect = CGRect(x: region.minX / width, y: region.minY / height, width: region.width / width, height: region.height / height)
+            // The layer counts up from the bottom of the picture, the region down from its top.
+            layer.contentsRect = CGRect(
+                x: region.minX / width, y: (height - region.maxY) / height, width: region.width / width, height: region.height / height
+            )
         } else {
             layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
         }
@@ -212,7 +231,10 @@ public final class GuestScreenView: NSView {
         if let trackingArea {
             removeTrackingArea(trackingArea)
         }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        // One of several windows of a guest's apps shows where the pointer is over it before it is
+        // clicked into, as a window of a Mac app would.
+        let activity: NSTrackingArea.Options = region == nil ? .activeInKeyWindow : .activeInActiveApp
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, activity, .inVisibleRect], owner: self)
         addTrackingArea(area)
         trackingArea = area
     }
