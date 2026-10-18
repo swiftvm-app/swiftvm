@@ -8,7 +8,8 @@
 // in frames that carry several connections at once (ChannelFrame in SwiftVM's sources): the agent's own
 // line on port 717, and a job each on port 718. As "--session", in the session of whoever is logged
 // in, it shares that person's clipboard, which belongs to their session, makes the display follow the
-// Mac's window, and talks to the service over a named pipe.
+// Mac's window, reports the windows on the screen for the Mac to show one by one, and talks to the
+// service over a named pipe.
 
 using System;
 using System.Collections.Generic;
@@ -36,7 +37,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.3";
+        public const string Version = "1.4";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -156,6 +157,12 @@ namespace SwiftVM
             }
         }
 
+        public static bool Flag(Dictionary<string, object> message, string key)
+        {
+            object value;
+            return message != null && message.TryGetValue(key, out value) && Equals(value, true);
+        }
+
         public static long? Number(Dictionary<string, object> message, string key)
         {
             object value;
@@ -211,6 +218,7 @@ namespace SwiftVM
         readonly Channel channel = new Channel();
         readonly SessionLink session;
         readonly object linesGate = new object();
+        readonly object seamlessGate = new object();
         readonly List<AgentLine> lines = new List<AgentLine>();
 
         public Agent()
@@ -261,6 +269,20 @@ namespace SwiftVM
         public void SessionWantsClipboard()
         {
             foreach (var line in Lines()) line.SendClipboardRequest();
+        }
+
+        /// Has the session half report the windows on the screen while any line to the Mac wants them. A
+        /// line that is going away may still be on its way out as the Mac's next one asks for them.
+        public void SeamlessChanged()
+        {
+            lock (seamlessGate) session.SetSeamless(Lines().Any(line => line.ShowsWindows));
+        }
+
+        /// Passes on what the session half says of the windows on the screen to every line to the Mac
+        /// that asked for them: the windows themselves, and what is at a point a line asked about.
+        public void WindowsChanged(Dictionary<string, object> message)
+        {
+            foreach (var line in Lines()) line.SendWindows(message);
         }
 
         List<AgentLine> Lines()
@@ -824,6 +846,7 @@ namespace SwiftVM
         readonly Agent agent;
         readonly object writeGate = new object();
         bool sharesClipboard;
+        bool showsWindows;
         string lastAddresses;
         string lastSetup;
 
@@ -855,6 +878,12 @@ namespace SwiftVM
                 Handle(message);
             }
             sharesClipboard = false;
+            // A Mac that is gone shows no windows: the taskbar is the guest's own again.
+            if (showsWindows)
+            {
+                showsWindows = false;
+                agent.SeamlessChanged();
+            }
         }
 
         void Watch()
@@ -904,6 +933,16 @@ namespace SwiftVM
                     case "display-size":
                         agent.Session.SetDisplaySize(Json.Number(message, "width") ?? 0,
                             Json.Number(message, "height") ?? 0, Json.RealNumber(message, "scale") ?? 0);
+                        break;
+                    case "seamless":
+                        showsWindows = Json.Flag(message, "enabled");
+                        agent.SeamlessChanged();
+                        break;
+                    case "activate-window":
+                    case "hit-test":
+                    case "move-window":
+                    case "resize-window":
+                        agent.Session.PassOn(type, message);
                         break;
                     default:
                         if (id != 0) Answer(id, "The guest tools don't know “" + type + "”.");
@@ -959,6 +998,17 @@ namespace SwiftVM
             try { Send(message); } catch (Exception) { }
         }
 
+        public bool ShowsWindows
+        {
+            get { return showsWindows; }
+        }
+
+        public void SendWindows(Dictionary<string, object> message)
+        {
+            if (!showsWindows) return;
+            try { Send(message); } catch (Exception) { }
+        }
+
         public void SendClipboardRequest()
         {
             if (!sharesClipboard) return;
@@ -1010,7 +1060,7 @@ namespace SwiftVM
             string architecture = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
             if (architecture != null) system["architecture"] = architecture.ToLowerInvariant();
 
-            var features = new List<object> { "clipboard", "time-zone", "exec", "display-size" };
+            var features = new List<object> { "clipboard", "time-zone", "exec", "display-size", "seamless" };
             if (HasResizableDisplayDriver()) features.Add("resizable-display");
             if (HasDisplayDriver("viogpu3d.inf_*")) features.Add("accelerated-display");
 
@@ -1684,6 +1734,7 @@ namespace SwiftVM
         readonly object gate = new object();
         StreamWriter writer;
         bool hasClipboardToFill;
+        bool seamless;
         Dictionary<string, object> displaySize;
         readonly Dictionary<long, ManualResetEvent> waiting = new Dictionary<long, ManualResetEvent>();
         readonly Dictionary<long, bool> answers = new Dictionary<long, bool>();
@@ -1737,6 +1788,7 @@ namespace SwiftVM
                             writer = new StreamWriter(pipe, new UTF8Encoding(false));
                             writer.AutoFlush = true;
                             if (displaySize != null) Send(displaySize);
+                            if (seamless) Send(SeamlessMessage(true));
                         }
                         // Someone who has just logged in gets the Mac's shared folders as a drive.
                         string share, letter;
@@ -1758,6 +1810,13 @@ namespace SwiftVM
                     Thread.Sleep(1000);
                 }
                 lock (gate) writer = null;
+                // A session half that ended while its session goes on, as in a crash, starts again.
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    Thread.Sleep(3000);
+                    uint console = Native.WTSGetActiveConsoleSessionId();
+                    if (console != 0xFFFFFFFF) SessionStarter.Ensure(console);
+                });
             }
         }
 
@@ -1789,6 +1848,10 @@ namespace SwiftVM
                 case "clipboard-request":
                     lock (gate) hasClipboardToFill = true;
                     agent.SessionWantsClipboard();
+                    break;
+                case "windows":
+                case "hit":
+                    agent.WindowsChanged(message);
                     break;
                 case "result":
                     long id = Json.Number(message, "id") ?? 0;
@@ -1839,6 +1902,39 @@ namespace SwiftVM
                 displaySize = message;
                 Send(message);
             }
+        }
+
+        /// Has the session half report the windows on the screen, or stop. Kept across logon and
+        /// session-pipe reconnection, like the display's size.
+        public void SetSeamless(bool enabled)
+        {
+            lock (gate)
+            {
+                seamless = enabled;
+                Send(SeamlessMessage(enabled));
+            }
+        }
+
+        static Dictionary<string, object> SeamlessMessage(bool enabled)
+        {
+            var message = new Dictionary<string, object>();
+            message["type"] = "seamless";
+            message["enabled"] = enabled;
+            return message;
+        }
+
+        /// Passes on what the Mac asks of a window: to bring it forward, to say what is at a point of it, or
+        /// to move or resize it. Only the numbers these take go on.
+        public void PassOn(string type, Dictionary<string, object> fromMac)
+        {
+            var message = new Dictionary<string, object>();
+            message["type"] = type;
+            foreach (string key in new[] { "window", "request", "x", "y", "width", "height" })
+            {
+                long? value = Json.Number(fromMac, key);
+                if (value != null) message[key] = value.Value;
+            }
+            Send(message);
         }
 
         public bool ResizeDisplay(int width, int height)
@@ -1915,6 +2011,8 @@ namespace SwiftVM
             {
                 if (!isFirst) return 0;
                 Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
+                // From a session half that ended in Seamless Mode.
+                try { WindowWatcher.Restore(); } catch (Exception) { }
                 var window = new ClipboardWindow();
                 var thread = new Thread(delegate() { Talk(window); });
                 thread.IsBackground = true;
@@ -1974,6 +2072,25 @@ namespace SwiftVM
                                     DisplayFollower.Request(Json.Number(message, "width") ?? 0,
                                         Json.Number(message, "height") ?? 0, Json.RealNumber(message, "scale") ?? 0);
                                     break;
+                                case "seamless":
+                                    WindowWatcher.SetEnabled(Json.Flag(message, "enabled"));
+                                    break;
+                                case "activate-window":
+                                    WindowWatcher.Activate(Json.Number(message, "window") ?? 0);
+                                    break;
+                                case "hit-test":
+                                    WindowWatcher.HitTest(Json.Number(message, "request") ?? 0, Json.Number(message, "window") ?? 0,
+                                        (int)(Json.Number(message, "x") ?? 0), (int)(Json.Number(message, "y") ?? 0));
+                                    break;
+                                case "move-window":
+                                    WindowWatcher.Move(Json.Number(message, "window") ?? 0,
+                                        (int)(Json.Number(message, "x") ?? 0), (int)(Json.Number(message, "y") ?? 0));
+                                    break;
+                                case "resize-window":
+                                    WindowWatcher.Resize(Json.Number(message, "window") ?? 0,
+                                        (int)(Json.Number(message, "x") ?? 0), (int)(Json.Number(message, "y") ?? 0),
+                                        (int)(Json.Number(message, "width") ?? 0), (int)(Json.Number(message, "height") ?? 0));
+                                    break;
                                 case "resize-display":
                                     var resized = new Dictionary<string, object>();
                                     resized["type"] = "result";
@@ -1990,6 +2107,9 @@ namespace SwiftVM
                 {
                 }
                 lock (writeGate) writer = null;
+                // A service that comes back asks again if the Mac still wants the windows. One that
+                // was updated or restarted meanwhile may never say that it doesn't.
+                WindowWatcher.SetEnabled(false);
                 Thread.Sleep(2000);
             }
         }
@@ -2021,7 +2141,7 @@ namespace SwiftVM
             Send(message);
         }
 
-        static void Send(Dictionary<string, object> message)
+        public static void Send(Dictionary<string, object> message)
         {
             lock (writeGate)
             {
@@ -2072,6 +2192,804 @@ namespace SwiftVM
                 }
                 base.WndProc(ref message);
             }
+        }
+    }
+
+    /// Reports the windows on the screen, front to back, while the Mac asks for them: it shows each in a
+    /// window of its own. Meanwhile windows may take the whole screen, for the taskbar isn't shown there:
+    /// it is set to hide itself, which gives windows its room, and is hidden besides, as it would
+    /// otherwise come up over the part of a window that is behind it.
+    ///
+    /// Windows' animations are off meanwhile, as its own setting for them does: a window that slides or
+    /// fades in or out does so where the Mac has no window for it, and the Mac follows a window once it
+    /// has stopped.
+    ///
+    /// Nor is the desktop: behind every window there is a backdrop instead, of a black the Mac shows as
+    /// nothing at all. What is uncovered before the Mac hears of it, as where a window has just closed,
+    /// is see-through there rather than black. Windows' own panels, as Start, are larger than what they
+    /// draw, for room to slide in or for a shadow, and what is behind them shows there. Where that is the
+    /// backdrop, the panel's edges are where black ends, and the Mac is told of the panel alone.
+    ///
+    /// Windows says when a window opens, closes, moves, changes its title or comes to the front, and the
+    /// list goes out at once, ahead of the picture it goes with, which the Mac waits for to show both.
+    /// It is looked at now and then besides, for what Windows doesn't say, and often while a panel's
+    /// edges move, which Windows doesn't say either.
+    static class WindowWatcher
+    {
+        const int Interval = 500;
+        const int SettlingInterval = 30;
+        const int MostWindows = 64;
+        const int MostTitle = 200;
+        const int DwmExtendedFrameBounds = 9, DwmCloaked = 14;
+        const long Caption = 0x00C00000, SizingBorder = 0x00040000, Transparent = 0x20, Layered = 0x80000, NoRedirectionBitmap = 0x200000;
+        const uint GetTaskbarState = 0x4, SetTaskbarState = 0xA, AutoHide = 0x1;
+        const int TitleBar = 2;
+        const int NoRegion = 0, EmptyRegion = 1;
+        /// The most room a panel leaves around itself, in pixels at 100%. More black than that is the
+        /// panel's own, as a video's.
+        const int MostMargin = 40;
+        /// The window classes of the shell's own windows: Windows' Start menu, search and notifications
+        /// are of the last, and so are the full-screen ones they put behind themselves, which only catch
+        /// a click elsewhere to close them.
+        const string ShellWindow = "Windows.UI.Core.CoreWindow";
+        static readonly string[] Hidden = { "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd" };
+        static readonly object Gate = new object();
+        static readonly AutoResetEvent changed = new AutoResetEvent(false);
+        static bool enabled;
+        static Thread thread;
+        static Thread listener;
+        /// Kept, as Windows calls it for as long as the hooks are there.
+        static Native.WinEventCallback onEvent;
+        static string last;
+        /// Says that the taskbar was made to hide itself here, and is to stop once Seamless Mode is over:
+        /// after a restart of the agent too, which may have ended in the middle of it.
+        static readonly string AutoHideMark = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SwiftVM", "taskbar-hidden-by-swiftvm");
+        /// Says that animations were turned off here, and which were on before.
+        static readonly string AnimationsMark = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SwiftVM", "animations-off-by-swiftvm");
+        const uint GetAnimation = 0x48, SetAnimation = 0x49, GetClientAreaAnimation = 0x1042, SetClientAreaAnimation = 0x1043;
+        const uint SaveSetting = 0x1, SendChange = 0x2;
+        /// The taskbar, and the desktop with its icons, which are hidden while the Mac shows the windows.
+        static readonly string[] Shell = { "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman" };
+        static readonly List<IntPtr> hiddenShell = new List<IntPtr>();
+        static Backdrop backdrop;
+        /// Put right behind a panel for a moment, to find its edges where a window is behind it.
+        static Backdrop probe;
+        /// How far in from each side panels draw, by their class and title, as found when nothing but the
+        /// backdrop was behind them: left, top, right, bottom.
+        static readonly Dictionary<string, int[]> margins = new Dictionary<string, int[]>();
+        /// What was found of each panel on the screen the last time.
+        static Dictionary<IntPtr, int[]> found = new Dictionary<IntPtr, int[]>();
+        /// A panel's edges have just moved: the screen is looked at again soon.
+        static bool settling;
+
+        public static void SetEnabled(bool on)
+        {
+            lock (Gate)
+            {
+                enabled = on;
+                // A Mac that asks again has forgotten what it was told.
+                last = null;
+                changed.Set();
+                if (on && listener == null)
+                {
+                    var ready = new ManualResetEvent(false);
+                    listener = new Thread(delegate() { Listen(ready); });
+                    listener.IsBackground = true;
+                    listener.Start();
+                    ready.WaitOne();
+                }
+                // A watcher that isn't running has nothing to put back.
+                if (thread != null || !on) return;
+                thread = new Thread(Run);
+                thread.IsBackground = true;
+                thread.Start();
+            }
+        }
+
+        static void Run()
+        {
+            while (true)
+            {
+                bool on;
+                lock (Gate) on = enabled;
+                try
+                {
+                    if (on)
+                    {
+                        HideShell();
+                        AutoHideTaskbar();
+                        TurnOffAnimations();
+                        ShowBackdrop();
+                        // At once, ahead of the picture with the change, which the Mac waits for to show
+                        // the two together. QEMU sends a picture as soon as Windows has drawn it.
+                        Report();
+                        // Panels as drawn: their edges are found in the picture.
+                        Native.DwmFlush();
+                        Report();
+                    }
+                    else
+                    {
+                        HideBackdrop();
+                        ShowShell();
+                        RestoreTaskbar();
+                        RestoreAnimations();
+                        lock (Gate)
+                        {
+                            if (!enabled)
+                            {
+                                thread = null;
+                                return;
+                            }
+                        }
+                    }
+                }
+                catch (Exception error)
+                {
+                    Log.Write("windows: {0}", error.Message);
+                }
+                changed.WaitOne(settling ? SettlingInterval : Interval);
+            }
+        }
+
+        /// Hears from Windows when a window changes, for as long as the session half runs. Windows tells
+        /// the thread that asked, between the messages it waits for. The backdrop is that thread's too.
+        static void Listen(ManualResetEvent ready)
+        {
+            try
+            {
+                backdrop = new Backdrop();
+                probe = new Backdrop();
+            }
+            catch (Exception error)
+            {
+                Log.Write("backdrop: {0}", error.Message);
+            }
+            onEvent = delegate(IntPtr hook, uint kind, IntPtr window, int item, int child, uint eventThread, uint time)
+            {
+                // The windows themselves, not the parts of them, nor the pointer, which moves all along.
+                if (item == 0 && child == 0 && enabled) changed.Set();
+            };
+            const uint OutOfContext = 0, SkipOwnProcess = 2;
+            // From a window coming to the front to one being restored, and from one being made to its
+            // being uncloaked: Start and the like are cloaked, not hidden, when they close.
+            Native.SetWinEventHook(0x0003, 0x0017, IntPtr.Zero, onEvent, 0, 0, OutOfContext | SkipOwnProcess);
+            Native.SetWinEventHook(0x8000, 0x8018, IntPtr.Zero, onEvent, 0, 0, OutOfContext | SkipOwnProcess);
+            ready.Set();
+            Native.Message message;
+            while (Native.GetMessage(out message, IntPtr.Zero, 0, 0) > 0)
+            {
+                Native.TranslateMessage(ref message);
+                Native.DispatchMessage(ref message);
+            }
+        }
+
+        static void Report()
+        {
+            var windows = new List<Dictionary<string, object>>();
+            IntPtr foreground = Native.GetForegroundWindow();
+            int width = Native.GetSystemMetrics(0), height = Native.GetSystemMetrics(1);
+            // Front to back. Unlike EnumWindows, this has the shell's own windows too, as Start.
+            var order = new List<IntPtr>();
+            IntPtr window = IntPtr.Zero;
+            while ((window = Native.FindWindowEx(IntPtr.Zero, window, null, null)) != IntPtr.Zero) order.Add(window);
+            var screen = new Screen(order);
+            var panels = new Dictionary<IntPtr, int[]>();
+            bool isSettling = false, isPastBackdrop = false;
+            Native.Rect? focus = null;
+            for (int index = 0; index < order.Count && windows.Count < MostWindows; index++)
+            {
+                window = order[index];
+                if (IsOwn(window))
+                {
+                    isPastBackdrop = isPastBackdrop || (backdrop != null && window == backdrop.Handle);
+                    continue;
+                }
+                Native.Rect seen;
+                var described = Describe(window, foreground, width, height, out seen);
+                if (described == null)
+                {
+                    // The keyboard's window shows nothing of itself, as Start's search box until something
+                    // is typed in it: the window it is over has the keyboard, as far as the Mac can tell.
+                    if (window == foreground && seen.Right > seen.Left) focus = seen;
+                    continue;
+                }
+                if (IsPanel(window) && !isPastBackdrop)
+                {
+                    int[] inset = Panel(window, described, screen, index, ref seen);
+                    panels[window] = inset;
+                    int[] before;
+                    if (!found.TryGetValue(window, out before) || !before.SequenceEqual(inset)) isSettling = true;
+                }
+                if (focus.HasValue && Contains(seen, (focus.Value.Left + focus.Value.Right) / 2, (focus.Value.Top + focus.Value.Bottom) / 2))
+                {
+                    described["focused"] = true;
+                    focus = null;
+                }
+                // Someone put a window at the very back, where the backdrop hides it in Windows.
+                if (isPastBackdrop)
+                {
+                    backdrop.Cover(0, 0, width, height, Backdrop.Bottom);
+                    isPastBackdrop = false;
+                    isSettling = true;
+                }
+                windows.Add(described);
+            }
+            found = panels;
+            settling = isSettling;
+            var message = new Dictionary<string, object>();
+            message["type"] = "windows";
+            message["width"] = width;
+            message["height"] = height;
+            message["windows"] = windows.Cast<object>().ToList();
+            string encoded = Json.Write(message);
+            lock (Gate)
+            {
+                if (!enabled || encoded == last) return;
+                last = encoded;
+            }
+            SessionHalf.Send(message);
+        }
+
+        /// What the Mac is told of a window, or null for one that isn't to be seen: hidden, minimized,
+        /// cloaked as the Start menu is while it is closed, or part of the desktop and the taskbar.
+        /// `seen` is the part of the screen it takes, as far as it is known.
+        static Dictionary<string, object> Describe(IntPtr window, IntPtr foreground, int screenWidth, int screenHeight, out Native.Rect seen)
+        {
+            seen = new Native.Rect();
+            if (!Native.IsWindowVisible(window) || Native.IsIconic(window)) return null;
+            int cloaked;
+            if (Native.DwmGetWindowAttribute(window, DwmCloaked, out cloaked, sizeof(int)) == 0 && cloaked != 0) return null;
+            string kind = ClassOf(window);
+            if (Hidden.Contains(kind)) return null;
+            long extended = Native.GetWindowLongPtr(window, -20).ToInt64();
+            // Drawn over everything without taking a click: nothing to show in a window.
+            if ((extended & (Transparent | Layered)) == (Transparent | Layered)) return null;
+            // Without the shadow and the frame Windows 10 and 11 draw around it, which aren't its own.
+            Native.Rect rect, outer;
+            if (!Native.GetWindowRect(window, out outer)) return null;
+            if (Native.DwmGetWindowAttribute(window, DwmExtendedFrameBounds, out rect, Marshal.SizeOf(typeof(Native.Rect))) != 0) rect = outer;
+            // Only the part of it a region leaves, as Start's: the rest of it is as large as the screen.
+            Native.Rect shape;
+            int region = Native.GetWindowRgnBox(window, out shape);
+            if (region == EmptyRegion)
+            {
+                seen = rect;
+                return null;
+            }
+            if (region != NoRegion)
+            {
+                rect.Left = Math.Max(rect.Left, outer.Left + shape.Left);
+                rect.Top = Math.Max(rect.Top, outer.Top + shape.Top);
+                rect.Right = Math.Min(rect.Right, outer.Left + shape.Right);
+                rect.Bottom = Math.Min(rect.Bottom, outer.Top + shape.Bottom);
+            }
+            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+            if (width < 2 || height < 2) return null;
+            // A shell window as large as the screen, but for the taskbar's place, is all but see-through.
+            if (kind == ShellWindow && width >= screenWidth * 9 / 10 && height >= screenHeight * 9 / 10) return null;
+            seen = rect;
+            long style = Native.GetWindowLongPtr(window, -16).ToInt64();
+            var title = new StringBuilder(MostTitle + 1);
+            Native.GetWindowText(window, title, title.Capacity);
+            var described = new Dictionary<string, object>();
+            described["id"] = window.ToInt64();
+            described["title"] = title.ToString();
+            described["x"] = rect.Left;
+            described["y"] = rect.Top;
+            described["width"] = width;
+            described["height"] = height;
+            described["popup"] = (style & Caption) != Caption;
+            described["resizable"] = (style & Caption) == Caption && (style & SizingBorder) != 0;
+            described["maximized"] = Native.IsZoomed(window);
+            described["focused"] = window == foreground;
+            return described;
+        }
+
+        /// A window without a frame that is drawn by composition, or with see-through pixels of its own:
+        /// one that may leave room around what it draws.
+        static bool IsPanel(IntPtr window)
+        {
+            long style = Native.GetWindowLongPtr(window, -16).ToInt64();
+            long extended = Native.GetWindowLongPtr(window, -20).ToInt64();
+            return (style & Caption) != Caption && (extended & (NoRedirectionBitmap | Layered)) != 0;
+        }
+
+        /// Narrows what the Mac is told of a panel to what it draws, and says how far in from each side
+        /// that is. A side with another window behind it, rather than the backdrop, is as far in as it
+        /// was found to be before. Failing that, black is put right behind it for a moment to find out.
+        static int[] Panel(IntPtr window, Dictionary<string, object> described, Screen screen, int index, ref Native.Rect rect)
+        {
+            int most = MostMargin * (int)Native.GetDpiForWindow(window) / 96;
+            int[] inset = screen.Margins(rect, index, most);
+            string key = ClassOf(window) + "|" + described["title"];
+            int[] known;
+            bool isKnown = margins.TryGetValue(key, out known);
+            if (inset.Contains(-1))
+            {
+                if (!isKnown && probe != null)
+                {
+                    known = Measure(window, rect, most);
+                    margins[key] = known;
+                    isKnown = true;
+                }
+                for (int side = 0; side < 4; side++)
+                {
+                    if (inset[side] == -1) inset[side] = isKnown ? known[side] : 0;
+                }
+            }
+            else
+            {
+                int[] before;
+                // The same twice over: it isn't sliding in, as it would if someone turned animations on.
+                if (found.TryGetValue(window, out before) && before.SequenceEqual(inset)) margins[key] = inset;
+            }
+            if (inset[0] + inset[2] < rect.Right - rect.Left - 1 && inset[1] + inset[3] < rect.Bottom - rect.Top - 1)
+            {
+                rect.Left += inset[0];
+                rect.Top += inset[1];
+                rect.Right -= inset[2];
+                rect.Bottom -= inset[3];
+                described["x"] = rect.Left;
+                described["y"] = rect.Top;
+                described["width"] = rect.Right - rect.Left;
+                described["height"] = rect.Bottom - rect.Top;
+            }
+            return inset;
+        }
+
+        static bool Contains(Native.Rect rect, int x, int y)
+        {
+            return x >= rect.Left && x < rect.Right && y >= rect.Top && y < rect.Bottom;
+        }
+
+        /// The screen as it is drawn, and the windows on it, to find where panels draw.
+        class Screen
+        {
+            readonly List<Native.Rect> shown = new List<Native.Rect>();
+            readonly List<int> places = new List<int>();
+
+            public Screen(List<IntPtr> order)
+            {
+                for (int index = 0; index < order.Count; index++)
+                {
+                    IntPtr window = order[index];
+                    // Nothing behind the backdrop is seen.
+                    if (backdrop != null && window == backdrop.Handle) break;
+                    if (IsOwn(window) || !Native.IsWindowVisible(window) || Native.IsIconic(window)) continue;
+                    int cloaked;
+                    if (Native.DwmGetWindowAttribute(window, DwmCloaked, out cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+                    Native.Rect rect;
+                    if (!Native.GetWindowRect(window, out rect) || rect.Right <= rect.Left || rect.Bottom <= rect.Top) continue;
+                    shown.Add(rect);
+                    places.Add(index);
+                }
+            }
+
+            /// How far in from each side of a window black ends, along the middle of that side: left, top,
+            /// right, bottom. -1 for a side where another window is behind, which hides the backdrop.
+            public int[] Margins(Native.Rect rect, int index, int most)
+            {
+                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+                int middleX = rect.Left + width / 2, middleY = rect.Top + height / 2;
+                int[] across = Pixels.Read(rect.Left, middleY, width, 1);
+                int[] down = Pixels.Read(middleX, rect.Top, 1, height);
+                return new[]
+                {
+                    Margin(across, 0, 1, most, rect.Left, middleY, index),
+                    Margin(down, 0, 1, most, middleX, rect.Top, index),
+                    Margin(across, width - 1, -1, most, rect.Right - 1, middleY, index),
+                    Margin(down, height - 1, -1, most, middleX, rect.Bottom - 1, index),
+                };
+            }
+
+            int Margin(int[] line, int from, int step, int most, int x, int y, int index)
+            {
+                if (line == null) return 0;
+                if (!Pixels.IsBlack(line[from])) return IsBehind(x, y, index) ? -1 : 0;
+                return Pixels.Margin(line, from, step, most);
+            }
+
+            /// Whether a window behind the one at `index` takes this point of the screen.
+            bool IsBehind(int x, int y, int index)
+            {
+                for (int i = 0; i < shown.Count; i++)
+                {
+                    if (places[i] > index && Contains(shown[i], x, y)) return true;
+                }
+                return false;
+            }
+        }
+
+        /// Reads what is drawn on the screen.
+        static class Pixels
+        {
+            /// A part of the screen, row by row, as 0xRRGGBB. Null if it can't be read.
+            public static int[] Read(int x, int y, int width, int height)
+            {
+                if (width <= 0 || height <= 0) return null;
+                IntPtr screen = Native.GetDC(IntPtr.Zero);
+                if (screen == IntPtr.Zero) return null;
+                IntPtr memory = Native.CreateCompatibleDC(screen);
+                var header = new Native.BitmapInfoHeader();
+                header.Size = (uint)Marshal.SizeOf(typeof(Native.BitmapInfoHeader));
+                header.Width = width;
+                // From the top down.
+                header.Height = -height;
+                header.Planes = 1;
+                header.BitCount = 32;
+                IntPtr bits;
+                IntPtr bitmap = Native.CreateDIBSection(screen, ref header, 0, out bits, IntPtr.Zero, 0);
+                try
+                {
+                    if (memory == IntPtr.Zero || bitmap == IntPtr.Zero) return null;
+                    IntPtr previous = Native.SelectObject(memory, bitmap);
+                    const uint SourceCopy = 0x00CC0020;
+                    bool copied = Native.BitBlt(memory, 0, 0, width, height, screen, x, y, SourceCopy);
+                    Native.SelectObject(memory, previous);
+                    if (!copied) return null;
+                    var pixels = new int[width * height];
+                    Marshal.Copy(bits, pixels, 0, pixels.Length);
+                    return pixels;
+                }
+                finally
+                {
+                    if (bitmap != IntPtr.Zero) Native.DeleteObject(bitmap);
+                    if (memory != IntPtr.Zero) Native.DeleteDC(memory);
+                    Native.ReleaseDC(IntPtr.Zero, screen);
+                }
+            }
+
+            /// The backdrop's black, and black, as a shadow's over it.
+            public static bool IsBlack(int pixel)
+            {
+                return ((pixel >> 16) & 0xFF) <= 2 && ((pixel >> 8) & 0xFF) <= 2 && (pixel & 0xFF) <= 2;
+            }
+
+            /// How much black there is from one end of a line inward. None if there is more than `most`, or
+            /// nothing but black: then it is what the window draws.
+            public static int Margin(int[] line, int from, int step, int most)
+            {
+                int count = 0;
+                for (int i = from; i >= 0 && i < line.Length && IsBlack(line[i]); i += step)
+                {
+                    if (++count > most) return 0;
+                }
+                return count;
+            }
+        }
+
+        /// A window behind every other, in place of the desktop, of the black the Mac shows as nothing:
+        /// red and blue 1, which pictures all but never have. Its picture is handed to Windows as it is
+        /// shown, without waiting to be drawn.
+        class Backdrop : NativeWindow
+        {
+            const int Popup = unchecked((int)0x80000000);
+            const int ToolWindow = 0x80, LayeredWindow = 0x80000, NoActivate = 0x08000000;
+            const uint NoSize = 0x1, NoMove = 0x2, NoActivateWindow = 0x10, ShowWindow = 0x40;
+            public static readonly IntPtr Bottom = new IntPtr(1);
+            /// Red 1, green 0, blue 1, as Windows writes a colour.
+            const uint Clear = 0x010001;
+            Native.Rect covered;
+
+            public Backdrop()
+            {
+                var parameters = new CreateParams();
+                parameters.Style = Popup;
+                // Not in the taskbar, nor in Alt-Tab, and never given the keyboard.
+                parameters.ExStyle = ToolWindow | LayeredWindow | NoActivate;
+                CreateHandle(parameters);
+            }
+
+            public bool Covers(int width, int height)
+            {
+                return Native.IsWindowVisible(Handle) && covered.Left == 0 && covered.Top == 0
+                    && covered.Right == width && covered.Bottom == height;
+            }
+
+            /// Shows it over a part of the screen, right behind a window, or behind every one.
+            public void Cover(int x, int y, int width, int height, IntPtr behind)
+            {
+                var rect = new Native.Rect { Left = x, Top = y, Right = x + width, Bottom = y + height };
+                if (!Native.IsWindowVisible(Handle) || covered.Left != rect.Left || covered.Top != rect.Top
+                    || covered.Right != rect.Right || covered.Bottom != rect.Bottom)
+                {
+                    Fill(rect);
+                }
+                Native.SetWindowPos(Handle, behind, 0, 0, 0, 0, NoMove | NoSize | NoActivateWindow | ShowWindow);
+            }
+
+            public void Hide()
+            {
+                Native.ShowWindow(Handle, 0);
+            }
+
+            /// Gives Windows a black picture of the window, as large as it is to be, where it is to be.
+            void Fill(Native.Rect rect)
+            {
+                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+                IntPtr screen = Native.GetDC(IntPtr.Zero);
+                IntPtr memory = Native.CreateCompatibleDC(screen);
+                var header = new Native.BitmapInfoHeader();
+                header.Size = (uint)Marshal.SizeOf(typeof(Native.BitmapInfoHeader));
+                header.Width = width;
+                header.Height = -height;
+                header.Planes = 1;
+                header.BitCount = 32;
+                IntPtr bits;
+                IntPtr bitmap = Native.CreateDIBSection(screen, ref header, 0, out bits, IntPtr.Zero, 0);
+                IntPtr brush = Native.CreateSolidBrush(Clear);
+                try
+                {
+                    IntPtr previous = Native.SelectObject(memory, bitmap);
+                    var all = new Native.Rect { Right = width, Bottom = height };
+                    Native.FillRect(memory, ref all, brush);
+                    var place = new Native.Point { X = rect.Left, Y = rect.Top };
+                    var size = new Native.Size { Width = width, Height = height };
+                    var origin = new Native.Point();
+                    // Without the see-through its pixels' alpha, all nothing, would make it.
+                    const uint Opaque = 0x4;
+                    uint blend = 0x00FF0000;
+                    if (Native.UpdateLayeredWindow(Handle, screen, ref place, ref size, memory, ref origin, 0, ref blend, Opaque)) covered = rect;
+                    Native.SelectObject(memory, previous);
+                }
+                finally
+                {
+                    if (brush != IntPtr.Zero) Native.DeleteObject(brush);
+                    if (bitmap != IntPtr.Zero) Native.DeleteObject(bitmap);
+                    if (memory != IntPtr.Zero) Native.DeleteDC(memory);
+                    Native.ReleaseDC(IntPtr.Zero, screen);
+                }
+            }
+
+            protected override void WndProc(ref Message message)
+            {
+                const int MouseActivate = 0x21, NoActivateOnClick = 3;
+                if (message.Msg == MouseActivate)
+                {
+                    message.Result = new IntPtr(NoActivateOnClick);
+                    return;
+                }
+                base.WndProc(ref message);
+            }
+        }
+
+        /// How far in from each side a panel draws, with black right behind it for a moment.
+        static int[] Measure(IntPtr panel, Native.Rect rect, int most)
+        {
+            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+            try
+            {
+                probe.Cover(rect.Left, rect.Top, width, height, panel);
+                Native.DwmFlush();
+                int[] across = Pixels.Read(rect.Left, rect.Top + height / 2, width, 1);
+                int[] down = Pixels.Read(rect.Left + width / 2, rect.Top, 1, height);
+                if (across == null || down == null) return new int[4];
+                return new[]
+                {
+                    Pixels.Margin(across, 0, 1, most), Pixels.Margin(down, 0, 1, most),
+                    Pixels.Margin(across, width - 1, -1, most), Pixels.Margin(down, height - 1, -1, most),
+                };
+            }
+            finally
+            {
+                probe.Hide();
+            }
+        }
+
+        /// The backdrop, and what finds a panel's edges.
+        static bool IsOwn(IntPtr window)
+        {
+            return (backdrop != null && window == backdrop.Handle) || (probe != null && window == probe.Handle);
+        }
+
+        static string ClassOf(IntPtr window)
+        {
+            var kind = new StringBuilder(256);
+            Native.GetClassName(window, kind, kind.Capacity);
+            return kind.ToString();
+        }
+
+        static void ShowBackdrop()
+        {
+            if (backdrop == null) return;
+            int width = Native.GetSystemMetrics(0), height = Native.GetSystemMetrics(1);
+            if (!backdrop.Covers(width, height)) backdrop.Cover(0, 0, width, height, Backdrop.Bottom);
+        }
+
+        static void HideBackdrop()
+        {
+            if (backdrop != null) backdrop.Hide();
+            margins.Clear();
+            found.Clear();
+            settling = false;
+        }
+
+        /// Brings a window to the front, as clicking it would. Windows lets only the program that has
+        /// the keyboard hand it on: this one borrows that program's input for the moment.
+        public static void Activate(long id)
+        {
+            IntPtr window = new IntPtr(id);
+            if (id == 0 || !Native.IsWindow(window)) return;
+            IntPtr foreground = Native.GetForegroundWindow();
+            if (window == foreground) return;
+            uint current = Native.GetCurrentThreadId();
+            uint owner = foreground == IntPtr.Zero ? 0 : Native.GetWindowThreadProcessId(foreground, IntPtr.Zero);
+            bool attached = owner != 0 && owner != current && Native.AttachThreadInput(current, owner, true);
+            try
+            {
+                if (Native.IsIconic(window)) Native.ShowWindow(window, 9);
+                Native.BringWindowToTop(window);
+                Native.SetForegroundWindow(window);
+            }
+            finally
+            {
+                if (attached) Native.AttachThreadInput(current, owner, false);
+            }
+        }
+
+        /// Says whether a click at a point would take hold of the title bar of a window, which the Mac
+        /// then moves itself. Windows asks the window under the point, as it does for a click, so that a
+        /// title bar an app draws itself counts too.
+        public static void HitTest(long request, long id, int x, int y)
+        {
+            string area = "other";
+            try
+            {
+                var point = new Native.Point { X = x, Y = y };
+                IntPtr target = Native.WindowFromPoint(point);
+                if (target != IntPtr.Zero && Native.GetAncestor(target, 2) == new IntPtr(id))
+                {
+                    IntPtr hit;
+                    var where = new IntPtr((y << 16) | (x & 0xFFFF));
+                    // Not for long: a click waits on the answer, and an app that hangs gets the click as it is.
+                    const uint AbortIfHung = 0x2;
+                    if (Native.SendMessageTimeout(target, 0x84, IntPtr.Zero, where, AbortIfHung, 100, out hit) != IntPtr.Zero
+                        && hit.ToInt64() == TitleBar)
+                    {
+                        area = "caption";
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                Log.Write("hit test: {0}", error.Message);
+            }
+            var message = new Dictionary<string, object>();
+            message["type"] = "hit";
+            message["request"] = request;
+            message["area"] = area;
+            SessionHalf.Send(message);
+        }
+
+        /// Moves a window so that its top left corner, without the frame Windows draws around it, is at a
+        /// point of the screen: where it was dropped on the Mac.
+        public static void Move(long id, int x, int y)
+        {
+            IntPtr window = new IntPtr(id);
+            if (id == 0 || !Native.IsWindow(window) || Native.IsZoomed(window)) return;
+            Native.Rect outer, frame;
+            if (!Native.GetWindowRect(window, out outer)) return;
+            if (Native.DwmGetWindowAttribute(window, DwmExtendedFrameBounds, out frame, Marshal.SizeOf(typeof(Native.Rect))) != 0) frame = outer;
+            const uint NoSize = 0x1, NoZOrder = 0x4, NoActivate = 0x10;
+            Native.SetWindowPos(window, IntPtr.Zero, outer.Left + x - frame.Left, outer.Top + y - frame.Top, 0, 0,
+                NoSize | NoZOrder | NoActivate);
+        }
+
+        /// Moves a window and gives it a size, both without the frame Windows draws around it: as it was
+        /// resized on the Mac. Windows keeps it as large as the window wants to be at the least.
+        public static void Resize(long id, int x, int y, int width, int height)
+        {
+            IntPtr window = new IntPtr(id);
+            if (id == 0 || width <= 0 || height <= 0 || !Native.IsWindow(window) || Native.IsZoomed(window)) return;
+            Native.Rect outer, frame;
+            if (!Native.GetWindowRect(window, out outer)) return;
+            if (Native.DwmGetWindowAttribute(window, DwmExtendedFrameBounds, out frame, Marshal.SizeOf(typeof(Native.Rect))) != 0) frame = outer;
+            int left = frame.Left - outer.Left, top = frame.Top - outer.Top;
+            int right = outer.Right - frame.Right, bottom = outer.Bottom - frame.Bottom;
+            const uint NoZOrder = 0x4, NoActivate = 0x10;
+            Native.SetWindowPos(window, IntPtr.Zero, x - left, y - top, width + left + right, height + top + bottom, NoZOrder | NoActivate);
+        }
+
+        /// Hides the taskbar and the desktop, again whenever Explorer shows them anew: it starts again
+        /// after a crash.
+        static void HideShell()
+        {
+            foreach (string kind in Shell)
+            {
+                IntPtr window = Native.FindWindow(kind, null);
+                if (window == IntPtr.Zero || !Native.IsWindowVisible(window)) continue;
+                Native.ShowWindow(window, 0);
+                if (!hiddenShell.Contains(window)) hiddenShell.Add(window);
+            }
+        }
+
+        static void ShowShell()
+        {
+            foreach (IntPtr window in hiddenShell)
+            {
+                if (Native.IsWindow(window)) Native.ShowWindow(window, 5);
+            }
+            hiddenShell.Clear();
+        }
+
+        /// Has the taskbar hide itself, as Windows' own setting for it does, so that maximized windows
+        /// take the whole screen. A taskbar that is merely hidden keeps its room on the screen.
+        static void AutoHideTaskbar()
+        {
+            IntPtr state = TaskbarState(GetTaskbarState, 0);
+            if ((state.ToInt64() & AutoHide) != 0) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(AutoHideMark));
+            File.WriteAllText(AutoHideMark, "");
+            TaskbarState(SetTaskbarState, state.ToInt64() | AutoHide);
+        }
+
+        /// Puts back the taskbar and the desktop, from a session half that ended in Seamless Mode: Windows
+        /// hides neither itself.
+        public static void Restore()
+        {
+            foreach (string kind in Shell)
+            {
+                IntPtr window = Native.FindWindow(kind, null);
+                if (window != IntPtr.Zero && !Native.IsWindowVisible(window)) Native.ShowWindow(window, 5);
+            }
+            RestoreTaskbar();
+            RestoreAnimations();
+        }
+
+        /// Turns off the animations of what windows draw, as Start sliding in, and of windows being
+        /// minimized and maximized: the switch for animation effects in Windows' settings.
+        static void TurnOffAnimations()
+        {
+            if (File.Exists(AnimationsMark)) return;
+            int drawn = 0;
+            Native.SystemParametersInfo(GetClientAreaAnimation, 0, ref drawn, 0);
+            var windows = new Native.AnimationInfo { Size = (uint)Marshal.SizeOf(typeof(Native.AnimationInfo)) };
+            Native.SystemParametersInfo(GetAnimation, windows.Size, ref windows, 0);
+            if (drawn == 0 && windows.MinAnimate == 0) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(AnimationsMark));
+            File.WriteAllText(AnimationsMark, drawn + " " + windows.MinAnimate);
+            // Saved, as programs that hear of the change read it from there.
+            if (drawn != 0) Native.SystemParametersInfo(SetClientAreaAnimation, 0, IntPtr.Zero, SaveSetting | SendChange);
+            if (windows.MinAnimate != 0)
+            {
+                windows.MinAnimate = 0;
+                Native.SystemParametersInfo(SetAnimation, windows.Size, ref windows, SaveSetting | SendChange);
+            }
+        }
+
+        /// Turns the animations that were on back on, if it was this agent that turned them off.
+        static void RestoreAnimations()
+        {
+            if (!File.Exists(AnimationsMark)) return;
+            string[] were = File.ReadAllText(AnimationsMark).Split(' ');
+            File.Delete(AnimationsMark);
+            if (were.Length != 2) return;
+            if (were[0] != "0") Native.SystemParametersInfo(SetClientAreaAnimation, 0, new IntPtr(1), SaveSetting | SendChange);
+            if (were[1] != "0")
+            {
+                var windows = new Native.AnimationInfo { Size = (uint)Marshal.SizeOf(typeof(Native.AnimationInfo)), MinAnimate = 1 };
+                Native.SystemParametersInfo(SetAnimation, windows.Size, ref windows, SaveSetting | SendChange);
+            }
+        }
+
+        /// Has the taskbar stay again, if it was this agent that had it hide itself.
+        static void RestoreTaskbar()
+        {
+            if (!File.Exists(AutoHideMark)) return;
+            IntPtr state = TaskbarState(GetTaskbarState, 0);
+            TaskbarState(SetTaskbarState, state.ToInt64() & ~AutoHide);
+            File.Delete(AutoHideMark);
+        }
+
+        static IntPtr TaskbarState(uint message, long state)
+        {
+            var data = new Native.AppBarData();
+            data.Size = (uint)Marshal.SizeOf(typeof(Native.AppBarData));
+            data.Window = Native.FindWindow("Shell_TrayWnd", null);
+            data.LParam = new IntPtr(state);
+            return Native.SHAppBarMessage(message, ref data);
         }
     }
 
@@ -2409,6 +3327,64 @@ namespace SwiftVM
         public const uint DisplayActivePaths = 0x2, DisplayApply = 0x80, DisplayUseSupplied = 0x20;
         public const uint DisplaySave = 0x200, DisplayAllowChanges = 0x400, DisplayForceEnumeration = 0x1000;
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Rect
+        {
+            public int Left, Top, Right, Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct AppBarData
+        {
+            public uint Size;
+            public IntPtr Window;
+            public uint CallbackMessage, Edge;
+            public Rect Bounds;
+            public IntPtr LParam;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Point
+        {
+            public int X, Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct AnimationInfo
+        {
+            public uint Size;
+            public int MinAnimate;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Size
+        {
+            public int Width, Height;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BitmapInfoHeader
+        {
+            public uint Size;
+            public int Width, Height;
+            public ushort Planes, BitCount;
+            public uint Compression, SizeImage;
+            public int XPelsPerMeter, YPelsPerMeter;
+            public uint ClrUsed, ClrImportant;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Message
+        {
+            public IntPtr Window;
+            public uint Kind;
+            public IntPtr WParam, LParam;
+            public uint Time;
+            public Point Where;
+        }
+
+        public delegate void WinEventCallback(IntPtr hook, uint kind, IntPtr window, int item, int child, uint thread, uint time);
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct DisplayDevice
         {
@@ -2660,6 +3636,148 @@ namespace SwiftVM
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool AddClipboardFormatListener(IntPtr window);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindWindowExW")]
+        public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetWinEventHook(uint first, uint last, IntPtr module, WinEventCallback callback,
+            uint process, uint thread, uint flags);
+
+        [DllImport("user32.dll", EntryPoint = "GetMessageW")]
+        public static extern int GetMessage(out Message message, IntPtr window, uint first, uint last);
+
+        [DllImport("user32.dll")]
+        public static extern bool TranslateMessage(ref Message message);
+
+        [DllImport("user32.dll", EntryPoint = "DispatchMessageW")]
+        public static extern IntPtr DispatchMessage(ref Message message);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(Point point);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetAncestor(IntPtr window, uint kind);
+
+        [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+        public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+            uint flags, uint timeout, out IntPtr result);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmFlush();
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindow(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsZoomed(IntPtr window);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetClassNameW")]
+        public static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetWindowTextW")]
+        public static extern int GetWindowText(IntPtr window, StringBuilder text, int capacity);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+        public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+
+        [DllImport("user32.dll")]
+        public static extern int GetWindowRgnBox(IntPtr window, out Rect rect);
+
+        [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+        public static extern bool SystemParametersInfo(uint action, uint size, ref int value, uint flags);
+
+        [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+        public static extern bool SystemParametersInfo(uint action, uint size, IntPtr value, uint flags);
+
+        [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+        public static extern bool SystemParametersInfo(uint action, uint size, ref AnimationInfo value, uint flags);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetDpiForWindow(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern bool UpdateLayeredWindow(IntPtr window, IntPtr screen, ref Point place, ref Size size,
+            IntPtr source, ref Point origin, uint key, ref uint blend, uint flags);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetDC(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern int ReleaseDC(IntPtr window, IntPtr context);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateCompatibleDC(IntPtr context);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteDC(IntPtr context);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateDIBSection(IntPtr context, ref BitmapInfoHeader header, uint usage, out IntPtr bits,
+            IntPtr section, uint offset);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr SelectObject(IntPtr context, IntPtr item);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteObject(IntPtr item);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateSolidBrush(uint color);
+
+        [DllImport("user32.dll")]
+        public static extern int FillRect(IntPtr context, ref Rect rect, IntPtr brush);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool BitBlt(IntPtr target, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, uint operation);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindWindowW")]
+        public static extern IntPtr FindWindow(string className, string title);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr window, int command);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr process);
+
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint attaching, uint attachedTo, bool attach);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        public static extern int GetSystemMetrics(int index);
+
+        [DllImport("shell32.dll")]
+        public static extern IntPtr SHAppBarMessage(uint message, ref AppBarData data);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out Rect value, int size);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "EnumDisplayDevicesW")]
         public static extern bool EnumDisplayDevices(string device, int index, ref DisplayDevice information, int flags);

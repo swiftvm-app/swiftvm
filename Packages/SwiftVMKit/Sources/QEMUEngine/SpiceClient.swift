@@ -117,6 +117,12 @@ final class SpiceClient: GuestScreenInput, @unchecked Sendable {
         }
     }
 
+    /// A view of part of the display, drawn on its own. `nil` from a display library that can't draw one.
+    @MainActor func makeRegion() -> (any SVMGuestDisplayRegion)? {
+        guard !closed else { return nil }
+        return runtime.makeRegion?()
+    }
+
     @MainActor func screenshot() async throws -> Data {
         guard !closed else { throw QEMUError.disconnected }
         return try await withCheckedThrowingContinuation { continuation in

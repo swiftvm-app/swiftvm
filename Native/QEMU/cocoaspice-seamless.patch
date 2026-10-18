@@ -1,0 +1,15 @@
+--- a/Sources/CocoaSpiceRenderer/CSShaders.metal
++++ b/Sources/CocoaSpiceRenderer/CSShaders.metal
+@@ -105,6 +105,12 @@
+         colorSample.a = 0xff;
+     }
+ 
++    // the colour Windows' agent puts behind the guest's windows in Seamless Mode, red 1, green 0
++    // and blue 1 whichever way round the channels are, is nothing at all
++    if (all(abs(colorSample.rgb - half3(1.0h / 255.0h, 0.0h, 1.0h / 255.0h)) < half3(0.5h / 255.0h))) {
++        return float4(0);
++    }
++
+     // We return the color of the texture inverted when requested
+     return float4(*isInverted ? colorSample.bgra : colorSample);
+ }

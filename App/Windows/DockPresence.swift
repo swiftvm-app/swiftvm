@@ -56,6 +56,10 @@ final class DockPresence: NSObject {
         Self.wantsDockIcon(for: NSApp.windows.map(WindowFacts.init))
     }
 
+    /// Whether the app is to stay in the Dock whatever windows it has: while a machine is in Seamless
+    /// Mode, its Dock icon opens the guest's Start menu.
+    var keepsDockIcon: () -> Bool = { false }
+
     private var isUpdatePending = false
     /// Until when the app stays in the Dock for a window that was asked for and isn't there yet.
     private var awaitedWindowDeadline: ContinuousClock.Instant?
@@ -95,6 +99,11 @@ final class DockPresence: NSObject {
         }
     }
 
+    /// Something other than a window decides anew whether the app belongs in the Dock.
+    func refresh() {
+        windowsDidChange(Notification(name: NSWindow.willCloseNotification))
+    }
+
     @objc private func windowsDidChange(_ notification: Notification) {
         // A window that is closing still counts as open while it says so. Look once it has gone, and
         // once for all the windows that change in the same moment.
@@ -109,7 +118,7 @@ final class DockPresence: NSObject {
     private func update() {
         // A hidden app has no window on the screen, and is brought back from its Dock icon.
         guard !NSApp.isHidden else { return }
-        let hasWindows = hasWindows
+        let hasWindows = hasWindows || keepsDockIcon()
         if hasWindows {
             awaitedWindowDeadline = nil
         } else if let deadline = awaitedWindowDeadline, ContinuousClock.now < deadline {

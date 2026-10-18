@@ -47,6 +47,24 @@ public final class RFBClient: @unchecked Sendable {
         set { lock.withLock { cursorHandler = newValue } }
     }
 
+    /// Shows the pixels of ``clearColor`` as nothing, rather than as the black they all but are: what
+    /// Windows' agent puts behind the guest's windows while each is in a window of its own on the Mac.
+    public var clearsBackdrop: Bool {
+        get { lock.withLock { isClearingBackdrop } }
+        set {
+            let changed = lock.withLock { () -> Bool in
+                defer { isClearingBackdrop = newValue }
+                return isClearingBackdrop != newValue
+            }
+            // What is in the picture already is to be shown the new way too.
+            if changed { requestUpdate(incremental: false) }
+        }
+    }
+
+    /// Red 1, green 0, blue 1, as the picture keeps a pixel: the colour of Windows' backdrop in
+    /// Seamless Mode, which pictures all but never have.
+    static let clearColor: UInt32 = 0x0001_0001
+
     /// Called once on the client's thread when the line is gone.
     public var onClose: (@Sendable () -> Void)? {
         get { lock.withLock { closeHandler } }
@@ -61,6 +79,7 @@ public final class RFBClient: @unchecked Sendable {
     private var resizeHandler: (@Sendable (Picture) -> Void)?
     private var cursorHandler: (@Sendable (Cursor?) -> Void)?
     private var closeHandler: (@Sendable () -> Void)?
+    private var isClearingBackdrop = false
     private var currentPicture: Picture?
     private var isClosed = false
     /// A thread reads from the server, and closes the descriptor once it is done.
@@ -406,6 +425,11 @@ public final class RFBClient: @unchecked Sendable {
         try rectanglePixels.withUnsafeMutableBytes { buffer in
             try reader.read(into: UnsafeMutableRawBufferPointer(rebasing: buffer[..<byteCount]))
         }
+        if clearsBackdrop {
+            rectanglePixels.withUnsafeMutableBytes { buffer in
+                Self.clearBackdrop(UnsafeMutableRawBufferPointer(rebasing: buffer[..<byteCount]))
+            }
+        }
         let surface = picture.surface
         let stride = surface.bytesPerRow
         surface.lock(options: [], seed: nil)
@@ -421,6 +445,15 @@ public final class RFBClient: @unchecked Sendable {
                     (destination + line * stride).copyMemory(from: pixels.baseAddress! + line * rowLength, byteCount: rowLength)
                 }
             }
+        }
+    }
+
+    /// Makes the backdrop's pixels see-through, and every other one opaque, whatever its fourth byte.
+    static func clearBackdrop(_ bytes: UnsafeMutableRawBufferPointer) {
+        let pixels = bytes.bindMemory(to: UInt32.self)
+        for index in pixels.indices {
+            let color = UInt32(littleEndian: pixels[index]) & 0x00FF_FFFF
+            pixels[index] = color == clearColor ? 0 : (color | 0xFF00_0000).littleEndian
         }
     }
 

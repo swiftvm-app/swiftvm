@@ -17,6 +17,9 @@ public final class GuestAgent {
     /// How the guest's setup script is doing, as the agent last reported it. `nil` for a guest that has
     /// none, and while no agent is connected.
     public private(set) var setup: GuestSetupStatus?
+    /// The windows on the guest's screen, as the agent last reported them while asked to. `nil` while
+    /// it isn't asked to, or hasn't said yet.
+    public private(set) var windows: GuestWindowList?
 
     public var isConnected: Bool { hello != nil }
     /// The connected agent's version.
@@ -49,6 +52,8 @@ public final class GuestAgent {
     /// Called when the agent reports where the guest's setup script has got to: once when it connects
     /// to a guest that has one, and whenever that changes.
     @ObservationIgnored public var onSetupChange: (@MainActor (GuestSetupStatus) -> Void)?
+    /// Called when ``windows`` has changed.
+    @ObservationIgnored public var onWindowsChange: (@MainActor () -> Void)?
     /// How long to wait before trying again after the agent couldn't be reached, or went away.
     @ObservationIgnored public var retryInterval: Duration = .seconds(1)
     /// The same once ``eagerAttempts`` have come to nothing. A guest that is starting up answers within
@@ -66,6 +71,14 @@ public final class GuestAgent {
     @ObservationIgnored private var connection: GuestAgentConnection?
     /// Whether an attempt to reach the agent has come to nothing since the guest came up.
     @ObservationIgnored private var hasFailedToConnect = false
+    /// Whether the app wants the guest's windows, which an agent that connects again is asked for anew.
+    @ObservationIgnored private var wantsWindows = false
+    /// Those waiting to hear whether a point is on a window's title bar, by the number of their question.
+    @ObservationIgnored private var hitTests: [Int: CheckedContinuation<Bool, Never>] = [:]
+    @ObservationIgnored private var lastHitTest = 0
+    /// How long a question about a point is given before the answer is taken to be no. A click waits on
+    /// it, and so is passed on as it is if the agent takes longer.
+    @ObservationIgnored public var hitTestTimeout: Duration = .milliseconds(250)
 
     public init() {}
 
@@ -157,6 +170,67 @@ public final class GuestAgent {
         return connection.send(line: GuestMessageCoding.line(for: HostMessage.displaySize(width: width, height: height, scale: scale)))
     }
 
+    /// Has the agent report the guest's windows in ``windows``, or stop. The agent is asked again
+    /// whenever it connects, until this is turned off. Returns `false` when there is no agent that
+    /// reports them.
+    @discardableResult
+    public func reportWindows(_ enabled: Bool) -> Bool {
+        wantsWindows = enabled
+        if !enabled {
+            forgetWindows()
+        }
+        guard hello?.offers(GuestFeature.seamless) == true, let connection else { return false }
+        return connection.send(line: GuestMessageCoding.line(for: HostMessage.seamless(enabled: enabled)))
+    }
+
+    /// Has the guest bring one of its ``windows`` to the front.
+    @discardableResult
+    public func activateWindow(_ id: GuestWindow.ID) -> Bool {
+        guard hello?.offers(GuestFeature.seamless) == true, let connection else { return false }
+        return connection.send(line: GuestMessageCoding.line(for: HostMessage.activateWindow(id)))
+    }
+
+    /// Whether a click at this point of the guest's screen, in its pixels, would take hold of the title bar
+    /// of the window with this ``GuestWindow/id``: Windows' own, or one that its app draws itself. `false`
+    /// also when the agent doesn't answer in time.
+    public func isTitleBar(of window: GuestWindow.ID, x: Int, y: Int) async -> Bool {
+        guard hello?.offers(GuestFeature.seamless) == true, let connection else { return false }
+        lastHitTest += 1
+        let request = lastHitTest
+        return await withCheckedContinuation { continuation in
+            hitTests[request] = continuation
+            let test = GuestHitTest(request: request, window: window, x: x, y: y)
+            guard connection.send(line: GuestMessageCoding.line(for: HostMessage.hitTest(test))) else {
+                answerHitTest(request, isTitleBar: false)
+                return
+            }
+            Task { [hitTestTimeout] in
+                try? await Task.sleep(for: hitTestTimeout)
+                answerHitTest(request, isTitleBar: false)
+            }
+        }
+    }
+
+    /// Has the guest move one of its ``windows`` so that its top left corner is at this point of its
+    /// screen, in its pixels.
+    @discardableResult
+    public func moveWindow(_ id: GuestWindow.ID, x: Int, y: Int) -> Bool {
+        guard hello?.offers(GuestFeature.seamless) == true, let connection else { return false }
+        return connection.send(line: GuestMessageCoding.line(for: HostMessage.moveWindow(id, x: x, y: y)))
+    }
+
+    /// Has the guest move a window and give it a size, as it was resized on the Mac. `false` without an
+    /// agent that can.
+    @discardableResult
+    public func resizeWindow(_ id: GuestWindow.ID, x: Int, y: Int, width: Int, height: Int) -> Bool {
+        guard hello?.offers(GuestFeature.seamless) == true, let connection else { return false }
+        return connection.send(line: GuestMessageCoding.line(for: HostMessage.resizeWindow(id, x: x, y: y, width: width, height: height)))
+    }
+
+    private func answerHitTest(_ request: Int, isTitleBar: Bool) {
+        hitTests.removeValue(forKey: request)?.resume(returning: isTitleBar)
+    }
+
     /// Whether the agent did what `message` asks. `false` also when there is no agent, or no answer.
     private func request(_ message: @Sendable (Int) -> HostMessage) async -> Bool {
         guard isConnected, let connection else { return false }
@@ -213,6 +287,9 @@ public final class GuestAgent {
                 hasSaidHello = true
                 patience.cancel()
                 self.hello = hello
+                if wantsWindows, hello.offers(GuestFeature.seamless) {
+                    connection.send(.seamless(enabled: true))
+                }
                 onConnect?(hello)
             case .addresses(let interfaces):
                 if hasSaidHello, interfaces != self.interfaces {
@@ -232,11 +309,24 @@ public final class GuestAgent {
                     setup = status
                     onSetupChange?(status)
                 }
+            case .windows(let list):
+                if hasSaidHello, wantsWindows, offers(GuestFeature.seamless), list != windows {
+                    windows = list
+                    onWindowsChange?()
+                }
+            case .hit(let hit):
+                answerHitTest(hit.request, isTitleBar: hit.area == GuestHit.titleBar)
             case .result, .unknown:
                 break
             }
         }
         return hasSaidHello
+    }
+
+    private func forgetWindows() {
+        guard windows != nil else { return }
+        windows = nil
+        onWindowsChange?()
     }
 
     private func forgetAgent() {
@@ -246,6 +336,10 @@ public final class GuestAgent {
         }
         if setup != nil {
             setup = nil
+        }
+        forgetWindows()
+        for request in Array(hitTests.keys) {
+            answerHitTest(request, isTitleBar: false)
         }
         if !interfaces.isEmpty {
             interfaces = []

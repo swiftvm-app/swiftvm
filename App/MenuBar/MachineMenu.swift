@@ -22,9 +22,10 @@ struct MachineMenu: View {
         lifecycleItems
 
         Divider()
-        if let onOpen {
+        if let onOpen, !model.isSeamless(machine) {
             Button("Open Window", systemImage: "macwindow", action: onOpen)
         }
+        seamlessItems
         Button("Settings…", systemImage: "slider.horizontal.3", action: onSettings)
         Button("Snapshots…", systemImage: "clock.arrow.circlepath", action: onSnapshots)
         Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicateReportingErrors(machine) }
@@ -55,6 +56,18 @@ struct MachineMenu: View {
         if let onDelete {
             Button("Delete…", systemImage: "trash", role: .destructive, action: onDelete)
                 .disabled(machine.state.isActive || machine.activity != nil)
+        }
+    }
+
+    /// The guest's windows one by one on the Mac, for a Windows guest that is up.
+    @ViewBuilder
+    private var seamlessItems: some View {
+        if model.isSeamless(machine) {
+            Button("Show Start Menu", systemImage: "square.grid.2x2") { model.showStartMenu(of: machine) }
+            Button("Exit Seamless Mode", systemImage: "macwindow") { model.exitSeamlessMode(machine) }
+        } else if model.offersSeamlessMode(for: machine), machine.state == .running {
+            Button("Enter Seamless Mode", systemImage: "rectangle.on.rectangle") { model.enterSeamlessMode(machine) }
+                .disabled(!machine.canShowGuestWindows || machine.activity != nil)
         }
     }
 

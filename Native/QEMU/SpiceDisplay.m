@@ -22,8 +22,11 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
 }
 @end
 
+@class SVMSpiceRegion;
+
 @interface SVMSpiceDisplay : NSObject <SVMGuestDisplay, CSConnectionDelegate, MTKViewDelegate>
 @property (nonatomic, strong) SVMMetalView *metalView;
+@property (nonatomic, strong) NSHashTable<SVMSpiceRegion *> *regions;
 @property (nonatomic, strong) CADisplayLink *displayLink;
 @property (nonatomic, strong) CSMetalRenderer *renderer;
 @property (nonatomic, strong) CSConnection *connection;
@@ -38,6 +41,102 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
 @property (nonatomic) CGSize requestedSize;
 @property (nonatomic) CGSize sentSize;
 @property (nonatomic) uint8_t buttons;
+@end
+
+// A view of part of the display: a renderer of its own on the same display, which draws the display
+// so that only the region falls into its view. A window of one Windows app on the Mac is one.
+@interface SVMSpiceRegion : NSObject <SVMGuestDisplayRegion, MTKViewDelegate>
+@property (nonatomic, strong) SVMMetalView *metalView;
+@property (nonatomic, strong) CSMetalRenderer *renderer;
+@property (nonatomic, strong) CADisplayLink *displayLink;
+@property (nonatomic, weak) SVMSpiceDisplay *owner;
+@property (nonatomic) BOOL closed;
+- (instancetype)initWithOwner:(SVMSpiceDisplay *)owner;
+- (void)show:(CSDisplay *)display;
+- (void)updateViewport;
+@end
+
+@implementation SVMSpiceRegion {
+    CGRect _region;
+}
+
+- (instancetype)initWithOwner:(SVMSpiceDisplay *)owner {
+    if (!(self = [super init])) return nil;
+    _owner = owner;
+    // A display draws with the device of its first renderer, and with none other.
+    _metalView = [[SVMMetalView alloc] initWithFrame:NSMakeRect(0, 0, 640, 480) device:owner.metalView.device];
+    _metalView.paused = YES;
+    _metalView.enableSetNeedsDisplay = NO;
+    // What the guest has behind its windows, which the renderer draws as nothing, shows what is
+    // behind the view.
+    _metalView.clearColor = MTLClearColorMake(0, 0, 0, 0);
+    _metalView.layer.opaque = NO;
+    __weak SVMSpiceRegion *weakSelf = self;
+    _metalView.movedToWindow = ^{ [weakSelf viewMovedToWindow]; };
+    _renderer = [[CSMetalRenderer alloc] initWithMetalKitView:_metalView];
+    [_renderer changeUpscaler:MTLSamplerMinMagFilterNearest downscaler:MTLSamplerMinMagFilterLinear];
+    _metalView.delegate = self;
+    return self;
+}
+
+- (NSView *)view { return self.metalView; }
+
+- (CGRect)region { return _region; }
+
+- (void)setRegion:(CGRect)region {
+    _region = region;
+    [self updateViewport];
+}
+
+- (void)show:(CSDisplay *)display {
+    if (self.closed) return;
+    [display addRenderer:self.renderer];
+    [self updateViewport];
+}
+
+- (void)viewMovedToWindow {
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    if (!self.metalView.window || self.closed) return;
+    self.displayLink = [self.metalView displayLinkWithTarget:self selector:@selector(drawFrame:)];
+    self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
+    [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    CSDisplay *display = self.owner.display;
+    if (display) [self.renderer invalidateRenderSource:display withCompletion:nil];
+}
+
+- (void)drawFrame:(CADisplayLink *)link { [self.metalView draw]; }
+
+// The renderer puts the middle of the display in the middle of the view, moved by the origin: to the
+// right by its x, and down by its y. The middle of the region goes there instead, at the scale that
+// fits the region in.
+- (void)updateViewport {
+    CGSize size = self.owner.display.displaySize;
+    CGSize drawable = self.metalView.drawableSize;
+    if (size.width <= 0 || size.height <= 0 || drawable.width <= 0 || drawable.height <= 0) return;
+    CGRect shown = CGRectIsEmpty(_region) ? (CGRect){CGPointZero, size} : _region;
+    CGFloat scale = MIN(drawable.width / shown.size.width, drawable.height / shown.size.height);
+    self.renderer.viewportScale = scale;
+    self.renderer.viewportOrigin = CGPointMake((size.width / 2 - CGRectGetMidX(shown)) * scale,
+                                               (size.height / 2 - CGRectGetMidY(shown)) * scale);
+}
+
+- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
+    [self.renderer mtkView:view drawableSizeWillChange:size];
+    [self updateViewport];
+}
+- (void)drawInMTKView:(MTKView *)view { [self.renderer drawInMTKView:view]; }
+
+- (void)close {
+    if (self.closed) return;
+    self.closed = YES;
+    [self.owner.display removeRenderer:self.renderer];
+    [self.owner.regions removeObject:self];
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    self.metalView.movedToWindow = nil;
+    self.metalView.delegate = nil;
+}
 @end
 
 @implementation SVMSpiceDisplay
@@ -58,6 +157,7 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     _renderer = [[CSMetalRenderer alloc] initWithMetalKitView:_metalView];
     [_renderer changeUpscaler:MTLSamplerMinMagFilterNearest downscaler:MTLSamplerMinMagFilterLinear];
     _metalView.delegate = self;
+    _regions = [NSHashTable weakObjectsHashTable];
     _connection = [[CSConnection alloc] initWithUnixSocketFile:socket];
     // The client renders shared surfaces with Metal. SPICE otherwise enables this capability only
     // when built with its GTK/EGL renderer, which this app does not use.
@@ -69,6 +169,14 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
 }
 
 - (NSView *)view { return self.metalView; }
+
+- (id<SVMGuestDisplayRegion>)makeRegion {
+    if (self.closed) return nil;
+    SVMSpiceRegion *region = [[SVMSpiceRegion alloc] initWithOwner:self];
+    [self.regions addObject:region];
+    if (self.display) [region show:self.display];
+    return region;
+}
 
 - (void)viewMovedToWindow {
     [self.displayLink invalidate];
@@ -104,6 +212,7 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     self.disconnected = nil;
     self.resized = nil;
     [self.input releaseKeys];
+    for (SVMSpiceRegion *region in self.regions.allObjects) [region close];
     [self.display removeRenderer:self.renderer];
     [self.connection disconnect];
     self.connection.delegate = nil;
@@ -121,6 +230,7 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     if (size.width <= 0 || size.height <= 0) return;
     CGSize drawable = self.metalView.drawableSize;
     self.renderer.viewportScale = MIN(drawable.width / size.width, drawable.height / size.height);
+    for (SVMSpiceRegion *region in self.regions.allObjects) [region updateViewport];
     if (self.resized) self.resized(size);
 }
 
@@ -213,6 +323,7 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
         self.display = display;
         self.sentSize = CGSizeZero;
         [display addRenderer:self.renderer];
+        for (SVMSpiceRegion *region in self.regions.allObjects) [region show:display];
         [self updateDisplay];
         [self sendRequestedSize];
     });
@@ -223,6 +334,7 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
 - (void)spiceDisplayDestroyed:(CSConnection *)connection display:(CSDisplay *)display {
     dispatch_async(dispatch_get_main_queue(), ^{
         [display removeRenderer:self.renderer];
+        for (SVMSpiceRegion *region in self.regions.allObjects) [display removeRenderer:region.renderer];
         if (self.display == display) self.display = nil;
     });
 }

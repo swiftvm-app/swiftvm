@@ -3,6 +3,7 @@ import VMCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DockPresence.shared.keepsDockIcon = { !AppModel.shared.seamlessMachineIDs.isEmpty }
         DockPresence.shared.start()
         UpdateService.shared.start()
     }
@@ -15,7 +16,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The app was opened again while it runs, from the Finder or Spotlight. With a window open that
     /// comes forward. Without one there is nothing to bring forward but the menu bar item, which someone
     /// who opens the app a second time may not have found: they get the app's settings.
+    ///
+    /// While a machine is in Seamless Mode, its guest's windows are the app's: the Dock icon opens the
+    /// guest's Start menu, as the Windows key would.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !sender.isHidden, let machine = AppModel.shared.seamlessMachineForDock {
+            AppModel.shared.showStartMenu(of: machine)
+            return false
+        }
         // A hidden app has its windows too, and gets them back by being shown again.
         guard !sender.isHidden, !DockPresence.shared.hasWindows else { return true }
         AppModel.shared.windows.showAppSettings()

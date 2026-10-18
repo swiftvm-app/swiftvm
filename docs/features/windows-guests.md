@@ -94,6 +94,50 @@ switch.
 Accelerated machines cannot suspend or save running graphics state. Shut
 Windows down before taking a snapshot or quitting SwiftVM.
 
+## Seamless Mode
+
+Seamless Mode puts each Windows app in a window of its own on your Mac's desktop,
+instead of showing the whole Windows desktop in the machine's window. Windows
+apps sit alongside your Mac apps, switch with Command-`, and appear in Mission
+Control.
+
+To turn it on for a running machine, choose **Enter Seamless Mode** in the
+machine's menu in the menu bar, in the window toolbar's **Power** menu, or in
+the **Virtual Machine** menu. The machine's window closes and its open apps
+appear on your desktop. To open the Start menu, click SwiftVM in the Dock or
+choose **Show Start Menu**. The Start menu opens above the Dock, and apps you
+start from it open as windows of their own.
+
+Drag a window by its title bar to move it, as you would a Mac window. Windows
+moves its own window there when you let go. Resize a window by dragging its edges
+or corners, as you would a Mac window. You can grab an edge from just outside it,
+and the pointer shows when you can. Windows resizes its own window as you drag.
+Windows' own buttons minimize, maximize, and close windows, and double-clicking a
+title bar maximizes the window.
+
+To leave, choose **Exit Seamless Mode** in the machine's menu. The machine's
+window opens again with the whole desktop. Seamless Mode also ends when the
+machine shuts down or is suspended.
+
+Seamless Mode requires guest tools 1.4 or newer. If **Enter Seamless Mode** is
+unavailable, choose **Install Guest Tools…** to
+[update them](guest-tools.md#windows).
+
+- Windows' screen is laid over the area between the menu bar and the Dock on
+  your Mac's main display. Its taskbar is not shown, and maximized windows fill
+  that area. Without graphics acceleration, Windows' screen is resized to fit
+  that area exactly. With it, Windows keeps the size it started at, and its
+  windows are scaled to fit; see [Window size and sharpness](#window-size-and-sharpness).
+- Windows appear on the main display only, and stay in the area between the
+  menu bar and the Dock.
+- Menus and the Start menu close when you switch to another app.
+- Windows' animation effects are off during Seamless Mode, so the Start menu and
+  windows appear without sliding or fading. They come back when you leave.
+- Each app's window belongs to SwiftVM, so Windows apps do not get their own
+  Dock icons.
+- Like the machine's window, Seamless Mode sends Command shortcuts to Windows
+  when **Send System Shortcuts to the Guest** is on.
+
 ## Guest tools and automation
 
 The guest tools are installed automatically. To install or update them in an
@@ -126,6 +170,8 @@ account name and password you chose during creation.
   images can still be attached as [removable drives](disks.md).
 - Display resizing requires someone to be logged in. The sign-in screen keeps
   its previous size.
+- [Seamless Mode](#seamless-mode) supports Windows guests only, on your Mac's
+  main display.
 - TPM and Secure Boot are unavailable; software that requires them will not work.
 - Reading the screen as an accessibility tree is not supported.
 - Automated typing supports characters available on a US keyboard. Use

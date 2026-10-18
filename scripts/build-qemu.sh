@@ -215,7 +215,8 @@ build_libraries() {
 # The library the app shows a machine's screen with: CocoaSpice, UTM's SPICE client for Metal, and
 # SpiceDisplay.m, which gives it the interface in GuestDisplayBridge.
 build_display() {
-    unpack cocoaspice-pinned.tar.gz cocoaspice "$native/cocoaspice-renderer.patch" "$native/cocoaspice-screenshot.patch"
+    unpack cocoaspice-pinned.tar.gz cocoaspice "$native/cocoaspice-renderer.patch" "$native/cocoaspice-screenshot.patch" \
+        "$native/cocoaspice-seamless.patch"
     local cocoa=$sources/cocoaspice
     local renderer=$cocoa/Sources/CocoaSpiceRenderer client=$cocoa/Sources/CocoaSpice module=$work/display-module objects=$work/display-objects
     mkdir -p "$module/CocoaSpiceRenderer" "$objects" "$prefix/share/CocoaSpice_CocoaSpiceRenderer.bundle"
