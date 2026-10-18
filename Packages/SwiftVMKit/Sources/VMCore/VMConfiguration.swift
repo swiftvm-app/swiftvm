@@ -283,7 +283,7 @@ public enum DisplayAdapter: String, Codable, Sendable, Hashable {
     case framebuffer
     /// A virtio GPU, which a driver in the guest makes the size of the window.
     case virtioGPU
-    /// A Windows 3D driver renders through the Mac's GPU.
+    /// A guest's 3D driver renders through the Mac's GPU.
     case virtioGPU3D
 }
 

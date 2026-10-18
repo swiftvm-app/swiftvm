@@ -1,0 +1,251 @@
+Allow QEMU 11 to remove its keyboard and mouse interfaces before disconnecting
+SPICE clients. SPICE 0.16.0 rejected those removals, leaving InputsChannel pointing
+at QEMU's freed interfaces during server destruction. Release held keys, detach
+the interfaces, and free server-owned state before the caller can free them.
+The connected-client regression covers removal, replacement and destruction.
+
+--- a/server/inputs-channel.cpp
++++ b/server/inputs-channel.cpp
+@@ -55,13 +55,25 @@
+     return st;
+ }
+ 
++RedsState* spice_kbd_state_get_server(SpiceKbdState *st)
++{
++    return st->inputs->get_server();
++}
++
+ struct SpiceMouseState {
+-    int dummy;
++    InputsChannel *inputs;
+ };
+ 
+-static SpiceMouseState* spice_mouse_state_new()
+-{
+-    return g_new0(SpiceMouseState, 1);
++static SpiceMouseState* spice_mouse_state_new(InputsChannel *inputs)
++{
++    auto st = g_new0(SpiceMouseState, 1);
++    st->inputs = inputs;
++    return st;
++}
++
++RedsState* spice_mouse_state_get_server(SpiceMouseState *st)
++{
++    return st->inputs->get_server();
+ }
+ 
+ struct SpiceTabletState {
+@@ -530,6 +542,8 @@
+ 
+ InputsChannel::~InputsChannel()
+ {
++    detach_keyboard(keyboard);
++    detach_mouse(mouse);
+     detach_tablet(tablet);
+     red_timer_remove(key_modifiers_timer);
+ }
+@@ -552,7 +566,7 @@
+         return -1;
+     }
+     mouse = new_mouse;
+-    mouse->st = spice_mouse_state_new();
++    mouse->st = spice_mouse_state_new(this);
+     return 0;
+ }
+ 
+@@ -572,6 +586,26 @@
+     return tablet != nullptr;
+ }
+ 
++void InputsChannel::detach_keyboard(SpiceKbdInstance *old_keyboard)
++{
++    if (old_keyboard != nullptr && old_keyboard == keyboard) {
++        // The interface can be freed before connected clients are destroyed.
++        release_keys();
++        g_free(old_keyboard->st);
++        old_keyboard->st = nullptr;
++        keyboard = nullptr;
++    }
++}
++
++void InputsChannel::detach_mouse(SpiceMouseInstance *old_mouse)
++{
++    if (old_mouse != nullptr && old_mouse == mouse) {
++        g_free(old_mouse->st);
++        old_mouse->st = nullptr;
++        mouse = nullptr;
++    }
++}
++
+ void InputsChannel::detach_tablet(SpiceTabletInstance *old_tablet)
+ {
+     if (old_tablet != nullptr && old_tablet == tablet) {
+--- a/server/inputs-channel.h
++++ b/server/inputs-channel.h
+@@ -45,6 +45,8 @@
+     int set_mouse(SpiceMouseInstance *mouse);
+     int set_tablet(SpiceTabletInstance *tablet);
+     bool has_tablet() const;
++    void detach_keyboard(SpiceKbdInstance *keyboard);
++    void detach_mouse(SpiceMouseInstance *mouse);
+     void detach_tablet(SpiceTabletInstance *tablet);
+ 
+ private:
+@@ -76,6 +78,8 @@
+ 
+ red::shared_ptr<InputsChannel> inputs_channel_new(RedsState *reds);
+ 
++RedsState *spice_kbd_state_get_server(SpiceKbdState *st);
++RedsState *spice_mouse_state_get_server(SpiceMouseState *st);
+ RedsState *spice_tablet_state_get_server(SpiceTabletState *st);
+ 
+ #include "pop-visibility.h"
+--- a/server/reds.cpp
++++ b/server/reds.cpp
+@@ -3360,7 +3360,17 @@
+     g_return_val_if_fail(sin != nullptr, -1);
+ 
+     base_interface = sin->sif;
+-    if (strcmp(base_interface->type, SPICE_INTERFACE_TABLET) == 0) {
++    if (strcmp(base_interface->type, SPICE_INTERFACE_KEYBOARD) == 0) {
++        SpiceKbdInstance *keyboard = SPICE_UPCAST(SpiceKbdInstance, sin);
++        g_return_val_if_fail(keyboard->st != nullptr, -1);
++        reds = spice_kbd_state_get_server(keyboard->st);
++        reds->inputs_channel->detach_keyboard(keyboard);
++    } else if (strcmp(base_interface->type, SPICE_INTERFACE_MOUSE) == 0) {
++        SpiceMouseInstance *mouse = SPICE_UPCAST(SpiceMouseInstance, sin);
++        g_return_val_if_fail(mouse->st != nullptr, -1);
++        reds = spice_mouse_state_get_server(mouse->st);
++        reds->inputs_channel->detach_mouse(mouse);
++    } else if (strcmp(base_interface->type, SPICE_INTERFACE_TABLET) == 0) {
+         SpiceTabletInstance *tablet = SPICE_UPCAST(SpiceTabletInstance, sin);
+         g_return_val_if_fail(tablet->st != nullptr, -1);
+         reds = spice_tablet_state_get_server(tablet->st);
+--- a/server/tests/test-channel.cpp
++++ b/server/tests/test-channel.cpp
+@@ -27,6 +27,7 @@
+ #include "reds.h"
+ #include "red-client.h"
+ #include "cursor-channel.h"
++#include "inputs-channel-client.h"
+ #include "net-utils.h"
+ #include "win-alarm.h"
+ #include "push-visibility.h"
+@@ -270,11 +271,116 @@
+     basic_event_loop_destroy();
+ }
+ 
++struct TestKeyboard {
++    SpiceKbdInstance instance;
++    unsigned pressed;
++    unsigned released;
++};
++
++static void keyboard_scan(SpiceKbdInstance *instance, uint8_t scan)
++{
++    auto keyboard = reinterpret_cast<TestKeyboard *>(instance);
++    if (scan & 0x80) {
++        ++keyboard->released;
++    } else {
++        ++keyboard->pressed;
++    }
++}
++
++static uint8_t keyboard_leds(SpiceKbdInstance *instance)
++{
++    return 0;
++}
++
++static const SpiceKbdInterface keyboard_interface = {
++    {SPICE_INTERFACE_KEYBOARD, "test keyboard",
++     SPICE_INTERFACE_KEYBOARD_MAJOR, SPICE_INTERFACE_KEYBOARD_MINOR},
++    keyboard_scan,
++    keyboard_leds,
++};
++
++static void mouse_motion(SpiceMouseInstance *instance, int dx, int dy, int dz, uint32_t buttons)
++{
++}
++
++static void mouse_buttons(SpiceMouseInstance *instance, uint32_t buttons)
++{
++}
++
++static const SpiceMouseInterface mouse_interface = {
++    {SPICE_INTERFACE_MOUSE, "test mouse",
++     SPICE_INTERFACE_MOUSE_MAJOR, SPICE_INTERFACE_MOUSE_MINOR},
++    mouse_motion,
++    mouse_buttons,
++};
++
++static void inputs_remove()
++{
++    SpiceCoreInterface *core = basic_event_loop_init();
++    SpiceServer *server = spice_server_new();
++    g_assert_cmpint(spice_server_init(server, core), ==, 0);
++
++    auto keyboard = g_new0(TestKeyboard, 1);
++    auto mouse = g_new0(SpiceMouseInstance, 1);
++    keyboard->instance.base.sif = &keyboard_interface.base;
++    mouse->base.sif = &mouse_interface.base;
++    g_assert_cmpint(spice_server_add_interface(server, &keyboard->instance.base), ==, 0);
++    g_assert_cmpint(spice_server_add_interface(server, &mouse->base), ==, 0);
++
++    RedChannelCapabilities caps = {};
++    uint32_t common_caps = 1 << SPICE_COMMON_CAP_MINI_HEADER;
++    caps.num_common_caps = 1;
++    caps.common_caps = static_cast<uint32_t *>(spice_memdup(&common_caps, sizeof(common_caps)));
++    RedClient *client = red_client_new(server, FALSE);
++    red::shared_ptr<MainChannel> main_channel(main_channel_new(server));
++    int main_socket, input_socket;
++    g_assert_nonnull(main_channel_link(main_channel.get(), client,
++                                     create_dummy_stream(server, &main_socket), 0, FALSE, &caps));
++    auto inputs = inputs_channel_client_create(
++        reds_find_channel(server, SPICE_CHANNEL_INPUTS, 0),
++        client, create_dummy_stream(server, &input_socket), &caps);
++    g_assert_nonnull(inputs);
++    red_channel_capabilities_reset(&caps);
++
++    const uint8_t key_down[] = {SPICE_MSGC_INPUTS_KEY_DOWN, 0, 4, 0, 0, 0, 0x1e, 0, 0, 0};
++    g_assert_cmpint(socket_write(input_socket, key_down, sizeof(key_down)), ==, sizeof(key_down));
++    inputs->receive();
++    g_assert_cmpuint(keyboard->pressed, ==, 1);
++
++    // QEMU removes and frees these interfaces before disconnecting SPICE clients.
++    g_assert_cmpint(spice_server_remove_interface(&keyboard->instance.base), ==, 0);
++    g_assert_cmpuint(keyboard->released, ==, 1);
++    g_assert_null(keyboard->instance.st);
++    g_assert_cmpint(spice_server_remove_interface(&mouse->base), ==, 0);
++    g_assert_null(mouse->st);
++    g_free(keyboard);
++    g_free(mouse);
++    client->destroy();
++    main_channel.reset();
++    socket_close(input_socket);
++    socket_close(main_socket);
++
++    // Removal must also allow replacement; server destruction owns the remaining state.
++    keyboard = g_new0(TestKeyboard, 1);
++    mouse = g_new0(SpiceMouseInstance, 1);
++    keyboard->instance.base.sif = &keyboard_interface.base;
++    mouse->base.sif = &mouse_interface.base;
++    g_assert_cmpint(spice_server_add_interface(server, &keyboard->instance.base), ==, 0);
++    g_assert_cmpint(spice_server_add_interface(server, &mouse->base), ==, 0);
++    spice_server_destroy(server);
++    g_assert_null(keyboard->instance.st);
++    g_assert_null(mouse->st);
++    g_free(keyboard);
++    g_free(mouse);
++    basic_event_loop_destroy();
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+ 
+     g_test_add_func("/server/channel", channel_loop);
++    g_test_add_func("/server/inputs remove", inputs_remove);
+ 
+     return g_test_run();
+ }

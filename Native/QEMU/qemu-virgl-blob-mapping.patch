@@ -1,0 +1,19 @@
+Use per-resource GPU memory regions on macOS. QEMU 11's MAP_FIXED path puts
+resources at guest-selected offsets inside a host mapping, but Windows uses 4K
+offsets while mmap on Apple silicon requires 16K alignment. Mapping each resource
+separately lets HVF place it at the guest offset using the 4K IPA granule.
+
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -44,8 +44,9 @@
+      VIRGL_VERSION_MICRO >= (micro))
+ #endif
+ 
+ #define VIRGL_HAS_MAP_FIXED \
+-    (VIRGL_CHECK_VERSION(1, 3, 0) && !IS_ENABLED(CONFIG_WIN32))
++    (VIRGL_CHECK_VERSION(1, 3, 0) && !IS_ENABLED(CONFIG_WIN32) && \
++     !IS_ENABLED(CONFIG_DARWIN))
+ 
+ struct virtio_gpu_virgl_resource {
+     struct virtio_gpu_simple_resource base;

@@ -25,10 +25,21 @@ to it, and `Native/QEMU/sources.tsv` pins every source by checksum. The first
 build takes several minutes; later ones reuse `.build/qemu`. Set
 `SWIFTVM_QEMU=-` to build without Windows guests or graphics acceleration.
 
-Windows' Direct3D driver also needs DXMT, which is built only with
-`SWIFTVM_QEMU_DIRECT3D=1`. It compiles LLVM 15 and takes much longer. Release
-builds leave it out. A Windows machine with the 3D driver falls back to its
-firmware framebuffer over VNC when started in a build without Direct3D.
+Windows' Direct3D support is **experimental and included by default**, including
+in release builds. It adds DXMT and the signed Windows 3D driver and compiles
+LLVM 15, making the first build much longer. New Windows guests install the
+driver automatically and use acceleration on the next cold boot after the
+guest tools report it installed. Existing guests are not upgraded unless you
+update their guest tools.
+
+Set `SWIFTVM_QEMU_DIRECT3D=0` to leave Direct3D out while keeping Linux
+acceleration. A Windows machine that already has the 3D driver falls back to
+its firmware framebuffer over VNC when started in such a build.
+
+Missing text, rendering failures, hangs, Windows crashes, and unexpected VM
+stops can occur, including during shutdown. Use a disposable guest in a separate
+[`SWIFTVM_HOME`](#the-development-copy). See [Windows graphics](../features/windows-guests.md#graphics-acceleration)
+for the current limitations.
 
 ## Build
 

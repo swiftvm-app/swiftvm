@@ -1,4 +1,5 @@
 .DS_Store
+_dxmt.log
 build/
 .build/
 .swiftpm/

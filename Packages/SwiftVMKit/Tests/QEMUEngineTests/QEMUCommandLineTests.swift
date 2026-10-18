@@ -230,10 +230,17 @@ import VMCore
             program: directory.appending(path: "bin/qemu-system-aarch64"),
             dataDirectory: directory.appending(path: "share"), acceleratesGraphics: true
         )
-        let driver = InstallationConfiguration(hasDisplayDriver: true, hasAcceleratedDisplayDriver: true)
         let dxmt = installation.libraryDirectory.appending(path: "libdxmt-native.dylib")
         try FileManager.default.createDirectory(at: installation.libraryDirectory, withIntermediateDirectories: true)
         try Data().write(to: dxmt)
+
+        // The runtime alone must not switch a guest's hardware: Windows Setup has no GPU driver,
+        // and an existing guest keeps its display-only adapter until its tools are updated.
+        var driver = InstallationConfiguration()
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)
+        driver.hasDisplayDriver = true
+        #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .virtioGPU)
+        driver.hasAcceleratedDisplayDriver = true
         #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .virtioGPU3D)
 
         // A copy without the graphics runtime must boot too, even if DXMT is still there.
@@ -241,7 +248,7 @@ import VMCore
         #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)
         installation.acceleratesGraphics = true
 
-        // Release builds have Linux graphics, but no Direct3D. The 3D installer removed the 2D driver,
+        // A build without Direct3D must remain bootable. The 3D installer removed the 2D driver,
         // although the guest reported both display capabilities, so only the framebuffer is safe.
         try FileManager.default.removeItem(at: dxmt)
         #expect(QEMUBackendProvider.windowsDisplayAdapter(for: driver, installation: installation) == .framebuffer)

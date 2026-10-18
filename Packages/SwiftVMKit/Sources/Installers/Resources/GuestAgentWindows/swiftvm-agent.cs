@@ -36,7 +36,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.1";
+        public const string Version = "1.2";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -135,6 +135,21 @@ namespace SwiftVM
         {
             object value;
             return message != null && message.TryGetValue(key, out value) ? value as string : null;
+        }
+
+        public static double? RealNumber(Dictionary<string, object> message, string key)
+        {
+            object value;
+            if (message == null || !message.TryGetValue(key, out value) || value == null) return null;
+            try
+            {
+                double number = Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
+                return double.IsNaN(number) || double.IsInfinity(number) ? (double?)null : number;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         public static long? Number(Dictionary<string, object> message, string key)
@@ -851,6 +866,10 @@ namespace SwiftVM
                     case "clipboard":
                         agent.Session.SetClipboard(Json.String(message, "text") ?? "");
                         break;
+                    case "display-size":
+                        agent.Session.SetDisplaySize(Json.Number(message, "width") ?? 0,
+                            Json.Number(message, "height") ?? 0, Json.RealNumber(message, "scale") ?? 0);
+                        break;
                     default:
                         if (id != 0) Answer(id, "The guest tools don't know “" + type + "”.");
                         break;
@@ -956,7 +975,7 @@ namespace SwiftVM
             string architecture = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
             if (architecture != null) system["architecture"] = architecture.ToLowerInvariant();
 
-            var features = new List<object> { "clipboard", "time-zone", "exec" };
+            var features = new List<object> { "clipboard", "time-zone", "exec", "display-size" };
             if (HasResizableDisplayDriver()) features.Add("resizable-display");
             if (HasDisplayDriver("viogpu3d.inf_*")) features.Add("accelerated-display");
 
@@ -1630,6 +1649,7 @@ namespace SwiftVM
         readonly object gate = new object();
         StreamWriter writer;
         bool hasClipboardToFill;
+        Dictionary<string, object> displaySize;
         readonly Dictionary<long, ManualResetEvent> waiting = new Dictionary<long, ManualResetEvent>();
         readonly Dictionary<long, bool> answers = new Dictionary<long, bool>();
         long nextRequest = 1;
@@ -1681,6 +1701,7 @@ namespace SwiftVM
                         {
                             writer = new StreamWriter(pipe, new UTF8Encoding(false));
                             writer.AutoFlush = true;
+                            if (displaySize != null) Send(displaySize);
                         }
                         // Someone who has just logged in gets the Mac's shared folders as a drive.
                         string share, letter;
@@ -1768,6 +1789,23 @@ namespace SwiftVM
             return Ask(message, TimeSpan.FromSeconds(60));
         }
 
+        public void SetDisplaySize(long width, long height, double scale)
+        {
+            if (!DisplayFollower.ValidRequest(width, height, scale)) return;
+            var message = new Dictionary<string, object>();
+            message["type"] = "display-size";
+            message["width"] = width;
+            message["height"] = height;
+            message["scale"] = scale;
+            // Keep the latest request across logon and session-pipe reconnection. No reply is
+            // needed: a mode change must not hold up clipboard, commands or the host connection.
+            lock (gate)
+            {
+                displaySize = message;
+                Send(message);
+            }
+        }
+
         public bool ResizeDisplay(int width, int height)
         {
             var message = new Dictionary<string, object>();
@@ -1841,6 +1879,7 @@ namespace SwiftVM
             using (new Mutex(true, "Local\\SwiftVMAgentSession", out isFirst))
             {
                 if (!isFirst) return 0;
+                Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
                 var window = new ClipboardWindow();
                 var thread = new Thread(delegate() { Talk(window); });
                 thread.IsBackground = true;
@@ -1895,6 +1934,10 @@ namespace SwiftVM
                                     answer["id"] = Json.Number(message, "id") ?? 0;
                                     answer["ok"] = MapDrive(Json.String(message, "location"), Json.String(message, "drive"));
                                     Send(answer);
+                                    break;
+                                case "display-size":
+                                    DisplayFollower.Request(Json.Number(message, "width") ?? 0,
+                                        Json.Number(message, "height") ?? 0, Json.RealNumber(message, "scale") ?? 0);
                                     break;
                                 case "resize-display":
                                     var resized = new Dictionary<string, object>();
@@ -2006,6 +2049,30 @@ namespace SwiftVM
         const string VirtioGPU = "VEN_1AF4&DEV_1050";
         const ushort GetCustomResolution = 1;
         static readonly object ModeGate = new object();
+        static readonly object RequestGate = new object();
+        static readonly AutoResetEvent Changed = new AutoResetEvent(false);
+        static int requestedWidth, requestedHeight;
+        static double requestedScale;
+        static long generation;
+
+        public static bool ValidRequest(long width, long height, double scale)
+        {
+            return width >= 320 && width <= 16384 && height >= 200 && height <= 16384
+                && !double.IsNaN(scale) && !double.IsInfinity(scale) && scale >= 1 && scale <= 5;
+        }
+
+        public static void Request(long width, long height, double scale)
+        {
+            if (!ValidRequest(width, height, scale)) return;
+            lock (RequestGate)
+            {
+                requestedWidth = (int)width;
+                requestedHeight = (int)height;
+                requestedScale = scale;
+                generation++;
+            }
+            Changed.Set();
+        }
 
         public static bool Resize(int width, int height)
         {
@@ -2014,6 +2081,12 @@ namespace SwiftVM
             // still be handling that device notification when the request reaches the session.
             for (int attempt = 0; attempt < 10; attempt++)
             {
+                // Once the host sends scale-aware requests, they take precedence over the
+                // legacy SPICE channel, whose messages can arrive in a different order.
+                lock (RequestGate)
+                {
+                    if (requestedWidth != 0 && (requestedWidth != width || requestedHeight != height)) return false;
+                }
                 string display = FindDisplay();
                 if (display != null && Switch(display, width, height)) return true;
                 Thread.Sleep(100);
@@ -2023,32 +2096,63 @@ namespace SwiftVM
 
         public static void Run()
         {
-            // The size asked for last, to switch only when the window changes size, and to leave a size
-            // someone chose in Windows' settings alone until then. At first, whatever is asked: the
-            // window's size, or SwiftVM's display setting when the display doesn't follow the window.
-            int lastWidth = 0, lastHeight = 0;
-            int failures = 0;
+            int lastWidth = 0, lastHeight = 0, failures = 0;
+            long handled = 0, sized = 0, attempted = 0;
             while (true)
             {
                 try
                 {
-                    string display = FindDisplay();
                     int width, height;
-                    if (display != null && AskedSize(display, out width, out height) && (width != lastWidth || height != lastHeight))
+                    double scale;
+                    long request;
+                    lock (RequestGate)
                     {
-                        // The driver may not have it on offer yet. A size it never offers is let go of.
-                        if (Switch(display, width, height) || ++failures >= 10)
+                        width = requestedWidth;
+                        height = requestedHeight;
+                        scale = requestedScale;
+                        request = generation;
+                    }
+                    if (attempted != request) { attempted = request; failures = 0; }
+                    string display = FindDisplay();
+                    if (width != 0)
+                    {
+                        if (request != handled)
+                        {
+                            bool applied = false;
+                            lock (ModeGate)
+                            {
+                                if (display != null)
+                                {
+                                    if (sized != request && Switch(display, width, height)) sized = request;
+                                    // A DPI retry must not undo a size subsequently chosen in Windows.
+                                    if (sized == request) applied = SetScale(display, width, height, scale) != ScaleResult.Retry;
+                                }
+                            }
+                            if (applied) { handled = request; failures = 0; }
+                            else failures++;
+                        }
+                    }
+                    else if (display != null && AskedSize(display, out width, out height)
+                        && (width != lastWidth || height != lastHeight))
+                    {
+                        // Older hosts send only the driver's custom mode. After a successful
+                        // change, leave a size chosen in Windows alone until the host asks anew.
+                        if (Switch(display, width, height))
                         {
                             lastWidth = width;
                             lastHeight = height;
                             failures = 0;
                         }
+                        else failures++;
                     }
                 }
                 catch (Exception)
                 {
+                    failures++;
                 }
-                Thread.Sleep(500);
+                // Mode enumeration can lag the request by more than a few seconds. Never mark
+                // a failed size as handled; back off, and let a new request wake us immediately.
+                Changed.WaitOne(failures >= 10 ? 2000 : 500);
             }
         }
 
@@ -2111,6 +2215,8 @@ namespace SwiftVM
                 int path = FindPath(paths, adapter);
                 if (path < 0 || paths[path].Source.ModeIndex >= modes.Length) return false;
                 if (IsSize(paths[path], modes, width, height)) return true;
+                var previousPaths = (Native.DisplayPath[])paths.Clone();
+                var previousModes = (Native.DisplayConfigMode[])modes.Clone();
                 uint source = paths[path].Source.ModeIndex;
                 if (modes[source].Type != 1) return false;
                 modes[source].Source.Width = (uint)width;
@@ -2120,11 +2226,77 @@ namespace SwiftVM
                 // target merely scales the desktop and loses Retina detail.
                 paths[path].Target.ModeIndex = uint.MaxValue;
                 uint flags = Native.DisplayApply | Native.DisplayUseSupplied | Native.DisplayForceEnumeration | Native.DisplaySave;
-                if (Native.SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes, flags) != 0) return false;
-                if (!Configuration(out paths, out modes)) return false;
-                path = FindPath(paths, adapter);
-                return path >= 0 && IsSize(paths[path], modes, width, height);
+                int result = Native.SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes, flags);
+                int offeredWidth, offeredHeight;
+                if (result == 1610 && AskedSize(display, out offeredWidth, out offeredHeight)
+                    && offeredWidth == width && offeredHeight == height)
+                {
+                    // WDDM may need to reconcile timing with its cached monitor modes. Only allow
+                    // this for the driver's current offer, and never accept a substituted raster.
+                    result = Native.SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes,
+                        flags | Native.DisplayAllowChanges);
+                }
+                if (result != 0) return false;
+                if (Configuration(out paths, out modes))
+                {
+                    path = FindPath(paths, adapter);
+                    if (path >= 0 && IsSize(paths[path], modes, width, height)) return true;
+                }
+                Native.SetDisplayConfig((uint)previousPaths.Length, previousPaths, (uint)previousModes.Length, previousModes,
+                    Native.DisplayApply | Native.DisplayUseSupplied | Native.DisplaySave);
+                return false;
             }
+        }
+
+        enum ScaleResult { Applied, Unsupported, Retry }
+
+        static ScaleResult ScaleFailure(int error)
+        {
+            return error == 50 || error == 87 ? ScaleResult.Unsupported : ScaleResult.Retry;
+        }
+
+        static ScaleResult SetScale(string display, int width, int height, double scale)
+        {
+            var adapter = new Native.OpenAdapterFromDisplayName { DeviceName = display };
+            if (Native.D3DKMTOpenAdapterFromGdiDisplayName(ref adapter) != 0) return ScaleResult.Retry;
+            var closing = new Native.CloseAdapter { Adapter = adapter.Adapter };
+            Native.D3DKMTCloseAdapter(ref closing);
+            Native.DisplayPath[] paths;
+            Native.DisplayConfigMode[] modes;
+            if (!Configuration(out paths, out modes)) return ScaleResult.Retry;
+            int path = FindPath(paths, adapter);
+            // The raster was applied already. A later choice in Windows is not ours to undo.
+            if (path < 0 || !IsSize(paths[path], modes, width, height)) return ScaleResult.Unsupported;
+
+            // Windows' per-monitor DPI requests use steps relative to the recommended scale,
+            // not percentages. These native request types are not in the public SDK; if Windows
+            // rejects them, leave the user's DPI alone rather than editing global registry values.
+            var dpi = new Native.DisplayDpiScale();
+            dpi.Header.Type = -3;
+            dpi.Header.Size = (uint)Marshal.SizeOf(typeof(Native.DisplayDpiScale));
+            dpi.Header.Adapter = paths[path].Source.Adapter;
+            dpi.Header.Id = paths[path].Source.Id;
+            int error = Native.DisplayConfigGetDeviceInfo(ref dpi);
+            if (error != 0) return ScaleFailure(error);
+            int[] scales = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
+            if (dpi.Minimum > 0 || dpi.Minimum <= -scales.Length) return ScaleResult.Unsupported;
+            int recommended = -dpi.Minimum;
+            int desired = 0;
+            for (int index = 1; index < scales.Length; index++)
+                if (Math.Abs(scales[index] - scale * 100) < Math.Abs(scales[desired] - scale * 100)) desired = index;
+            int relative = desired - recommended;
+            if (relative < dpi.Minimum || relative > dpi.Maximum) return ScaleResult.Unsupported;
+            if (dpi.Current == relative) return ScaleResult.Applied;
+            var setting = new Native.DisplayDpiScaleSet();
+            setting.Header = dpi.Header;
+            setting.Header.Type = -4;
+            setting.Header.Size = (uint)Marshal.SizeOf(typeof(Native.DisplayDpiScaleSet));
+            setting.Scale = relative;
+            error = Native.DisplayConfigSetDeviceInfo(ref setting);
+            if (error != 0) return ScaleFailure(error);
+            error = Native.DisplayConfigGetDeviceInfo(ref dpi);
+            if (error != 0) return ScaleFailure(error);
+            return dpi.Current == relative ? ScaleResult.Applied : ScaleResult.Retry;
         }
 
         static int FindPath(Native.DisplayPath[] paths, Native.OpenAdapterFromDisplayName adapter)
@@ -2178,7 +2350,7 @@ namespace SwiftVM
         public const uint HandleFlagInherit = 1;
         public const int DisplayDeviceAttachedToDesktop = 0x1;
         public const uint DisplayActivePaths = 0x2, DisplayApply = 0x80, DisplayUseSupplied = 0x20;
-        public const uint DisplaySave = 0x200, DisplayForceEnumeration = 0x1000;
+        public const uint DisplaySave = 0x200, DisplayAllowChanges = 0x400, DisplayForceEnumeration = 0x1000;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct DisplayDevice
@@ -2189,6 +2361,29 @@ namespace SwiftVM
             public int StateFlags;
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplayDeviceInfoHeader
+        {
+            public int Type;
+            public uint Size;
+            public Luid Adapter;
+            public uint Id;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplayDpiScale
+        {
+            public DisplayDeviceInfoHeader Header;
+            public int Minimum, Current, Maximum;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DisplayDpiScaleSet
+        {
+            public DisplayDeviceInfoHeader Header;
+            public int Scale;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -2411,6 +2606,15 @@ namespace SwiftVM
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "EnumDisplayDevicesW")]
         public static extern bool EnumDisplayDevices(string device, int index, ref DisplayDevice information, int flags);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+
+        [DllImport("user32.dll")]
+        public static extern int DisplayConfigGetDeviceInfo(ref DisplayDpiScale scale);
+
+        [DllImport("user32.dll")]
+        public static extern int DisplayConfigSetDeviceInfo(ref DisplayDpiScaleSet scale);
 
         [DllImport("user32.dll")]
         public static extern int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);

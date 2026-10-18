@@ -43,6 +43,33 @@ and select it with **Choose ISO…**.
 The machine's window shows setup progress. Windows restarts when setup
 finishes, and SwiftVM removes the installation discs.
 
+## Graphics acceleration
+
+GPU acceleration is **experimental and enabled by default for new Windows
+machines**. Setup installs the signed Direct3D driver automatically. Once the
+guest tools report that it is installed, the next cold boot uses your Mac's
+GPU through DXMT and Metal. Windows Setup uses the firmware framebuffer before
+the driver is available.
+
+The experimental graphics stack can produce missing text, rendering failures,
+hangs, Windows crashes, or unexpected VM stops, including during shutdown. Use
+a disposable guest, not a machine you rely on, and keep important files backed
+up. GPU acceleration does not yet guarantee reliable window resizing or Retina
+quality at every resolution.
+
+Existing machines keep their display-only driver until you explicitly update
+the [guest tools](guest-tools.md#windows). Updating the tools can replace that
+driver with the accelerated one; shut Windows down and start it again afterward.
+
+[Custom builds](../tech/building.md#requirements) can leave Direct3D out with
+`SWIFTVM_QEMU_DIRECT3D=0`. They install the display-only driver for new machines.
+A machine that already has the 3D driver falls back to the firmware framebuffer
+when opened in a build without Direct3D. This is a build setting, not a per-VM
+switch.
+
+Accelerated machines cannot suspend or save running graphics state. Shut
+Windows down before taking a snapshot or quitting SwiftVM.
+
 ## Guest tools and automation
 
 The guest tools are installed automatically. To install or update them in an
@@ -69,8 +96,8 @@ account name and password you chose during creation.
 ## Limitations
 
 - Windows uses QEMU, included with SwiftVM, with hardware acceleration for the
-  processor. Graphics acceleration is unavailable, so animations, video, and
-  games can be slow.
+  processor. GPU acceleration is experimental; graphics compatibility and
+  performance vary. See [Graphics acceleration](#graphics-acceleration).
 - Physical USB devices and microphone input are not supported. Disc and disk
   images can still be attached as [removable drives](disks.md).
 - Display resizing requires someone to be logged in. The sign-in screen keeps

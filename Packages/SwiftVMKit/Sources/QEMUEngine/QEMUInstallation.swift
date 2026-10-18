@@ -21,7 +21,7 @@ public struct QEMUInstallation: Sendable, Hashable {
         self.acceleratesGraphics = acceleratesGraphics
     }
 
-    /// Whether it has DXMT, which Windows' Direct3D goes through. It is built in only when asked for.
+    /// Whether it has DXMT, which Windows' Direct3D goes through. Custom builds can leave it out.
     public var supportsDirect3D: Bool {
         FileManager.default.fileExists(atPath: libraryDirectory.appending(path: "libdxmt-native.dylib").path)
     }
