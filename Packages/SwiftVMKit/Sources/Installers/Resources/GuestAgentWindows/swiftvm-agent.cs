@@ -2088,7 +2088,9 @@ namespace SwiftVM
                     if (requestedWidth != 0 && (requestedWidth != width || requestedHeight != height)) return false;
                 }
                 string display = FindDisplay();
-                if (display != null && Switch(display, width, height)) return true;
+                var switched = display == null ? SwitchResult.Unavailable : Switch(display, width, height);
+                if (switched == SwitchResult.Switched) return true;
+                if (switched == SwitchResult.Substituted) return false;
                 Thread.Sleep(100);
             }
             return false;
@@ -2118,17 +2120,24 @@ namespace SwiftVM
                     {
                         if (request != handled)
                         {
-                            bool applied = false;
+                            bool applied = false, abandoned = false;
                             lock (ModeGate)
                             {
                                 if (display != null)
                                 {
-                                    if (sized != request && Switch(display, width, height)) sized = request;
+                                    if (sized != request)
+                                    {
+                                        var switched = Switch(display, width, height);
+                                        if (switched == SwitchResult.Switched) sized = request;
+                                        // Windows put another raster in its place, and it was put back. Trying
+                                        // again would only flip the mode back and forth until the host asks anew.
+                                        else if (switched == SwitchResult.Substituted) abandoned = true;
+                                    }
                                     // A DPI retry must not undo a size subsequently chosen in Windows.
                                     if (sized == request) applied = SetScale(display, width, height, scale) != ScaleResult.Retry;
                                 }
                             }
-                            if (applied) { handled = request; failures = 0; }
+                            if (applied || abandoned) { handled = request; failures = 0; }
                             else failures++;
                         }
                     }
@@ -2137,7 +2146,8 @@ namespace SwiftVM
                     {
                         // Older hosts send only the driver's custom mode. After a successful
                         // change, leave a size chosen in Windows alone until the host asks anew.
-                        if (Switch(display, width, height))
+                        // A substituted size is let go of the same way, so the mode doesn't flip.
+                        if (Switch(display, width, height) != SwitchResult.Unavailable)
                         {
                             lastWidth = width;
                             lastHeight = height;
@@ -2150,8 +2160,8 @@ namespace SwiftVM
                 {
                     failures++;
                 }
-                // Mode enumeration can lag the request by more than a few seconds. Never mark
-                // a failed size as handled; back off, and let a new request wake us immediately.
+                // Mode enumeration can lag the request by more than a few seconds. A size that isn't
+                // on offer yet is never marked as handled; back off, and let a new request wake us.
                 Changed.WaitOne(failures >= 10 ? 2000 : 500);
             }
         }
@@ -2201,24 +2211,28 @@ namespace SwiftVM
             }
         }
 
-        static bool Switch(string display, int width, int height)
+        /// What became of a request for a size: Windows shows it, it isn't on offer (yet), or Windows
+        /// applied another raster in its place, which was undone.
+        enum SwitchResult { Switched, Unavailable, Substituted }
+
+        static SwitchResult Switch(string display, int width, int height)
         {
             lock (ModeGate)
             {
                 var adapter = new Native.OpenAdapterFromDisplayName { DeviceName = display };
-                if (Native.D3DKMTOpenAdapterFromGdiDisplayName(ref adapter) != 0) return false;
+                if (Native.D3DKMTOpenAdapterFromGdiDisplayName(ref adapter) != 0) return SwitchResult.Unavailable;
                 var closing = new Native.CloseAdapter { Adapter = adapter.Adapter };
                 Native.D3DKMTCloseAdapter(ref closing);
                 Native.DisplayPath[] paths;
                 Native.DisplayConfigMode[] modes;
-                if (!Configuration(out paths, out modes)) return false;
+                if (!Configuration(out paths, out modes)) return SwitchResult.Unavailable;
                 int path = FindPath(paths, adapter);
-                if (path < 0 || paths[path].Source.ModeIndex >= modes.Length) return false;
-                if (IsSize(paths[path], modes, width, height)) return true;
+                if (path < 0 || paths[path].Source.ModeIndex >= modes.Length) return SwitchResult.Unavailable;
+                if (IsSize(paths[path], modes, width, height)) return SwitchResult.Switched;
                 var previousPaths = (Native.DisplayPath[])paths.Clone();
                 var previousModes = (Native.DisplayConfigMode[])modes.Clone();
                 uint source = paths[path].Source.ModeIndex;
-                if (modes[source].Type != 1) return false;
+                if (modes[source].Type != 1) return SwitchResult.Unavailable;
                 modes[source].Source.Width = (uint)width;
                 modes[source].Source.Height = (uint)height;
                 // A connected monitor's custom mode can change without a hotplug notification.
@@ -2236,15 +2250,15 @@ namespace SwiftVM
                     result = Native.SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes,
                         flags | Native.DisplayAllowChanges);
                 }
-                if (result != 0) return false;
+                if (result != 0) return SwitchResult.Unavailable;
                 if (Configuration(out paths, out modes))
                 {
                     path = FindPath(paths, adapter);
-                    if (path >= 0 && IsSize(paths[path], modes, width, height)) return true;
+                    if (path >= 0 && IsSize(paths[path], modes, width, height)) return SwitchResult.Switched;
                 }
                 Native.SetDisplayConfig((uint)previousPaths.Length, previousPaths, (uint)previousModes.Length, previousModes,
                     Native.DisplayApply | Native.DisplayUseSupplied | Native.DisplaySave);
-                return false;
+                return SwitchResult.Substituted;
             }
         }
 
