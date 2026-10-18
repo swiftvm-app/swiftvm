@@ -13,6 +13,10 @@ Mac and internet connection. You can keep using your Mac while it runs.
 To use your own installer, choose **Choose ISO…**. The ISO must be Windows 11
 for **Arm64**; installers for Intel and AMD processors are not supported.
 
+**Graphics acceleration (experimental)** is on by default. Turn it off for a
+display-only driver that stays sharp at any window size but draws more slowly;
+see [Graphics acceleration](#graphics-acceleration).
+
 Under **Advanced**, you can change the account name, processors, memory, disk
 size, storage location, and whether to install your SSH key. Windows needs at
 least 4 GB of memory and a 64 GB disk. You can also
@@ -23,6 +27,7 @@ From the command line:
 ```bash
 swiftvm create windows --password 'your password'
 swiftvm create windows --iso ~/Downloads/Win11_Arm64.iso --password 'your password' --memory 8
+swiftvm create windows --password 'your password' --no-gpu
 ```
 
 SwiftVM downloads the required drivers and caches downloads for reuse. If
@@ -46,10 +51,29 @@ finishes, and SwiftVM removes the installation discs.
 ## Graphics acceleration
 
 GPU acceleration is **experimental and enabled by default for new Windows
-machines**. Setup installs the signed Direct3D driver automatically. Once the
+machines**; turn it off when creating the machine to use the display-only driver
+instead. Setup installs the signed Direct3D driver automatically. Once the
 guest tools report that it is installed, the next cold boot uses your Mac's
 GPU through DXMT and Metal. Windows Setup uses the firmware framebuffer before
 the driver is available.
+
+### Window size and sharpness
+
+The 3D driver gives Windows a new screen size only when Windows starts. So that
+the picture is sharp, Windows starts at the size of the machine's window in your
+Mac's pixels, at the matching scale (200% on a Retina display). A new machine's
+window is sized to fit your screen, and the window takes Windows' size whenever
+it opens.
+
+If you resize the window, Windows keeps its size and the window shows it
+scaled. **Sharpen Display** then appears in the window's title bar:
+
+- **Restart at This Size** restarts Windows, which then starts at the window's
+  new size. Open apps close, as in any restart.
+- **Return to Sharp Size** gives the window back the size Windows is sharp at.
+
+Machines without graphics acceleration use the display-only driver, which
+follows the window as you resize it and stays sharp at any size.
 
 The experimental graphics stack can produce missing text, rendering failures,
 hangs, Windows crashes, or unexpected VM stops, including during shutdown. Use
@@ -57,9 +81,9 @@ a disposable guest, not a machine you rely on, and keep important files backed
 up. GPU acceleration does not yet guarantee reliable window resizing or Retina
 quality at every resolution.
 
-Existing machines keep their display-only driver until you explicitly update
-the [guest tools](guest-tools.md#windows). Updating the tools can replace that
-driver with the accelerated one; shut Windows down and start it again afterward.
+A machine keeps the display driver it was created with. Updating the
+[guest tools](guest-tools.md#windows) updates that driver and doesn't switch
+between the display-only and the 3D one.
 
 [Custom builds](../tech/building.md#requirements) can leave Direct3D out with
 `SWIFTVM_QEMU_DIRECT3D=0`. They install the display-only driver for new machines.

@@ -28,7 +28,7 @@ if ($Phase -eq 'specialize') {
     # The setup disc goes once setup is over. What the second phase needs is kept on the disk.
     Copy-Item -Path (Join-Path $PSScriptRoot '*') -Destination $data -Recurse -Force
     try {
-        & (Join-Path $data 'install.ps1') -Source $data *>> $log
+        & (Join-Path $data 'install.ps1') -Source $data -NewMachine *>> $log
     } catch {
         Write-Log "The guest tools couldn't be installed: $_"
     }

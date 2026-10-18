@@ -117,6 +117,9 @@ struct WindowsInstallRequest {
     var installsSSHKey: Bool
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
+    /// Draw with this Mac's GPU, through the 3D display driver. Without it, Windows has a driver for a
+    /// display only, which takes any size of window as it changes.
+    var acceleratesGraphics = true
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
@@ -446,7 +449,8 @@ extension AppModel {
             memorySize: request.memorySize,
             disks: [disk],
             removableImages: [installerDisc, driversDisc],
-            display: DisplayConfiguration(widthInPixels: 1920, heightInPixels: 1080, adapter: .framebuffer),
+            // A machine with the 3D driver keeps the size it starts at: one whose window fits this screen.
+            display: SharpDisplay.configuration(startingAt: SharpDisplay.startingSize()),
             networkInterfaces: [NetworkInterfaceConfiguration()],
             ssh: SSHConfiguration(alias: alias, user: request.userName, identityFile: keyPair?.privateKeyPath),
             installation: InstallationConfiguration(attachesSeedImage: true, setupMedia: [installerDisc.id, driversDisc.id])
@@ -455,7 +459,8 @@ extension AppModel {
         let setup = WindowsSetup(
             computerName: WindowsSetup.computerName(from: alias), userName: request.userName,
             fullName: fullName.isEmpty ? nil : fullName, password: request.password, language: language,
-            authorizedKeys: keyPair.map { [$0.publicKey] } ?? []
+            authorizedKeys: keyPair.map { [$0.publicKey] } ?? [],
+            acceleratesGraphics: request.acceleratesGraphics && qemuProvider?.canAccelerateWindowsGraphics == true
         )
 
         creation.update("Creating disk…")

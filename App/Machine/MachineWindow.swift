@@ -18,6 +18,11 @@ struct MachineView: View {
     @Environment(AppModel.self) private var model
     @State private var isShowingSettings = false
     @State private var isShowingSnapshots = false
+    /// Counts the times the window is to take the size that shows the guest's display pixel for pixel.
+    @State private var sharpFits = 0
+    /// The last of those the window took. Kept here, as the display's view is made anew whenever the
+    /// machine pauses or resumes, and a window the user has resized since stays as it is.
+    @State private var appliedSharpFit = AppliedFit()
 
     var body: some View {
         ZStack {
@@ -34,7 +39,10 @@ struct MachineView: View {
         .frame(minWidth: 640, minHeight: 400)
         .navigationTitle(machine.name)
         .toolbar {
-            MachineToolbar(machine: machine, isShowingSettings: $isShowingSettings, isShowingSnapshots: $isShowingSnapshots)
+            MachineToolbar(
+                machine: machine, isShowingSettings: $isShowingSettings, isShowingSnapshots: $isShowingSnapshots,
+                onReturnToSharpSize: { sharpFits += 1 }
+            )
         }
         .windowToolbarFullScreenVisibility(.onHover)
         .focusedSceneValue(\.machine, machine)
@@ -56,6 +64,13 @@ struct MachineView: View {
             MessageButtons(message: error) { machine.dismissMessage() }
         } message: { error in
             Text(error.message)
+        }
+        // A guest that keeps the size it started at is shown sharp: the window takes that size as it
+        // opens, and again once the guest has started at another.
+        .onChange(of: machine.displaySize, initial: true) {
+            if machine.startsAtDisplaySize, machine.hasStartingDisplaySize {
+                sharpFits += 1
+            }
         }
         .onAppear { model.openMachineWindows.insert(machine.id) }
         .onDisappear { model.openMachineWindows.remove(machine.id) }
@@ -112,8 +127,14 @@ struct MachineView: View {
     @ViewBuilder
     private var display: some View {
         if let displayView = machine.displayView {
-            MachineDisplayView(displayView: displayView)
-                .accessibilityLabel("Display of \(machine.name)")
+            MachineDisplayView(
+                displayView: displayView,
+                // Not the firmware's sizes the display shows on its way to its own.
+                sharpFit: machine.startsAtDisplaySize && machine.hasStartingDisplaySize
+                    ? machine.displaySize.map { DisplayFit(size: $0, request: sharpFits) } : nil,
+                appliedFit: appliedSharpFit
+            )
+            .accessibilityLabel("Display of \(machine.name)")
         }
     }
 
@@ -182,23 +203,73 @@ struct MachineView: View {
     }
 }
 
+/// A size of the guest's display for the window to show pixel for pixel, asked for anew whenever
+/// `request` changes.
+struct DisplayFit: Equatable {
+    var size: DisplayPixels
+    var request: Int
+}
+
+/// The last ``DisplayFit`` a machine's window took.
+final class AppliedFit {
+    var request: Int?
+}
+
 /// Hosts the engine's display view (an AppKit view that the engine creates once and keeps).
 struct MachineDisplayView: NSViewRepresentable {
     let displayView: NSView
+    var sharpFit: DisplayFit?
+    var appliedFit = AppliedFit()
 
     func makeNSView(context: Context) -> DisplayContainerView {
         let container = DisplayContainerView()
+        container.appliedFit = appliedFit
         container.embed(displayView)
+        container.fit(sharpFit)
         return container
     }
 
     func updateNSView(_ container: DisplayContainerView, context: Context) {
         container.embed(displayView)
+        container.fit(sharpFit)
     }
 }
 
 final class DisplayContainerView: NSView {
     private weak var embedded: NSView?
+    /// The last fit the window was given, and one still to give it once the view is in a window.
+    var appliedFit = AppliedFit()
+    private var pendingFit: DisplayFit?
+
+    /// Gives the window the size that shows the display at `fit` pixel for pixel, once per request.
+    func fit(_ fit: DisplayFit?) {
+        guard let fit, fit.request != appliedFit.request else { return }
+        pendingFit = fit
+        applyPendingFit()
+    }
+
+    private func applyPendingFit() {
+        guard let fit = pendingFit, let window, let visible = window.screen?.visibleFrame,
+              !window.styleMask.contains(.fullScreen)
+        else { return }
+        pendingFit = nil
+        appliedFit.request = fit.request
+        let scale = window.backingScaleFactor
+        // What the window has besides the display, which takes the room below its title bar and toolbar.
+        // The display's own view may not have been laid out to that yet.
+        let extraWidth = window.frame.width - window.contentLayoutRect.width
+        let extraHeight = window.frame.height - window.contentLayoutRect.height
+        let size = CGSize(width: CGFloat(fit.size.width) / scale + extraWidth, height: CGFloat(fit.size.height) / scale + extraHeight)
+        // A display larger than the screen stays scaled; the title bar says how to make it sharp.
+        guard size.width <= visible.width, size.height <= visible.height else { return }
+        var frame = window.frame
+        // Grown or shrunk from its top left corner, and kept on the screen.
+        frame.origin.y += frame.height - size.height
+        frame.size = size
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - size.width)
+        frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - size.height)
+        window.setFrame(frame, display: true, animate: true)
+    }
 
     func embed(_ view: NSView) {
         guard embedded !== view || view.superview !== self else { return }
@@ -213,6 +284,8 @@ final class DisplayContainerView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         focusGuest()
+        // Laid out first, so that what the window has besides the display is known.
+        DispatchQueue.main.async { [weak self] in self?.applyPendingFit() }
     }
 
     /// Keyboard input should go to the guest as soon as its display is on screen.
