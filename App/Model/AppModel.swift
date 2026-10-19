@@ -25,6 +25,8 @@ final class AppModel {
     let portForwarder = PortForwarder()
     /// Passes copied text between this Mac and the guests that share their clipboard.
     let clipboardSharing = ClipboardSharing()
+    /// Keeps guest tools installation from overlapping between the menus and command line.
+    let guestToolsInstallation = GuestToolsInstallation()
     /// Hands the USB devices this Mac has given the app to guests.
     let usb = USBPassthrough()
     /// Serves shared folders to guests on QEMU, which map them as a drive over WebDAV.

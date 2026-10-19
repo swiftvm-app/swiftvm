@@ -264,7 +264,9 @@ extension AppModel {
         case .installTools:
             do {
                 if request.usesDisc == true {
-                    let disc = try await attachGuestToolsDisc(to: machine)
+                    let disc = try await guestToolsInstallation.perform(for: machine.id, named: machine.name) {
+                        try await attachGuestToolsDisc(to: machine)
+                    }
                     var response = details(machine)
                     let alias = machine.configuration.ssh.alias
                     if machine.configuration.os.family == .windows {

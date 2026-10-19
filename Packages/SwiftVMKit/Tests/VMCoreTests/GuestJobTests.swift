@@ -16,6 +16,8 @@ private final class AgentBackend: VMBackend {
     /// What the agent answers a job with.
     var jobAnswer = GuestJobAnswer(ok: true)
     var jobOutput = Data()
+    var echoInput = false
+    var stallInput = false
     let jobHangups = DispatchSemaphore(value: 0)
     private let record = Record()
 
@@ -79,11 +81,22 @@ private final class AgentBackend: VMBackend {
             }
         case GuestProtocol.jobPort:
             let (answer, output, record, hangups) = (jobAnswer, jobOutput, record, jobHangups)
+            let (echo, stall) = (echoInput, stallInput)
             Thread.detachNewThread {
                 if let line = GuestJobLine.read(from: guest, timeout: 5) {
                     record.add(String(decoding: line, as: UTF8.self))
                     GuestJobLine.answer(answer, on: guest)
                     _ = ByteRelay.writeAll(ArraySlice(output), to: guest)
+                    if stall { Thread.sleep(forTimeInterval: 1) }
+                    if echo {
+                        while let frame = try? JobFrame.read(from: guest, timeout: 5), frame.kind == .input {
+                            if frame.payload.isEmpty {
+                                JobFrame.write(.end, JobFrame.end(.success).payload, to: guest)
+                                break
+                            }
+                            if !JobFrame.write(.output, frame.payload, to: guest) { break }
+                        }
+                    }
                 }
                 // A broken collection timeout must not hold the test process for good.
                 var byte: UInt8 = 0
@@ -205,6 +218,37 @@ private final class AgentProvider: VMBackendProvider {
         provider.backend.jobOutput = JobFrame(.output, said).encoded + JobFrame.end(.success).encoded
         #expect(try await machine.collect(job, patience: 5) == said)
         #expect(await wasHungUp())
+        await machine.forceStop()
+    }
+
+    @Test func commandInputAndOutputCanBothExceedTheSocketBuffer() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        provider.backend.echoInput = true
+        let prelude = Data(repeating: 7, count: 2 << 20)
+        provider.backend.jobOutput = (0..<32).reduce(into: Data()) { output, _ in
+            output.append(JobFrame(.output, Data(prelude.prefix(JobFrame.maximumPayloadLength))).encoded)
+        }
+        let machine = try await startMachine()
+        let input = Data(repeating: 23, count: 2 << 20)
+        let output = try await machine.collect(.exec(.init(arguments: ["cat"])), input: input, patience: 5)
+        #expect(output == prelude + input)
+        await machine.forceStop()
+    }
+
+    @Test func aStalledInputTransferTimesOutAndTheNextJobStillWorks() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        provider.backend.stallInput = true
+        let machine = try await startMachine()
+        let job = GuestJob.exec(.init(arguments: ["cat"]))
+        let started = ContinuousClock.now
+        await #expect(throws: GuestJobError.noAnswer(name: "Web")) {
+            _ = try await machine.collect(job, input: Data(repeating: 1, count: 2 << 20), patience: 0.1)
+        }
+        #expect(ContinuousClock.now - started < .seconds(1))
+        provider.backend.stallInput = false
+        provider.backend.echoInput = true
+        let input = Data("the next installer".utf8)
+        #expect(try await machine.collect(job, input: input, patience: 5) == input)
         await machine.forceStop()
     }
 

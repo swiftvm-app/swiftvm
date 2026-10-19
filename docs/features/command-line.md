@@ -108,7 +108,7 @@ apply. `--disk` then grows the disk beyond the template's.
 | `usb attach <machine> <device>` | Hand a USB device to a running machine |
 | `usb detach <machine> <device>` | Give it back to your Mac |
 | `usb auto <machine> <device> on\|off` | Attach it whenever it is plugged in, or stop |
-| `install-tools <machine>` | Install the [guest tools](guest-tools.md). `--disc`, `--password <password>` |
+| `install-tools <machine>` | Install or reinstall the [guest tools](guest-tools.md). Connected tools replace themselves; otherwise use SSH or `--disc`. `--password <password>` supplies macOS sudo over SSH |
 
 ## Automation
 

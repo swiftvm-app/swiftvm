@@ -41,8 +41,9 @@ struct MachineMenu: View {
         if machine.configuration.hasSerialConsole, model.commandLineToolURL != nil {
             Button("Open Serial Console", systemImage: "cable.connector") { model.openSerialConsole(for: machine) }
         }
-        if model.offersGuestTools(for: machine) {
-            Button("Install Guest Tools…", systemImage: "shippingbox") { model.installGuestToolsReportingResult(on: machine) }
+        if model.offersGuestTools(for: machine) || model.isInstallingGuestTools(on: machine) {
+            Button(model.guestToolsActionTitle(for: machine), systemImage: "shippingbox") { model.installGuestToolsReportingResult(on: machine) }
+                .disabled(!model.offersGuestTools(for: machine) || model.isInstallingGuestTools(on: machine))
         }
         Button("Copy IP Address", systemImage: "network") {
             guard let address = model.address(for: machine) else { return }

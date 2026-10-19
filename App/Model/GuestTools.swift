@@ -1,4 +1,5 @@
 import Foundation
+import GuestChannel
 import Installers
 import VMCore
 
@@ -34,20 +35,57 @@ extension AppModel {
         }
     }
 
-    /// Whether there is something to install in `machine`: a running guest that can have the guest tools
-    /// and has none, or not the ones this version of the app brings.
+    /// Current tools can be installed again too: their version alone doesn't say they need no repair.
     func offersGuestTools(for machine: VirtualMachine) -> Bool {
-        guard machine.state == .running, let version = guestToolsVersion(for: machine) else { return false }
-        return machine.agent.version != version
+        machine.state == .running && machine.activity == nil && guestToolsVersion(for: machine) != nil
     }
 
-    /// Installs the guest tools in a running guest over SSH, and returns once its agent has connected.
-    ///
-    /// That takes key sign-in, and root in the guest: `sudo` without a password in Linux guests, as those
-    /// set up by SwiftVM have it, and the account's `password` in macOS guests. For guests where that
-    /// isn't to be had there is the disc: ``attachGuestToolsDisc(to:)``.
+    func isInstallingGuestTools(on machine: VirtualMachine) -> Bool {
+        guestToolsInstallation.machineIDs.contains(machine.id)
+    }
+
+    func guestToolsActionTitle(for machine: VirtualMachine) -> String {
+        if isInstallingGuestTools(on: machine) { return "Installing Guest Tools…" }
+        return machine.agent.version == nil ? "Install Guest Tools…" : "Reinstall Guest Tools"
+    }
+
+    private func canInstallThroughAgent(on machine: VirtualMachine) -> Bool {
+        machine.configuration.automation.isAllowed && machine.agent.isConnected && machine.agent.offers(GuestFeature.exec)
+    }
+
+    /// Uses connected tools to replace themselves, or SSH for a guest that has none. The latter takes
+    /// key sign-in and root: passwordless sudo on Linux, or the account's password on macOS.
     func installGuestTools(on machine: VirtualMachine, password: String? = nil) async throws {
+        try await guestToolsInstallation.perform(for: machine.id, named: machine.name) {
+            try await installGuestToolsUnchecked(on: machine, password: password)
+        }
+    }
+
+    /// The caller holds the installation slot through disc preparation and recovery too.
+    private func installGuestToolsUnchecked(on machine: VirtualMachine, password: String? = nil) async throws {
         try requireRunningGuest(machine)
+        if canInstallThroughAgent(on: machine), let version = guestToolsVersion(for: machine) {
+            let startCount = machine.startCount
+            let attached = Set(machine.configuration.removableImages.map(\.id))
+            let family = machine.configuration.os.family
+            let program = macGuestAgentURL
+            let installation = try await Task.detached(priority: .userInitiated) {
+                try GuestToolsReinstallation(family: family, macProgram: program)
+            }.value
+            let disc = family == .macOS ? nil : try await attachGuestToolsDisc(to: machine)
+            try await installation.run(
+                expectedVersion: version,
+                execute: { try await machine.collect($0, input: $1, patience: 20) },
+                isRunning: { machine.state == .running && machine.startCount == startCount },
+                connectedVersion: { machine.agent.version }
+            )
+            // Leave discs that were already there alone, and never eject unrelated media attached
+            // while the installer ran. Windows keeps its drivers disc for a possible restart.
+            if let disc, !attached.contains(disc.id) {
+                try? await machine.ejectImage(disc.id)
+            }
+            return
+        }
         guard machine.configuration.os.family != .windows else {
             // Windows has no SSH until the guest tools have set it up. Its own setup installs them.
             throw VMError.invalidConfiguration(
@@ -146,50 +184,57 @@ extension AppModel {
         guard machine.state == .running else { throw VMError.notRunning(name: machine.name) }
     }
 
-    /// Installs the guest tools for a menu command: over SSH where that works, and otherwise by plugging
-    /// in the disc and saying what to run in the guest. Either way the outcome is shown wherever the
-    /// machine's messages are.
+    /// Uses the agent, then SSH where that works, and otherwise offers the disc. A running installer
+    /// that fails is reported, never followed by a second attempt over another transport.
     func installGuestToolsReportingResult(on machine: VirtualMachine) {
         Task {
+            guard !isInstallingGuestTools(on: machine) else { return }
             let failureTitle = "Couldn't install the guest tools in “\(machine.name)”"
             let isMac = machine.configuration.os.family == .macOS
             let isWindows = machine.configuration.os.family == .windows
+            let isReinstall = machine.agent.version != nil
             do {
-                if canSignIn(to: machine), !isWindows {
-                    do {
-                        try await installGuestTools(on: machine)
+                try await guestToolsInstallation.perform(for: machine.id, named: machine.name) {
+                    try requireRunningGuest(machine)
+                    machine.lastError = nil
+                    machine.notice = nil
+                    let throughAgent = canInstallThroughAgent(on: machine)
+                    if throughAgent || (canSignIn(to: machine) && !isWindows) {
+                        do {
+                            try await installGuestToolsUnchecked(on: machine)
+                            machine.notice = VMErrorInfo(
+                                title: "The guest tools are \(isReinstall ? "reinstalled" : "installed") in “\(machine.name)”",
+                                message: isWindows
+                                    ? "The guest tools have connected again. Restart Windows to finish applying any driver changes."
+                                    : "SwiftVM now sees the system's version and addresses, keeps its clock right after a suspend, and shuts it down through the guest tools."
+                            )
+                            return
+                        } catch let failure as ProcessRunner.Failure {
+                            guard !throughAgent else { throw failure }
+                            if let complaint = LinuxGuestAgent.installerComplaint(in: failure) {
+                                machine.lastError = VMErrorInfo(title: failureTitle, message: Self.sentence(complaint))
+                                return
+                            }
+                            // No way in over SSH, or none to become root there. Whoever is at the guest's
+                            // screen can install from the disc.
+                        }
+                    }
+                    try await attachGuestToolsDisc(to: machine)
+                    let command = guestToolsInstallCommand(for: machine)
+                    if isWindows {
                         machine.notice = VMErrorInfo(
-                            title: "The guest tools are installed in “\(machine.name)”",
-                            message: isMac
-                                ? "SwiftVM now shares the clipboard with it, sees its version and addresses, and shuts it down without a question on its screen."
-                                : "SwiftVM now sees the system's version and addresses, keeps its clock right after a suspend, and can sign in over SSH without a network."
+                            title: "Install the guest tools in “\(machine.name)”",
+                            message: "The guest tools disc and the drivers for virtual machines are now plugged in. \(command) Restart Windows afterwards, so that its display follows the window."
                         )
                         return
-                    } catch let failure as ProcessRunner.Failure {
-                        if let complaint = LinuxGuestAgent.installerComplaint(in: failure) {
-                            // The installer ran and gave up. From the disc it would give up the same way.
-                            machine.lastError = VMErrorInfo(title: failureTitle, message: Self.sentence(complaint))
-                            return
-                        }
-                        // No way in over SSH, or none to become root there. Whoever is at the guest's
-                        // screen can install from the disc.
                     }
-                }
-                try await attachGuestToolsDisc(to: machine)
-                let command = guestToolsInstallCommand(for: machine)
-                if isWindows {
+                    let terminal = isMac ? "in Terminal in the virtual machine" : "in a terminal in the virtual machine"
                     machine.notice = VMErrorInfo(
                         title: "Install the guest tools in “\(machine.name)”",
-                        message: "The guest tools disc and the drivers for virtual machines are now plugged in. \(command) Restart Windows afterwards, so that its display follows the window."
+                        message: "The guest tools disc is now plugged in. To install from it, run this \(terminal), and eject the disc afterwards:\n\n\(command)",
+                        copyableText: command
                     )
-                    return
                 }
-                let terminal = isMac ? "in Terminal in the virtual machine" : "in a terminal in the virtual machine"
-                machine.notice = VMErrorInfo(
-                    title: "Install the guest tools in “\(machine.name)”",
-                    message: "The guest tools disc is now plugged in. To install from it, run this \(terminal), and eject the disc afterwards:\n\n\(command)",
-                    copyableText: command
-                )
             } catch {
                 machine.lastError = VMErrorInfo(title: failureTitle, message: error.localizedDescription)
             }
