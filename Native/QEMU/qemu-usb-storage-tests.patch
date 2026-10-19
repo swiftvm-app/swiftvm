@@ -1,0 +1,144 @@
+Exercise the USB CD read completion that can strand a queued CSW.
+The null backend delays reads so the data packet and status packet are queued
+together; both must complete, and another command must still work afterward.
+
+--- a/tests/qtest/usb-hcd-xhci-test.c
++++ b/tests/qtest/usb-hcd-xhci-test.c
+@@ -42,12 +42,17 @@
+ 
+ #define TRB_C                   (1 << 0)
+ #define TRB_TR_IOC              (1 << 5)
++#define TRB_TR_IDT              (1 << 6)
++#define TRB_TR_DIR              (1 << 16)
+ #define TRB_TR_SIA              (1U << 31)
+ #define TRB_TYPE(t)             ((t) << 10)
+ #define TRB_GET_TYPE(control)   (((control) >> 10) & 0x3f)
+ #define TRB_GET_CCODE(status)   ((status) >> 24)
+ #define TRB_GET_SLOT(control)   ((control) >> 24)
+ 
++#define TR_NORMAL               1
++#define TR_SETUP                2
++#define TR_STATUS               4
+ #define TR_ISOCH                5
+ #define CR_ENABLE_SLOT          9
+ #define CR_ADDRESS_DEVICE       11
+@@ -57,8 +62,10 @@
+ #define CC_SUCCESS              1
+ 
+ #define EP_TYPE_ISOCH_OUT       1
++#define EP_TYPE_BULK_OUT        2
+ #define EP_TYPE_CONTROL         4
+ #define EP_TYPE_ISOCH_IN        5
++#define EP_TYPE_BULK_IN         6
+ 
+ #define XHCI_RING_TRBS          64
+ #define XHCI_MICROFRAME_NS      125000
+@@ -423,12 +430,108 @@
+     xhci_test_end(&x);
+ }
+ 
++static void xhci_wait_transfer(XHCITest *x)
++{
++    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
++    uint32_t status, control;
++
++    while (!xhci_next_event(x, &status, &control)) {
++        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
++        g_usleep(1000);
++    }
++    g_assert_cmpuint(TRB_GET_TYPE(control), ==, ER_TRANSFER);
++    g_assert_cmpuint(TRB_GET_CCODE(status), ==, CC_SUCCESS);
++}
++
++/*
++ * Queue the CSW behind a pending read on the same bulk endpoint. Completing
++ * the data packet re-enters usb-storage with the CSW: the finished SCSI request
++ * must already be gone, or the CSW is parked forever. Windows recovers only
++ * after its 10-second USB timeout and retries, slowing every installer read.
++ */
++static void test_usb_bot_queued_csw(void)
++{
++    XHCITest x;
++    uint64_t ep0, in, out, cbw, data, csw;
++    unsigned int in_idx = 0;
++    uint8_t bytes[2048];
++
++    if (!xhci_test_supported("usb-bot") || !xhci_test_supported("scsi-cd")) {
++        return;
++    }
++
++    xhci_test_start(&x, "-drive if=none,id=cd,format=raw,file=null-co://,"
++                        "file.read-zeroes=on,file.latency-ns=1000000000 "
++                        "-device usb-bot,id=bot "
++                        "-device scsi-cd,bus=bot.0,drive=cd");
++    ep0 = qtest_readq(x.qts, x.input_ctx + 0x48) & ~0xfULL;
++    /* SET_CONFIGURATION(1), followed by its IN status stage. */
++    xhci_write_trb(&x, ep0, 0x00010900, 8,
++                   TRB_TYPE(TR_SETUP) | TRB_TR_IDT | TRB_C);
++    xhci_write_trb(&x, ep0 + 16, 0, 0,
++                   TRB_TYPE(TR_STATUS) | TRB_TR_DIR | TRB_TR_IOC | TRB_C);
++    xhci_writel(&x, x.doorbell + 4 * x.slot, 1);
++    xhci_wait_transfer(&x);
++
++    in = xhci_configure_ep(&x, 3, EP_TYPE_BULK_IN, 0, 1024);
++    out = xhci_configure_ep(&x, 4, EP_TYPE_BULK_OUT, 0, 1024);
++    cbw = xhci_alloc_page(&x);
++    data = xhci_alloc_page(&x);
++    csw = xhci_alloc_page(&x);
++
++    /* TEST_UNIT_READY clears power-on unit attention, then two READ(10)s. */
++    for (unsigned int tag = 1; tag <= 3; tag++) {
++        bool read = tag != 1;
++
++        qtest_memset(x.qts, cbw, 0, 31);
++        qtest_writel(x.qts, cbw, 0x43425355);
++        qtest_writel(x.qts, cbw + 4, tag);
++        qtest_writel(x.qts, cbw + 8, read ? sizeof(bytes) : 0);
++        qtest_writeb(x.qts, cbw + 12, 0x80);
++        qtest_writeb(x.qts, cbw + 14, read ? 10 : 6);
++        if (read) {
++            qtest_writeb(x.qts, cbw + 15, 0x28);
++            qtest_writeb(x.qts, cbw + 23, 1);
++            qtest_memset(x.qts, data, 0xa5, sizeof(bytes));
++            xhci_write_trb(&x, in + 16 * in_idx++, data, sizeof(bytes),
++                           TRB_TYPE(TR_NORMAL) | TRB_TR_IOC | TRB_C);
++        }
++        qtest_memset(x.qts, csw, 0xa5, 13);
++        xhci_write_trb(&x, in + 16 * in_idx++, csw, 13,
++                       TRB_TYPE(TR_NORMAL) | TRB_TR_IOC | TRB_C);
++        xhci_write_trb(&x, out + 16 * (tag - 1), cbw, 31,
++                       TRB_TYPE(TR_NORMAL) | TRB_TR_IOC | TRB_C);
++        xhci_writel(&x, x.doorbell + 4 * x.slot, 4);
++        xhci_wait_transfer(&x);
++        xhci_writel(&x, x.doorbell + 4 * x.slot, 3);
++
++        if (read) {
++            /* The backend delays the read so the data and CSW are queued. */
++            g_assert_false(xhci_next_event(&x, NULL, NULL));
++            xhci_wait_transfer(&x);
++            qtest_memread(x.qts, data, bytes, sizeof(bytes));
++            for (unsigned int i = 0; i < sizeof(bytes); i++) {
++                g_assert_cmpuint(bytes[i], ==, 0);
++            }
++        }
++        xhci_wait_transfer(&x);
++        g_assert_cmphex(qtest_readl(x.qts, csw), ==, 0x53425355);
++        g_assert_cmpuint(qtest_readl(x.qts, csw + 4), ==, tag);
++        g_assert_cmpuint(qtest_readl(x.qts, csw + 8), ==, 0);
++        if (read) {
++            g_assert_cmpuint(qtest_readb(x.qts, csw + 12), ==, 0);
++        }
++    }
++    xhci_test_end(&x);
++}
++
+ int main(int argc, char **argv)
+ {
+     int ret;
+ 
+     g_test_init(&argc, &argv, NULL);
+ 
++    qtest_add_func("/xhci/usb-bot/queued-csw", test_usb_bot_queued_csw);
+     qtest_add_func("/xhci/pci/hotplug", test_xhci_hotplug);
+     qtest_add_func("/xhci/pci/unplug/finalize", test_xhci_unplug_finalize);
+     if (qtest_has_device("usb-uas")) {
