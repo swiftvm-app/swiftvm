@@ -581,46 +581,60 @@ public final class VirtualMachine: Identifiable {
         return connection
     }
 
-    /// Has the guest's agent do `job` to its end, and returns what it put out. For a job that takes
-    /// nothing in and is over in a moment: one that doesn't finish its next frame within `patience`
-    /// is called off.
-    public func collect(_ job: GuestJob, patience: TimeInterval = 30) async throws -> Data {
+    /// Has the guest's agent do `job` to its end, and returns what it put out. Commands receive `input`
+    /// before end of input. For short jobs: one that doesn't finish within `patience` is called off.
+    public func collect(_ job: GuestJob, input: Data? = nil, patience: TimeInterval = 30) async throws -> Data {
         let connection = try await openJob(job)
         let descriptor = connection.fileDescriptor
         let name = name
         let outcome: Result<Data, GuestJobError> = await withCheckedContinuation { continuation in
             Thread.detachNewThread {
-                // A command is told at once that it has no input coming.
+                let writer = DispatchGroup()
                 if case .exec = job {
-                    JobFrame.write(.input, to: descriptor)
-                }
-                var collected = Data()
-                while true {
-                    guard let frame = try? JobFrame.read(from: descriptor, timeout: patience) else {
-                        continuation.resume(returning: .failure(.noAnswer(name: name)))
-                        return
-                    }
-                    switch frame.kind {
-                    case .output:
-                        guard collected.count + frame.payload.count <= Self.longestCollectedOutput else {
-                            continuation.resume(returning: .failure(.tooLong))
-                            return
-                        }
-                        collected.append(frame.payload)
-                    case .end:
-                        let end = frame.end ?? .success
-                        if let error = end.shownError {
-                            continuation.resume(returning: .failure(.refused(error)))
-                        } else if end.status != 0 {
-                            continuation.resume(returning: .failure(.refused("The guest tools in “\(name)” gave up, without saying why.")))
-                        } else {
-                            continuation.resume(returning: .success(collected))
-                        }
-                        return
-                    case .input, .errorOutput:
-                        break
+                    _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+                    writer.enter()
+                    Thread.detachNewThread {
+                        defer { writer.leave() }
+                        if let input, !input.isEmpty, !JobFrame.write(.input, input, to: descriptor) { return }
+                        JobFrame.write(.input, to: descriptor)
                     }
                 }
+                let deadline = Date().addingTimeInterval(patience)
+                let result: Result<Data, GuestJobError> = {
+                    var collected = Data()
+                    var errors = Data()
+                    while true {
+                        guard let frame = try? JobFrame.read(from: descriptor, timeout: deadline.timeIntervalSinceNow) else {
+                            return .failure(.noAnswer(name: name))
+                        }
+                        switch frame.kind {
+                        case .output:
+                            guard collected.count + frame.payload.count <= Self.longestCollectedOutput else {
+                                return .failure(.tooLong)
+                            }
+                            collected.append(frame.payload)
+                        case .errorOutput:
+                            errors.append(frame.payload.prefix(max(0, 2000 - errors.count)))
+                        case .end:
+                            let end = frame.end ?? .success
+                            if let error = end.shownError {
+                                return .failure(.refused(error))
+                            } else if end.status != 0 {
+                                let reason = ShownText.line(String(decoding: errors, as: UTF8.self), limit: GuestJobError.longestReason)
+                                return .failure(.refused(reason.isEmpty ? "The guest tools in “\(name)” gave up, without saying why." : reason))
+                            } else {
+                                return .success(collected)
+                            }
+                        case .input:
+                            break
+                        }
+                    }
+                }()
+                // Read while sending: a command can fill its output pipe before consuming its input.
+                // Wake a stalled writer, and wait before the descriptor's number can be reused.
+                shutdown(descriptor, SHUT_RDWR)
+                writer.wait()
+                continuation.resume(returning: result)
             }
         }
         // Hanging up is what ends the job on the agent's side.

@@ -6,8 +6,8 @@ import VMCore
 ///
 /// The agent is a program built from this project's sources (`Sources/GuestAgentMac`) that the app carries
 /// inside itself. Whichever way it travels, it arrives as one shell script with the program and its two
-/// launchd jobs inside: sent over SSH when a new machine has set itself up, or read from the guest tools
-/// disc. Installing takes root in the guest, so it takes the account's password one way or the other.
+/// launchd jobs inside: sent over SSH when a new machine has set itself up, through the existing agent
+/// for a reinstall, or read from the guest tools disc. Installing takes root in the guest.
 public enum MacGuestAgent {
     public enum AgentError: Error, LocalizedError {
         case missingProgram

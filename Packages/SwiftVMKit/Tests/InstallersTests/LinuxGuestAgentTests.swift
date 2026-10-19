@@ -18,7 +18,8 @@ import VMCore
         #expect(arguments.contains("ServerAliveInterval=5"))
         #expect(arguments.suffix(2) == [
             "web",
-            "sudo -n sh -c 'mkdir -p /usr/local/lib/swiftvm && cat > /usr/local/lib/swiftvm/install.sh && sh /usr/local/lib/swiftvm/install.sh'",
+            "sudo -n sh -c 'umask 077; d=$(mktemp -d /tmp/swiftvm-tools.XXXXXXXX) || exit 1; "
+                + "cat > \"$d/install.sh\" && sh \"$d/install.sh\"; code=$?; rm -rf \"$d\"; exit $code'",
         ])
     }
 

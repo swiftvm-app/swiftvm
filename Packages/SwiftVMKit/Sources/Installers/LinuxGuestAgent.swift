@@ -99,10 +99,12 @@ public enum LinuxGuestAgent {
 
     // MARK: Over SSH
 
-    /// The `ssh` arguments that take the installer from standard input, put it where a guest keeps it,
-    /// and run it there as root.
+    /// Receives the installer in a private folder, never overwriting the installed copy before the
+    /// installer's lock has excluded an earlier attempt that may still be running.
     static func installArguments(alias: String, configURL: URL) -> [String] {
-        [
+        let asRoot = "umask 077; d=$(mktemp -d /tmp/swiftvm-tools.XXXXXXXX) || exit 1; "
+            + "cat > \"$d/install.sh\" && sh \"$d/install.sh\"; code=$?; rm -rf \"$d\"; exit $code"
+        return [
             "-F", configURL.path,
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
@@ -110,7 +112,7 @@ public enum LinuxGuestAgent {
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=2",
             alias,
-            "sudo -n sh -c 'mkdir -p \(directory) && cat > \(installerPath) && sh \(installerPath)'",
+            "sudo -n sh -c '\(asRoot)'",
         ]
     }
 

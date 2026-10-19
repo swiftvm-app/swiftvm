@@ -33,6 +33,30 @@ Machines that SwiftVM sets up come with the guest tools:
 
 `swiftvm info <machine>` shows the installed version.
 
+## Reinstalling or updating
+
+While a guest is running, choose **Reinstall Guest Tools** in the **Virtual
+Machine** menu or the machine's actions menu. This remains available when the
+tools are already current. One click installs the tools bundled with this copy
+of SwiftVM on Linux, macOS, or Windows, without a terminal or password prompt,
+when the existing tools are connected and [automation](automation.md) is on.
+
+The action shows **Installing Guest Tools…** and cannot be started again while
+it runs. SwiftVM waits for the installer to finish and for the tools to answer
+before reporting success. macOS receives its installer directly over the agent
+connection. On Linux and Windows, a tools disc attached for the automatic installation
+is ejected afterwards; a disc that was already attached stays attached. Windows'
+drivers disc stays available, and Windows may need a restart to finish applying
+driver changes; SwiftVM doesn't restart it automatically.
+
+The command-line equivalent is `swiftvm install-tools <machine>`. If the tools
+are disconnected, too old to run commands, or automation is off, SwiftVM uses
+the installation and recovery paths below instead. The menu then offers
+**Install Guest Tools…** when no tools are connected. Failed automatic installs
+keep their discs attached for recovery; a timeout is not a successful install.
+The installer may still be running after SwiftVM stops waiting. A retry through
+SSH or the current tools disc refuses to install until that attempt has ended.
+
 ## Installing
 
 For another running guest, choose **Install Guest Tools…** in the machine's

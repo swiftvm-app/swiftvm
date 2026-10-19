@@ -74,9 +74,9 @@ Usage: swiftvm <command> [arguments]
   delete-template <template>        Move a template to the Trash. Machines made from it stay as they are
   plug <machine> | unplug <machine> Plug the machine's network cable in, or pull it
   install-tools <machine> [--disc] [--password <password>]
-                                    Install the guest tools in a running machine over SSH. macOS wants
-                                    the account's password for that. With --disc, plug in the guest
-                                    tools disc instead, to install from inside the machine
+                                    Install or reinstall the guest tools in a running machine. Connected
+                                    tools replace themselves; otherwise use SSH (macOS needs --password).
+                                    With --disc, plug in the tools disc to install from inside the guest
   share-clipboard <machine> on|off  Share what is copied on this Mac with the machine and the other way
                                     round, or stop. macOS guests need the guest tools for it
   usb                               List the USB devices this Mac has given the app

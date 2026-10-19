@@ -24,6 +24,10 @@ fail() {
 [ "$(id -u)" -eq 0 ] || fail "this has to run as root, for example: sudo sh $0"
 command -v systemctl >/dev/null 2>&1 || fail "this system doesn't use systemd, which the guest agent needs"
 
+# SSH and disc recovery must exclude an installer whose host has stopped waiting for it too.
+exec 9>/run/swiftvm-reinstall.lock
+flock -n 9 || fail "the guest tools are already being installed; wait for that installation to finish"
+
 if [ "${1:-}" = "--remove" ]; then
     systemctl disable --now swiftvm-agent.service swiftvm-sshd-vsock.socket >/dev/null 2>&1 || true
     rm -f "$units/swiftvm-agent.service" "$units/swiftvm-sshd-vsock.socket" "$units/swiftvm-sshd-vsock@.service"
@@ -40,8 +44,8 @@ fi
 
 [ -x /usr/bin/python3 ] || fail "the guest agent needs Python 3 at /usr/bin/python3. Install it and run this again"
 
-mkdir -p "$directory"
 umask 022
+mkdir -p "$directory"
 
 cat > "$directory/swiftvm-agent.py.new" <<'SWIFTVM_END_OF_FILE'
 @@swiftvm-agent.py@@
