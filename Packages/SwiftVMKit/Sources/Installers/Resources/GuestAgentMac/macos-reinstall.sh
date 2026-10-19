@@ -11,8 +11,7 @@ cat > "$d/install.sh"
 cat > "$d/run.sh" <<'SWIFTVM_RUNNER'
 #!/bin/sh
 cd /var/root/swiftvm-reinstall-@@token@@ || exit 1
-# Keep the lock file: removing it could let another attempt lock a different inode.
-if lockf -k -t 0 /var/root/swiftvm-reinstall.lock /bin/sh ./install.sh > install.log 2>&1; then
+if /bin/sh ./install.sh > install.log 2>&1; then
     echo ok > status.new
 else
     printf 'failed: ' > status.new

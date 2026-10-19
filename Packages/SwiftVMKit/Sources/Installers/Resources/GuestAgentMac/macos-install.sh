@@ -31,6 +31,10 @@ fail() {
 [ "$(uname -s)" = Darwin ] || fail "these are the guest tools for macOS, and this system isn't macOS"
 [ "$(id -u)" -eq 0 ] || fail "this has to run as root, for example: sudo sh $0"
 
+# Every transport takes the same lock. Keep its file so another attempt cannot lock a different inode.
+exec 9>/var/root/swiftvm-reinstall.lock
+lockf -t 0 9 || fail "the guest tools are already being installed; wait for that installation to finish"
+
 # The user at the screen, in whose session the agent's other half runs. Root while nobody is logged in.
 console_user=$(stat -f %u /dev/console 2>/dev/null || echo 0)
 

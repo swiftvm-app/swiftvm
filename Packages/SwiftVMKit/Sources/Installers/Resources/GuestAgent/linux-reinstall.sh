@@ -19,8 +19,7 @@ trap - EXIT
 cat > "$d/run.sh" <<'SWIFTVM_RUNNER'
 #!/bin/sh
 cd /run/swiftvm-reinstall-@@token@@ || exit 1
-# A timed-out host may try again while its detached installer still runs.
-if flock -n /run/swiftvm-reinstall.lock /bin/sh ./install.sh > install.log 2>&1; then
+if /bin/sh ./install.sh > install.log 2>&1; then
     echo ok > status.new
 else
     printf 'failed: ' > status.new

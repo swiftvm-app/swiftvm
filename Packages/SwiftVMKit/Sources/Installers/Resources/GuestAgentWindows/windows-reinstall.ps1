@@ -20,16 +20,11 @@ if (Test-Path -LiteralPath (Join-Path $source 'graphics-driver.zip')) {
 @'
 $ErrorActionPreference = 'Stop'
 $d = $PSScriptRoot
-$lock = $null
 try {
-    # The handle also excludes an installer whose host has stopped waiting for it.
-    $lock = [IO.File]::Open((Join-Path $env:ProgramFiles 'SwiftVM\reinstall.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
     & (Join-Path $d 'install.ps1') -Source $d *> (Join-Path $d 'install.log')
     'ok' | Set-Content -LiteralPath (Join-Path $d 'status.new')
 } catch {
     ('failed: ' + $_.Exception.Message) | Set-Content -LiteralPath (Join-Path $d 'status.new')
-} finally {
-    if ($lock) { $lock.Dispose() }
 }
 Move-Item -LiteralPath (Join-Path $d 'status.new') -Destination (Join-Path $d 'status')
 '@ | Set-Content -LiteralPath (Join-Path $d 'run.ps1')

@@ -98,6 +98,20 @@ import VMCore
         #expect(requests == 1)
     }
 
+    @Test func losingAutomationAfterLaunchLeavesTheDetachedInstallerAlone() async throws {
+        let install = try GuestToolsReinstallation(family: .linux)
+        var jobs: [GuestJob] = []
+        await #expect(throws: GuestJobError.notAllowed(name: "Guest")) {
+            try await install.run(expectedVersion: "1.0", execute: { job, _ in
+                jobs.append(job)
+                if job == install.launch { return Data() }
+                throw GuestJobError.notAllowed(name: "Guest")
+            }, isRunning: { true }, connectedVersion: { "1.0" }, pollInterval: .zero)
+        }
+        // Failed verification must neither start another installer nor remove one that still runs.
+        #expect(jobs == [install.launch, install.status])
+    }
+
     @Test func overlappingAttemptsAreRefusedAndFailureReleasesTheMachine() async throws {
         let installation = GuestToolsInstallation()
         let id = UUID()

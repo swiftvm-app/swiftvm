@@ -54,6 +54,8 @@ are disconnected, too old to run commands, or automation is off, SwiftVM uses
 the installation and recovery paths below instead. The menu then offers
 **Install Guest Tools…** when no tools are connected. Failed automatic installs
 keep their discs attached for recovery; a timeout is not a successful install.
+The installer may still be running after SwiftVM stops waiting. A retry through
+SSH or the current tools disc refuses to install until that attempt has ended.
 
 ## Installing
 

@@ -7,10 +7,21 @@
 #
 # A machine keeps the display driver it was made with. The 3D driver comes with a new machine's setup
 # only when it was made to draw with the Mac's GPU; later, the guest tools only bring it up to date.
-param([string]$Source = $PSScriptRoot, [switch]$NewMachine)
+param([string]$Source = $PSScriptRoot, [switch]$NewMachine, [switch]$Locked)
 $ErrorActionPreference = 'Stop'
 
 $program = Join-Path $env:ProgramFiles 'SwiftVM'
+# Disc recovery must exclude a detached installer even when its host has stopped waiting.
+if (-not $Locked) {
+    New-Item -ItemType Directory -Force -Path $program | Out-Null
+    $lock = [IO.File]::Open((Join-Path $program 'reinstall.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    try {
+        & $PSCommandPath -Source $Source -NewMachine:$NewMachine -Locked
+    } finally {
+        $lock.Dispose()
+    }
+    return
+}
 $executable = Join-Path $program 'swiftvm-agent.exe'
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $graphicsArchive = Join-Path $Source 'graphics-driver.zip'
@@ -56,7 +67,6 @@ if ($hasGraphicsDriver) {
 if (-not (Test-Path $compiler)) {
     throw 'This Windows has no .NET Framework 4 compiler, which the guest agent is built with.'
 }
-New-Item -ItemType Directory -Force -Path $program | Out-Null
 # Built in the program's own folder, so that it has that folder's permissions: everyone may run it,
 # which its half in each session needs. A file moved from SYSTEM's temporary folder keeps that one's.
 $built = Join-Path $program "swiftvm-agent-$PID.exe"
