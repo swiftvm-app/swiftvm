@@ -56,7 +56,7 @@ and `swiftvm info <machine>`. You can use the machine while setup runs.
 | Xfce | `xfce` | All | 2 GB / 16 GB |
 | Cinnamon | `cinnamon` | All | 4 GB / 24 GB |
 | Hyprland | `hyprland` | Arch Linux | 4 GB / 16 GB |
-| Omarchy (experimental) | `omarchy` | Arch Linux | 8 GB / 64 GB |
+| Omarchy (ARM edge) | `omarchy` | Arch Linux | 8 GB / 64 GB |
 | Docker | `docker` | All | 2 GB / 16 GB |
 | Web Server | `web-server` | All | Default machine settings |
 | Updates | `updates` | All | Default machine settings |
@@ -71,8 +71,9 @@ are only partly built. It remains available on Ubuntu and Debian.
 
 ## Desktops
 
-A desktop needs an account password. Installation takes about ten minutes
-(longer for Omarchy), then the machine restarts into its login screen.
+A desktop needs an account password. Most desktops install packages on the first
+start, taking about ten minutes. Omarchy downloads a ready-made desktop instead.
+The machine restarts into its login screen when setup finishes.
 Scripts selected after the desktop finish before that restart.
 
 Desktop scripts install the desktop, a browser, and `spice-vdagent` for
@@ -80,9 +81,10 @@ Desktop scripts install the desktop, a browser, and `spice-vdagent` for
 SSH configuration, and turn off guest sleep. Use SwiftVM's power controls
 instead; machines with graphics acceleration can pause, but not suspend to disk.
 
-**Graphics acceleration** draws with the Mac's GPU and is off by default for
-new Linux machines. It is recommended for Hyprland and Omarchy. Turn it on before
-creating the machine, or pass `--gpu`. Leave it off to use suspend or Rosetta.
+**Graphics acceleration** draws with the Mac's GPU. It is enabled by default
+for new Omarchy machines when available, and recommended for Hyprland. Turn it
+on before creating the machine, or pass `--gpu`. Use `--no-gpu` or `--rosetta`
+to keep Apple's backend, with suspend support.
 Without it, the processors draw every pixel, so a large Retina window can be
 slow; Xfce is the lightest choice.
 
@@ -97,36 +99,49 @@ In Hyprland and Omarchy:
 
 - Super is the Command key. Command-Q opens a terminal (foot) in Hyprland;
   Command-Space opens the menu in Omarchy.
-- Animations, blur, and shadows are off. Remove the `hl.config` block SwiftVM
-  added to `~/.config/hypr/hyprland.lua` (Hyprland) or
-  `~/.config/hypr/looknfeel.lua` (Omarchy) to turn them on.
-- Hyprland starts through `/usr/local/bin/Hyprland`. Without graphics
-  acceleration, this makes it finish drawing each frame before showing it;
-  otherwise closed windows and half-drawn areas stay on screen.
-- Clipboard sharing may not work in every Wayland session; use Xfce or
-  Cinnamon if you need it. If the display goes dark, click in the window or
-  press a key.
+- The Hyprland setup turns animations, blur, and shadows off. Remove the
+  `hl.config` block SwiftVM added to `~/.config/hypr/hyprland.lua` to turn them on.
+  Omarchy keeps upstream's normal animations on a GPU-backed machine and its
+  conservative VM settings without acceleration. Its Appearance menu controls
+  animations and window opacity.
+- The standalone Hyprland setup starts through `/usr/local/bin/Hyprland`.
+  Without graphics acceleration, this makes it finish drawing each frame before
+  showing it; otherwise closed windows and half-drawn areas stay on screen.
+- Accelerated Omarchy supports opt-in [text clipboard sharing](sharing.md#clipboard)
+  through the guest tools. Other Wayland desktops need `wl-clipboard` and
+  data-control support. Without acceleration, sharing depends on `spice-vdagent`
+  and the desktop. If the display goes dark, click in the window or press a key.
 
 ### Omarchy
 
-The `omarchy` script is an experimental ARM adaptation of
-[Omarchy](https://omarchy.org) 4.0.4, built from its pinned source rather
-than the PC installer. SwiftVM keeps the machine's bootloader, network, SSH,
-and firewall setup.
+The built-in `omarchy` setup uses a ready-made [Omarchy](https://omarchy.org)
+ARM edge image, following [Try Omarchy's](https://github.com/omacom/try-omarchy)
+prebuilt-image approach. The desktop and applications are installed once when
+the image is built, rather than compiled inside every new machine. First boot
+creates your account, configures the virtual hardware, and installs SwiftVM's
+guest tools.
 
-- **Needs** 8 GB of memory, a 64 GB disk, and internet access during setup
-  and on the first login, when Omarchy finishes setting up the account.
-- **Apps** come from Arch Linux ARM; those it lacks are built from
-  [Omarchy's package recipes](https://github.com/omacom-io/omarchy-pkgs), and
-  Mise and Obsidian come from their official ARM releases.
-- **Not available:** OBS Studio, Pinta, Tensaku, `tzupdate`,
-  `hyprland-preview-share-picker`, and `asdcontrol`. The reasons are in
-  `/usr/local/share/swiftvm/omarchy/unavailable-packages.txt`.
-- **The screensaver is off**: without a GPU it keeps every processor busy
-  until the screen locks. Turn it on with `omarchy-toggle-screensaver`.
-- **Updates** keep Omarchy and the apps SwiftVM built at the versions setup
-  installed; everything else updates from Arch Linux ARM. A newer Omarchy
-  needs a new machine.
+- **Needs** 8 GB of memory and a 64 GB disk. The image download needs internet;
+  its verified pieces are cached and interrupted downloads can resume.
+- **Upstream ARM edge** supplies Omarchy, its kernel, settings, and applications.
+  ARM support is on the edge channel, so expect changes and occasional upstream
+  regressions. Not every x86 application is available for ARM.
+- **New machines** resolve the newest published compatible image, not a version
+  pinned to the app. Images refresh monthly; each download still uses immutable
+  URLs and verifies every piece and the assembled image. If GitHub is unreachable,
+  a previously resolved image can be used only if it is already downloaded.
+- **Updates** inside existing machines use Omarchy's upstream repositories and
+  commands. Refreshing the installation image does not change existing machines.
+- **Storage and boot** use Btrfs and Limine, as upstream does. NetworkManager
+  manages the network; SSH is allowed through Omarchy's firewall.
+- **Existing machines stay unchanged.** This image is used only when creating
+  an Arch machine with the built-in Omarchy setup. A local script called
+  `omarchy` still starts from plain Arch, and a second desktop can't be combined
+  with the ready-made image.
+
+```bash
+swiftvm create arch --name Omarchy --script omarchy --password 'a password'
+```
 
 ## Your own scripts
 
@@ -192,6 +207,7 @@ line. All keys are optional; unknown keys are ignored.
 | `category` | Group in the list, such as `development`; `desktop` requires an account password |
 | `systems` | Supported families or releases, such as `ubuntu debian` or `ubuntu-26.04`; omitted means any |
 | `memory`, `disk` | Minimum sizes in GB |
+| `graphics` | `recommended` to prefer GPU acceleration when available; `optional` leaves the default off. An explicit user choice takes precedence |
 | `restart` | `yes` to restart after all scripts succeed |
 
 ### How it runs

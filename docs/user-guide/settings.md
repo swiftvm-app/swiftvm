@@ -70,7 +70,8 @@ Choose **Settings…** in a machine's menu, or the gear in its window's toolbar.
 | Startup | **Secure Boot** and **Rosetta for x86-64 Programs**, for Linux guests |
 
 Shut down the machine to change processors, memory, display, audio, or startup
-settings. Linux clipboard settings also require a shutdown. Shared folders,
+settings. Linux clipboard settings require a shutdown only without graphics
+acceleration. Shared folders,
 port forwards, removable images, and supported USB devices can change while
 the machine runs. Microphone input and physical USB devices are unavailable
 for Windows guests.

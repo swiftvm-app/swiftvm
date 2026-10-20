@@ -58,6 +58,15 @@
         "url": "https://github.com/swiftvm-app/swiftvm/releases/download/arch-image-2026.10.16/archlinuxarm-2026.10.16.qcow2",
         "sha256": "9db699ca9d7820b3b9f26a0bce4f56478fe1e312d71749244527987bf08458a1"
       },
+      "setupImages": {
+        "omarchy": {
+          "url": "https://api.github.com/repos/swiftvm-app/swiftvm/releases",
+          "latestRelease": {
+            "tagPrefix": "omarchy-image-",
+            "manifest": "omarchy-arm64-edge-v1.json"
+          }
+        }
+      },
       "installers": [
         {
           "name": "Archboot",

@@ -307,13 +307,9 @@ extension AppModel {
             return details(machine)
         case .shareClipboard:
             guard let isOn = request.isOn else { return .failure("Missing on or off.") }
-            guard machine.configuration.os.family != .linux || machine.configuration.engine == .virtualization else {
-                return .failure("“\(machine.name)” has graphics acceleration, which doesn't share the clipboard yet.")
-            }
-            // A Linux guest shares the clipboard through a device, which like all hardware is there
-            // from the start or not at all. The agent of a macOS or Windows guest is simply told, or no
-            // longer told.
-            guard machine.configuration.os.family != .linux || machine.state == .stopped
+            // Linux on Apple's backend shares through a device, which must be there from the start.
+            // On QEMU the guest agent is simply told, or no longer told, like macOS and Windows.
+            guard machine.configuration.os.family != .linux || machine.configuration.engine == .qemu || machine.state == .stopped
                 || machine.configuration.clipboard.isShared == isOn
             else {
                 return .failure("Shut down “\(machine.name)” first: this guest shares the clipboard through a device, which can't be added or taken away while it is up or suspended.")
@@ -731,9 +727,10 @@ extension AppModel {
         if isMac, parameters.acceleratesGraphics != nil {
             return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.")
         }
-        let acceleratesGraphics = parameters.acceleratesGraphics ?? false
+        let acceleratesGraphics = parameters.acceleratesGraphics
+            ?? (setupScripts.recommendsGraphicsAcceleration && !usesRosetta && qemuProvider?.canAccelerateGraphics == true)
         if acceleratesGraphics {
-            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Leave out --gpu to use Rosetta, or --rosetta to use the GPU.") }
+            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Use --no-gpu to use Rosetta, or leave out --rosetta to use the GPU.") }
             guard qemuProvider?.canAccelerateGraphics == true else {
                 return .failure("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.")
             }

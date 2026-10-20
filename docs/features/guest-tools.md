@@ -13,7 +13,7 @@ connection.
 | **Shut Down** works at once, without a question on the guest's screen | Yes | Yes | Yes |
 | SwiftVM shows what a [setup script](setup-scripts.md) is doing | Yes | No | SwiftVM's own setup |
 | [Shared folders](sharing.md) are mounted | Yes | macOS mounts them by itself | As drive Z: |
-| [Shared clipboard](sharing.md#clipboard) | Uses `spice-vdagent` instead | Yes | Yes |
+| [Shared clipboard](sharing.md#clipboard) | Wayland with graphics acceleration; otherwise `spice-vdagent` | Yes | Yes |
 | The time zone follows your Mac's, once | No | Yes | Yes |
 | [SSH without a network](ssh.md#without-a-network) on older systems | Yes | No | No |
 | `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes | Yes |

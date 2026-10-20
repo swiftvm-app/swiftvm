@@ -29,7 +29,7 @@ public final class SystemClipboard: Clipboard {
 /// Keeps this Mac's clipboard and those of the guests that share theirs the same: text copied on the Mac
 /// can be pasted in every such guest, and text copied in one of them on the Mac and in the others.
 ///
-/// A guest takes part while its agent is connected and offers to (macOS guests with the guest tools), and
+/// A guest takes part while its agent is connected and offers to share, and
 /// its machine has clipboard sharing turned on. Only text is shared, and only what fits in one of the
 /// agent's messages.
 ///

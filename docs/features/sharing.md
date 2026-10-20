@@ -49,15 +49,20 @@ Text you copy on your Mac can be pasted in the guest, and the other way round.
 | Guest | Needs |
 | --- | --- |
 | macOS | The [guest tools](guest-tools.md) |
-| Linux | A desktop that runs `spice-vdagent` |
+| Linux, without graphics acceleration | A desktop that runs `spice-vdagent` |
+| Linux, with graphics acceleration | Guest tools 1.4 or newer, `wl-clipboard`, and a Wayland desktop with data-control support, such as Omarchy |
 | Windows | The [guest tools](guest-tools.md) |
 
-- SwiftVM's macOS and Windows guest tools share text, up to about 250 kB.
-  Linux clipboard support depends on `spice-vdagent` and the desktop session.
-- In macOS and Windows guests, the clipboard follows the account logged in
-  at the guest's screen.
+- The guest tools share text up to about 250 kB; formatting and images aren't shared.
+  Linux without graphics acceleration uses `spice-vdagent` instead.
+- With the guest tools, the clipboard follows the account logged in at the guest's
+  screen. Linux sharing pauses while the session is locked or inactive.
+- Accelerated Linux machines start with sharing off, including machines created
+  before this support was added. Enable **Share Clipboard** in settings or run
+  `swiftvm share-clipboard <machine> on` to opt in.
 - Turn it off for a guest that shouldn't see what you copy: **Share
   Clipboard** in the machine's settings, or
   `swiftvm share-clipboard <machine> off`.
-- Shut down a Linux machine before changing **Share Clipboard**. On macOS
-  and Windows, it can be changed while the machine runs.
+- Shut down a Linux machine without graphics acceleration before changing
+  **Share Clipboard**. With acceleration, and on macOS and Windows, it can be
+  changed while the machine runs.

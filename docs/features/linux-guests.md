@@ -90,10 +90,11 @@ SwiftVM doesn't set these guests up, so afterwards you may want to:
 
 ## Graphics acceleration
 
-**Graphics acceleration** is off by default for new Linux machines, in both
-the creation window and `swiftvm create`. When enabled, the guest draws with
-your Mac's GPU instead of drawing everything on its processors, making desktops
-such as GNOME, Hyprland, or Omarchy smoother.
+**Graphics acceleration** is enabled by default for new Omarchy machines when
+available, in both the creation window and `swiftvm create`. Other Linux setups
+leave it off unless their script recommends it. An explicit choice, including
+`--no-gpu` or `--rosetta`, takes precedence over the recommendation. When enabled,
+the guest draws with your Mac's GPU instead of drawing everything on its processors.
 Existing machines and machines made from templates keep their graphics settings.
 
 Turn it on before creating the machine, or pass `--gpu`, to use acceleration.
@@ -116,7 +117,10 @@ through virglrenderer to your Mac's GPU. That changes a few things:
   while the machine runs appear after it restarts. On a Quick Create machine
   the account has your Mac user's ID, so that what it writes there is yours on
   the Mac.
-- The clipboard isn't shared.
+- Text clipboard sharing is available through the guest tools in Wayland desktops
+  with data-control support, including Omarchy. It needs `wl-clipboard` in the guest.
+  It starts off for new accelerated Linux machines; enable **Share Clipboard** in
+  the machine's settings, or run `swiftvm share-clipboard <machine> on`.
 - The display follows the window at your Mac's full resolution: on a Retina
   display, twice its size in points at a scale of 2. GNOME and KDE Plasma
   follow it through `spice-vdagent`, and Hyprland through the guest tools.

@@ -40,7 +40,7 @@ import threading
 import time
 import zlib
 
-AGENT_VERSION = "1.3"
+AGENT_VERSION = "1.4"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
@@ -334,7 +334,7 @@ class System:
         groups = os.getgrouplist(account.pw_name, account.pw_gid)
         return {"user": account.pw_uid, "group": account.pw_gid, "extra_groups": groups}
 
-    def session_user(self):
+    def session_user(self, active_only=False):
         """The user whose desktop is on the screen, by number, or None when nobody is logged in there."""
         try:
             listing = subprocess.run(
@@ -355,16 +355,19 @@ class System:
                 continue
             if session.get("Remote") == "yes" or not session.get("User", "").isdigit():
                 continue
+            if active_only and session.get("LockedHint") == "yes":
+                continue
             if session.get("State") == "active":
                 return int(session["User"])
             # Someone who switched to another user and left their desktop open.
-            waiting = int(session["User"]) if waiting is None else waiting
+            if not active_only:
+                waiting = int(session["User"]) if waiting is None else waiting
         return waiting
 
     def session_properties(self, session):
         try:
             output = subprocess.run(
-                ["loginctl", "show-session", session, "-p", "User", "-p", "Type", "-p", "Class", "-p", "State", "-p", "Remote"],
+                ["loginctl", "show-session", session, "-p", "User", "-p", "Type", "-p", "Class", "-p", "State", "-p", "Remote", "-p", "LockedHint"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True,
             ).stdout.decode("utf-8", "replace")
         except (OSError, subprocess.SubprocessError):
@@ -1290,10 +1293,183 @@ def open_address_notices():
         return None
 
 
+class WaylandClipboard:
+    """Text sharing on QEMU, where there is no SPICE clipboard. Wayland watches for changes;
+    only session changes are polled. The watcher and selection owner run as the desktop's user."""
+
+    def __init__(self, agent):
+        self.agent = agent
+        self.watcher = None
+        self.session = None
+        self.received = b""
+        self.seen = None
+        self.first = True
+        self.next_look = 0
+
+    def active_session(self):
+        user = self.agent.system.session_user(active_only=True)
+        try:
+            account = pwd.getpwuid(user) if user is not None else None
+        except KeyError:
+            return None
+        environment = self.agent.system.environment(account) if account else {}
+        display = environment.get("WAYLAND_DISPLAY")
+        if not display:
+            return None
+        signature = None
+        if "hyprland" in environment.get("XDG_CURRENT_DESKTOP", "").lower():
+            # Omarchy's Wayland lock does not set logind's LockedHint. Ask the compositor as its
+            # user, and fail closed if it cannot say whether a session lock holds the screen.
+            sockets = glob.glob("/run/user/%d/hypr/*/.socket.sock" % user)
+            try:
+                signature = os.path.basename(os.path.dirname(max(sockets, key=os.path.getmtime)))
+                environment["HYPRLAND_INSTANCE_SIGNATURE"] = signature
+                monitors = json.loads(subprocess.run(
+                    ["hyprctl", "-j", "monitors"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, timeout=2, check=True,
+                    env=environment, **self.agent.system.identity(account),
+                ).stdout)
+                if not isinstance(monitors, list) or not monitors or any(not isinstance(m, dict) for m in monitors):
+                    return None
+                blockers = [m.get("solitaryBlockedBy") for m in monitors]
+                if any(not isinstance(b, list) or "LOCK" in b for b in blockers):
+                    return None
+                if not any("WORKSPACE" not in b for b in blockers):
+                    return None
+            except (OSError, subprocess.SubprocessError, ValueError):
+                return None
+        return (user, display, signature), account, environment
+
+    def look(self):
+        self.next_look = time.monotonic() + 3
+        active = self.active_session()
+        session, account, environment = active if active else (None, None, {})
+        if session == self.session and self.watcher and self.watcher.poll() is None:
+            return
+        self.close()
+        if session is None:
+            return
+        try:
+            self.watcher = subprocess.Popen(
+                [sys.executable, "-I", os.path.abspath(__file__), "--clipboard-watch"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=environment, **self.agent.system.identity(account),
+            )
+        except OSError:
+            return
+        self.session = session
+        os.set_blocking(self.watcher.stdout.fileno(), False)
+        self.agent.selector.register(self.watcher.stdout, selectors.EVENT_READ, self.changed)
+
+    def close(self):
+        if self.watcher:
+            try:
+                self.agent.selector.unregister(self.watcher.stdout)
+            except (KeyError, ValueError):
+                pass
+            self.watcher.terminate()
+            try:
+                self.watcher.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.watcher.kill()
+                self.watcher.wait()
+            self.watcher.stdout.close()
+        self.watcher = None
+        self.session = None
+        self.received = b""
+        self.seen = None
+        self.first = True
+
+    def changed(self, source):
+        if self.watcher is None or source is not self.watcher.stdout:
+            return
+        try:
+            data = os.read(source.fileno(), 64 * 1024)
+        except BlockingIOError:
+            return
+        if not data:
+            self.close()
+            return
+        self.received += data
+        while self.session and b"\n" in self.received:
+            line, _, self.received = self.received.partition(b"\n")
+            if len(line) >= MAX_LINE:
+                continue
+            try:
+                text = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(text, str):
+                continue
+            mark = hash(text)
+            if self.first:
+                # The initial selection predates sharing. Ask for the Mac's current text instead;
+                # the host only answers while this machine has sharing enabled.
+                self.first = False
+                if self.seen is None:
+                    self.seen = mark
+                self.agent.send({"type": "clipboard-request"})
+            elif mark != self.seen:
+                self.seen = mark
+                active = self.active_session() if text else None
+                if active and active[0] == self.session:
+                    self.agent.send({"type": "clipboard", "text": text})
+        if len(self.received) >= MAX_LINE:
+            self.close()
+
+    def put(self, text):
+        # Never retain host text for someone who logs in later, or write into an inactive session.
+        self.look()
+        if self.session is None or hash(text) == self.seen:
+            return
+        account = pwd.getpwuid(self.session[0])
+        try:
+            result = subprocess.run(
+                ["/usr/bin/wl-copy", "--type", "text/plain;charset=utf-8"], input=text.encode("utf-8"),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+                env=self.agent.system.environment(account), **self.agent.system.identity(account),
+            )
+            if result.returncode == 0:
+                self.seen = hash(text)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def clipboard_watch():
+    # The service deliberately leaves automation jobs alive when replaced. This watcher is not a
+    # job: arrange for Linux to end it with its parent, even on an ungraceful agent restart.
+    import ctypes
+    parent = os.getppid()
+    if parent == 1 or ctypes.CDLL(None).prctl(1, signal.SIGTERM, 0, 0, 0) != 0 or os.getppid() != parent:
+        return 1
+    os.execv("/usr/bin/wl-paste", [
+        "wl-paste", "--no-newline", "--type", "text", "--watch",
+        sys.executable, "-I", os.path.abspath(__file__), "--clipboard-event",
+    ])
+
+
+def clipboard_event():
+    # Bound both memory and the time spent reading a selection from another guest application.
+    signal.alarm(5)
+    text = ""
+    if os.environ.get("CLIPBOARD_STATE") not in ("nil", "clear", "sensitive"):
+        data = sys.stdin.buffer.read(MAX_LINE + 1)
+        if len(data) <= MAX_LINE:
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+    message = json.dumps({"type": "clipboard", "text": text}, separators=(",", ":"))
+    if len(message.encode("utf-8")) + 1 > MAX_LINE:
+        text = ""
+    print(json.dumps(text), flush=True)
+    return 0
+
+
 class Agent:
     """Serves the app, one connection at a time."""
 
-    def __init__(self, listener, system, is_the_app, jobs=None):
+    def __init__(self, listener, system, is_the_app, jobs=None, shares_clipboard=False):
         self.listener = listener
         # Where jobs are taken, if this agent takes any.
         self.jobs = jobs
@@ -1311,11 +1487,13 @@ class Agent:
         # The setup script's state as the app was last told, and when to look at it again.
         self.setup_reported = None
         self.next_setup_look = time.monotonic()
+        self.clipboard = WaylandClipboard(self) if shares_clipboard else None
         self.requests = {
             "set-clock": self.set_clock,
             "mount-shared-folders": self.mount_shared_folders,
             "shut-down": self.shut_down,
             "display-size": self.display_size,
+            "clipboard": self.copy_text,
         }
 
     def run(self):
@@ -1327,6 +1505,8 @@ class Agent:
         while True:
             # Without the app there is nobody to tell, and nothing to look for.
             next_look = min(self.next_look, self.next_setup_look)
+            if self.clipboard:
+                next_look = min(next_look, self.clipboard.next_look)
             timeout = max(0.0, next_look - time.monotonic()) if self.connection else None
             for key, _ in self.selector.select(timeout):
                 key.data(key.fileobj)
@@ -1334,6 +1514,8 @@ class Agent:
                 self.report_addresses()
             if self.connection and time.monotonic() >= self.next_setup_look:
                 self.report_setup()
+            if self.connection and self.clipboard and time.monotonic() >= self.clipboard.next_look:
+                self.clipboard.look()
 
     # Connections
 
@@ -1358,7 +1540,7 @@ class Agent:
             "agent": AGENT_VERSION,
             "system": self.system.describe(),
             "hostName": self.system.host_name(),
-            "features": FEATURES if self.jobs else [],
+            "features": (FEATURES if self.jobs else []) + (["clipboard"] if self.clipboard else []),
         })
         self.report_addresses(always=True)
         self.report_setup(always=True)
@@ -1375,6 +1557,8 @@ class Agent:
         threading.Thread(target=Job(connection, self.system).run, daemon=True).start()
 
     def hang_up(self):
+        if self.clipboard:
+            self.clipboard.close()
         if self.connection is None:
             return
         try:
@@ -1455,6 +1639,11 @@ class Agent:
             if error is not None:
                 result["error"] = error
             self.send(result)
+
+    def copy_text(self, message):
+        text = message.get("text")
+        if self.clipboard and isinstance(text, str) and len(text.encode("utf-8")) <= MAX_LINE:
+            self.clipboard.put(text)
 
     def set_clock(self, message):
         nanoseconds = message["nanoseconds"]
@@ -2187,7 +2376,10 @@ def main(arguments):
     if not arguments and not has_socket_device():
         # Only the app is at the other end of the line.
         line = SerialLine(open_serial_line(SERIAL_LINE))
-        agent = Agent(line.listen(PORT), System(), lambda peer: True, line.listen(JOB_PORT))
+        agent = Agent(
+            line.listen(PORT), System(), lambda peer: True, line.listen(JOB_PORT),
+            shares_clipboard=all(os.access(path, os.X_OK) for path in ("/usr/bin/wl-copy", "/usr/bin/wl-paste")),
+        )
         threading.Thread(target=relay_to_local_port, args=(line.listen(SSH_PORT), SSH_PORT), daemon=True).start()
         line.start()
         log("SwiftVM guest agent %s, listening on ports %d and %d of the serial line." % (AGENT_VERSION, PORT, JOB_PORT))
@@ -2218,6 +2410,10 @@ def main(arguments):
             print("That isn't a job.", file=sys.stderr)
             return 64
         return accessibility_main(request)
+    elif arguments == ["--clipboard-watch"]:
+        return clipboard_watch()
+    elif arguments == ["--clipboard-event"]:
+        return clipboard_event()
     elif arguments == ["--version"]:
         print(AGENT_VERSION)
         return 0

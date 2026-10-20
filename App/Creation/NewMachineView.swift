@@ -316,7 +316,7 @@ private struct LinuxMachineForm: View {
     @State private var password = ""
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
-    @State private var acceleratesGraphics = false
+    @State private var acceleratesGraphics: Bool?
     @State private var compressesDisk = false
     @State private var startsWhenReady = true
     /// The folder to keep the machine in, if one was chosen.
@@ -405,7 +405,9 @@ private struct LinuxMachineForm: View {
 
         if canAccelerateGraphics {
             Section {
-                Toggle("Graphics acceleration", isOn: $acceleratesGraphics)
+                Toggle("Graphics acceleration", isOn: Binding(
+                    get: { chosenAcceleratesGraphics }, set: { acceleratesGraphics = $0 }
+                ))
             } footer: {
                 Text(graphicsNote)
             }
@@ -437,7 +439,9 @@ private struct LinuxMachineForm: View {
     private var chosenUserName: String { userName.trimmingCharacters(in: .whitespaces) }
     private var chosenInstallsSSHKey: Bool { installsSSHKey }
     private var chosenLocation: URL? { location }
-    private var chosenAcceleratesGraphics: Bool { acceleratesGraphics && canAccelerateGraphics }
+    private var chosenAcceleratesGraphics: Bool {
+        (acceleratesGraphics ?? (selectedScripts.recommendsGraphicsAcceleration && !usesRosetta)) && canAccelerateGraphics
+    }
 
     /// Whether this copy of the app can give a Linux machine the Mac's GPU to draw with.
     private var canAccelerateGraphics: Bool {
@@ -445,7 +449,7 @@ private struct LinuxMachineForm: View {
     }
 
     private var graphicsNote: String {
-        if acceleratesGraphics {
+        if chosenAcceleratesGraphics {
             "Draws with your Mac's GPU. The machine runs on QEMU: it can't be suspended or use Rosetta, and shared folders added while it runs appear after a restart."
         } else if isQuickCreate, selectedScripts.contains(where: \.isDesktop) {
             "Recommended for a desktop. Without it, the machine's processors draw everything on the screen."
@@ -595,7 +599,9 @@ private struct LinuxMachineForm: View {
         let scripts = selectedScripts
         guard let first = scripts.first else { return nil }
         var sentences: [String] = []
-        if scripts.count == 1 {
+        if selectedDistribution?.preparedImage(for: scripts) != nil {
+            sentences.append("Downloads a ready-made desktop. The first start sets up your account and guest tools, without building the applications.")
+        } else if scripts.count == 1 {
             sentences.append(first.isDesktop
                 ? "\(first.name) is installed the first time the machine starts, which takes about ten minutes and needs the internet."
                 : "“\(first.name)” runs the first time the machine starts.")

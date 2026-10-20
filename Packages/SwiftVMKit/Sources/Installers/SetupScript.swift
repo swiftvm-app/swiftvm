@@ -85,6 +85,8 @@ public struct SetupScript: Sendable, Hashable, Identifiable {
     public var minimumDiskGigabytes: Int?
     /// Restart the guest once the script has run to its end without an error.
     public var restartsWhenDone: Bool
+    /// Prefer the Mac's GPU for a new machine unless the user chose a backend themselves.
+    public var recommendsGraphicsAcceleration = false
     /// The whole file, as it runs in the guest.
     public var source: String
     public var origin = Origin.file
@@ -142,6 +144,12 @@ public struct SetupScript: Sendable, Hashable, Identifiable {
                 minimumMemoryGigabytes = try Self.gigabytes(value, key: key)
             case "disk":
                 minimumDiskGigabytes = try Self.gigabytes(value, key: key)
+            case "graphics":
+                switch value.lowercased() {
+                case "recommended": recommendsGraphicsAcceleration = true
+                case "optional": recommendsGraphicsAcceleration = false
+                default: throw ScriptError.badValue(key: key, value: Self.cleaned(value, limit: 40), expected: "recommended or optional")
+                }
             case "restart":
                 switch value.lowercased() {
                 case "yes", "true", "on": restartsWhenDone = true
@@ -279,6 +287,10 @@ public extension Collection where Element == SetupScript {
         contains(where: \.requiresPassword)
     }
 
+    var recommendsGraphicsAcceleration: Bool {
+        contains(where: \.recommendsGraphicsAcceleration)
+    }
+
     /// Whether the guest restarts once all of them have run. It does if any of them asks for it, and
     /// only then: one in the middle doesn't cut the others off.
     var restartsWhenDone: Bool {
@@ -302,6 +314,9 @@ public extension Collection where Element == SetupScript {
     ) -> String? {
         if count > SetupScript.maximumPerMachine {
             return "A machine is set up with \(SetupScript.maximumPerMachine) scripts at most."
+        }
+        if distribution.preparedImage(for: Array(self)) != nil, filter(\.isDesktop).count > 1 {
+            return "A ready-made desktop image can't be combined with another desktop. Choose one desktop setup."
         }
         var seen: Set<String> = []
         for script in self where !seen.insert(script.source).inserted {

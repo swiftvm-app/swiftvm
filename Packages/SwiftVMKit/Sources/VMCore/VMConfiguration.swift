@@ -93,7 +93,12 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         keyboard = try c.decode(.keyboard, default: .init())
         networkInterfaces = try c.decode(.networkInterfaces, default: [])
         sharedFolders = try c.decode(.sharedFolders, default: [])
-        clipboard = try c.decode(.clipboard, default: .init())
+        clipboard = try c.decode(.clipboard, default: .init(isShared: os.family != .linux || engine != .qemu))
+        // The old shared default never applied to accelerated Linux. Updating its guest tools must
+        // not give it access to the Mac's clipboard without a choice made since support was added.
+        if os.family == .linux && engine == .qemu && !clipboard.includesAcceleratedLinux {
+            clipboard = .init(isShared: false)
+        }
         automation = try c.decode(.automation, default: .init())
         audio = try c.decode(.audio, default: .init())
         boot = try c.decode(.boot, default: .init())
@@ -430,12 +435,20 @@ public struct SharedFolder: Codable, Sendable, Hashable, Identifiable {
 }
 
 /// What is copied on the Mac can be pasted in the guest and the other way round: through the guest's
-/// agent in macOS guests, through `spice-vdagent` in Linux guests.
+/// agent, or `spice-vdagent` in Linux guests on Apple's backend.
 public struct ClipboardConfiguration: Codable, Sendable, Hashable {
     public var isShared: Bool
+    fileprivate var includesAcceleratedLinux: Bool
 
     public init(isShared: Bool = true) {
         self.isShared = isShared
+        self.includesAcceleratedLinux = true
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isShared = try c.decode(Bool.self, forKey: .isShared)
+        includesAcceleratedLinux = try c.decode(.includesAcceleratedLinux, default: false)
     }
 }
 

@@ -220,7 +220,7 @@ extension AppModel {
     }
 
     private func performQuickCreate(_ request: LinuxQuickCreateRequest, os: GuestOS, creation: MachineCreation) async throws -> VirtualMachine {
-        guard let image = request.distribution.cloudImage else {
+        guard let image = request.distribution.image(for: request.setupScripts) else {
             throw VMError.invalidConfiguration("\(request.distribution.name) has no ready-made image.")
         }
         try requireGraphicsAcceleration(request.acceleratesGraphics)
@@ -246,6 +246,7 @@ extension AppModel {
             disks: [disk],
             display: DisplayConfiguration(acceleratesGraphics: request.acceleratesGraphics),
             networkInterfaces: [interface],
+            clipboard: ClipboardConfiguration(isShared: !request.acceleratesGraphics),
             boot: BootConfiguration(rosetta: rosetta),
             ssh: SSHConfiguration(alias: alias, user: request.userName, identityFile: keyPair?.privateKeyPath),
             installation: InstallationConfiguration(attachesSeedImage: true)
@@ -330,6 +331,7 @@ extension AppModel {
             removableImages: [RemovableImage(url: mediaURL, readOnly: true)],
             display: DisplayConfiguration(acceleratesGraphics: request.acceleratesGraphics),
             networkInterfaces: [NetworkInterfaceConfiguration()],
+            clipboard: ClipboardConfiguration(isShared: !request.acceleratesGraphics),
             ssh: SSHConfiguration(alias: uniqueAlias(for: request.name))
         )
         let bundle = try VMBundle.create(at: library.makeStagingBundleURL(in: request.location), configuration: configuration)
@@ -590,7 +592,9 @@ extension AppModel {
     }
 
     private func download(_ image: RemoteImage, named name: String, creation: MachineCreation) async throws -> URL {
-        let isCached = FileManager.default.fileExists(atPath: downloader.cachedURL(for: image).path)
+        if image.latestRelease != nil { creation.update("Checking for the latest \(name) image…") }
+        let image = try await downloader.resolve(image)
+        let isCached = downloader.isCached(image)
         creation.update(isCached ? "Preparing…" : "Downloading \(name)…", fraction: isCached ? nil : 0)
         let progress = ProgressRelay { fraction in creation.fraction = fraction }
         let url = try await downloader.fetch(image) { update in

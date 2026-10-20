@@ -57,7 +57,7 @@ SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 | `--location <folder>` | Keep the machine in this folder instead of the one for new machines |
 | `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs `--password`; macOS leaves Remote Login off |
 | `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta), using Apple's backend without GPU acceleration; can't be combined with `--gpu` |
-| `--gpu` | Linux: require [graphics acceleration](linux-guests.md#graphics-acceleration), which is off by default. Windows: install the experimental [3D driver](windows-guests.md#graphics-acceleration), which is on by default when available |
+| `--gpu` | Linux: require [graphics acceleration](linux-guests.md#graphics-acceleration), enabled by default for Omarchy when available. Windows: install the experimental [3D driver](windows-guests.md#graphics-acceleration), which is on by default when available |
 | `--no-gpu` | Linux: use Apple's backend without GPU acceleration, with suspend support. Windows: install the display-only driver, which stays sharp at any window size |
 | `--compressed` | Linux and Windows: keep the disk [compressed](disks.md#keeping-the-disk-compressed) from the start |
 | `--ipsw <file>` | macOS: install this restore image instead of downloading the latest |

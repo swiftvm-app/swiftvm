@@ -27,10 +27,7 @@ struct MachineSettingsView: View {
                 resourcesSection
                 storageSection
                 sharingSection
-                // A Linux machine with graphics acceleration has no clipboard to share yet.
-                if !(configuration.os.family == .linux && configuration.engine == .qemu) {
-                    clipboardSection
-                }
+                clipboardSection
                 automationSection
                 networkSection
                 if !configuration.networkInterfaces.isEmpty {
@@ -210,15 +207,16 @@ struct MachineSettingsView: View {
     private var clipboardSection: some View {
         Section {
             Toggle("Share Clipboard", isOn: binding(\.clipboard.isShared))
-                // Linux guests share it through a device, which like all hardware is there from the start
-                // or not at all. macOS and Windows guests share it through their agent.
-                .disabled(configuration.os.family == .linux && isActive)
+                // Linux on Apple's backend shares through a device; the other guests use their agent.
+                .disabled(configuration.os.family == .linux && configuration.engine == .virtualization && isActive)
         } header: {
             Text("Clipboard")
         } footer: {
-            Text(configuration.os.family == .linux
+            Text(configuration.os.family == .linux && configuration.engine == .virtualization
                 ? "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs spice-vdagent in the guest, which most desktop systems bring along."
-                : "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs the guest tools in the virtual machine.")
+                : configuration.os.family == .linux
+                    ? "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs the guest tools and wl-clipboard in a Wayland desktop with data-control support, such as Omarchy."
+                    : "Text you copy on this Mac can be pasted in the virtual machine, and the other way round. This needs the guest tools in the virtual machine.")
         }
     }
 

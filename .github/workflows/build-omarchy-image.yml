@@ -1,0 +1,125 @@
+name: Build Omarchy ARM Image
+
+on:
+  schedule:
+    - cron: '23 4 1 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: build-omarchy-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare the disposable runner
+        run: |
+          # These preinstalled SDKs are not used by the image builder.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          available=$(df --output=avail -B1 /var/tmp | tail -1)
+          if ((available < 35 * 1024 * 1024 * 1024)); then
+            echo 'At least 35 GiB free is required for the builder, image and download pieces.' >&2
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools gpg curl qemu-utils
+
+      - name: Build and check the image
+        run: sudo env GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/omarchy-image/build-on-ubuntu.sh output
+
+      - name: Record the builder source
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" output
+          git archive --format=tar.gz --output=output/builder-source.tar.gz HEAD \
+            scripts/build-omarchy-image.sh scripts/omarchy-image
+          jq -n --arg commit "$GITHUB_SHA" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{commit: $commit, workflowRun: $run, validation: "signed packages, QCOW2 integrity and SHA-256; no guest boot in CI"}' \
+            > output/source-provenance.json
+          cd output
+          sha256sum builder-source.tar.gz source-provenance.json >> SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-image
+          # The complete QCOW2 is checked above. Releases serve its pieces, below the asset size limit.
+          path: |
+            output/*
+            !output/*.qcow2
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: omarchy-image
+          path: output
+
+      - name: Publish only a complete image release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd output
+          sha256sum --check --ignore-missing SHA256SUMS
+          tag=$(jq -er .release provenance.json)
+          [[ $tag =~ ^omarchy-image-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-f0-9]{12}$ ]]
+          jq -e --slurpfile image image.json '.format == 1 and .image == $image[0]' omarchy-arm64-edge-v1.json
+          # Drafts are invisible to catalog discovery. Never replace assets of a published image.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft > "$RUNNER_TEMP/release.json"; then
+            draft=$(jq -r .isDraft "$RUNNER_TEMP/release.json")
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Omarchy ARM edge image ${tag#omarchy-image-}" --draft --prerelease --latest=false \
+              --notes "Monthly installation snapshot from Omarchy's signed ARM edge packages. Built by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. CI checks package signatures, QCOW2 integrity and SHA-256, not a desktop boot. Installed guests update upstream. This is an image release, not a SwiftVM app update."
+            draft=true
+          fi
+          if [[ $draft == true ]]; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber -- ./*
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$RUNNER_TEMP/release.json"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          release = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'release.json').read_text())
+          assets = {asset['name']: asset for asset in release['assets']}
+          local = [path for path in pathlib.Path('.').iterdir() if path.is_file()]
+          assert set(assets) == {path.name for path in local}, 'Release assets do not match the build'
+          image = json.loads(pathlib.Path('image.json').read_text())
+          prefix = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{release['tag_name']}/"
+          assert image['url'].startswith(prefix)
+          assert image['parts'], 'No image pieces'
+          for part in image['parts']:
+              name = part['url'].removeprefix(prefix)
+              assert part['url'] == prefix + name and name in assets
+              assert assets[name]['size'] == part['bytes']
+              assert assets[name]['digest'] == 'sha256:' + part['sha256']
+          for path in local:
+              asset = assets[path.name]
+              with path.open('rb') as file:
+                  digest = hashlib.file_digest(file, 'sha256').hexdigest()
+              assert asset['state'] == 'uploaded' and asset['size'] == path.stat().st_size, path.name
+              assert asset['digest'] == 'sha256:' + digest, path.name
+          PY
+          if [[ $draft == true ]]; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          fi
+          echo "Published image: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
+          echo 'New Omarchy machines discover this compatible image automatically. No app release or catalog edit is needed.' >> "$GITHUB_STEP_SUMMARY"

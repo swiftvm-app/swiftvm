@@ -7,6 +7,8 @@ public struct ImageDownloader: Sendable {
         case badResponse(Int)
         case checksumMismatch(fileName: String)
         case checksumUnavailable(fileName: String)
+        case invalidManifest
+        case noCompatibleImage
 
         public var errorDescription: String? {
             switch self {
@@ -16,6 +18,10 @@ public struct ImageDownloader: Sendable {
                 "\(fileName) is damaged: its checksum doesn't match the published one. Try the download again."
             case .checksumUnavailable(let fileName):
                 "Couldn't find a published checksum for \(fileName)."
+            case .invalidManifest:
+                "The image release has invalid or incompatible download metadata. Try again later."
+            case .noCompatibleImage:
+                "Couldn't find a published image compatible with this version of SwiftVM."
             }
         }
     }
@@ -37,6 +43,7 @@ public struct ImageDownloader: Sendable {
     var resumeDelay: Duration = .seconds(2)
     /// The downloads under way. Shared by copies of this value.
     private let activity = DownloadActivity()
+    var metadataSession: URLSession = .shared
 
     public init(cacheDirectory: URL = ImageDownloader.defaultCacheDirectory) {
         self.cacheDirectory = cacheDirectory
@@ -53,7 +60,7 @@ public struct ImageDownloader: Sendable {
 
     /// Whether a verified copy of `image` is already in the cache.
     public func isCached(_ image: RemoteImage) -> Bool {
-        FileManager.default.fileExists(atPath: cachedURL(for: image).path)
+        image.latestRelease == nil && FileManager.default.fileExists(atPath: cachedURL(for: image).path)
     }
 
     /// Where an unfinished download of `image` leaves what is needed to carry on with it later.
@@ -73,6 +80,8 @@ public struct ImageDownloader: Sendable {
 
     /// Asks the server how large `image` is, without downloading it. `nil` if the server doesn't say.
     public func remoteSize(of image: RemoteImage) async -> Int64? {
+        guard let image = try? await resolve(image) else { return nil }
+        if let parts = image.parts { return Self.totalSize(of: parts) }
         var request = URLRequest(url: image.url)
         request.httpMethod = "HEAD"
         guard let (_, response) = try? await URLSession.shared.data(for: request),
@@ -84,12 +93,22 @@ public struct ImageDownloader: Sendable {
 
     /// Returns the local file for `image`, downloading and verifying it if it isn't cached yet.
     public func fetch(_ image: RemoteImage, progress: @escaping @Sendable (Progress) -> Void) async throws -> URL {
+        let image = try await resolve(image)
         let destination = cachedURL(for: image)
+        // Two creations may want the same image. Only one may own its partial files and resume data.
+        while !activity.begin(destination) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        defer { activity.end(destination) }
+        try Task.checkCancellation()
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: destination.path) {
             return destination
         }
         try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        if let parts = image.parts {
+            return try await fetchParts(parts, of: image, progress: progress)
+        }
 
         let partial = cacheDirectory.appending(path: image.fileName + ".partial")
         try? fileManager.removeItem(at: partial)
@@ -102,6 +121,99 @@ public struct ImageDownloader: Sendable {
             throw error
         }
         try fileManager.moveItem(at: partial, to: destination)
+        return destination
+    }
+
+    // MARK: Multipart images
+
+    static func totalSize(of parts: [RemoteImage.Part]) -> Int64? {
+        guard !parts.isEmpty else { return nil }
+        var total: Int64 = 0
+        for part in parts {
+            let (sum, overflow) = total.addingReportingOverflow(part.bytes)
+            guard part.bytes > 0, !overflow else { return nil }
+            total = sum
+        }
+        return total
+    }
+
+    private func fetchParts(
+        _ parts: [RemoteImage.Part], of image: RemoteImage, progress: @escaping @Sendable (Progress) -> Void
+    ) async throws -> URL {
+        func isDigest(_ value: String) -> Bool {
+            value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+        }
+        guard let expected = image.sha256, isDigest(expected), parts.allSatisfy({ isDigest($0.sha256) }),
+              let total = Self.totalSize(of: parts)
+        else { throw DownloadError.checksumUnavailable(fileName: image.fileName) }
+
+        let fileManager = FileManager.default
+        let directory = cacheDirectory.appending(path: image.fileName + ".parts")
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        var files: [URL] = []
+        var received: Int64 = 0
+        for (index, part) in parts.enumerated() {
+            try Task.checkCancellation()
+            let file = directory.appending(path: String(index))
+            let partial = file.appendingPathExtension("partial")
+            let reference = RemoteImage(url: part.url, sha256: part.sha256)
+            let offset = received
+            let isCached = fileManager.fileExists(atPath: file.path)
+            if !isCached {
+                try? fileManager.removeItem(at: partial)
+                try await download(part.url, to: partial, unfinishedAt: file.appendingPathExtension("resume")) { update in
+                    progress(.init(bytesReceived: offset + min(update.bytesReceived, part.bytes), bytesExpected: total))
+                }
+            }
+            let candidate = isCached ? file : partial
+            do {
+                guard try candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize == Int(exactly: part.bytes) else {
+                    throw DownloadError.checksumMismatch(fileName: part.url.lastPathComponent)
+                }
+                // Even a completed piece is checked again: it may have waited on disk since an interrupted run.
+                try await verify(candidate, against: reference)
+            } catch {
+                try? fileManager.removeItem(at: candidate)
+                throw error
+            }
+            if !isCached { try fileManager.moveItem(at: partial, to: file) }
+            files.append(file)
+            received += part.bytes
+            progress(.init(bytesReceived: received, bytesExpected: total))
+        }
+
+        let partial = cacheDirectory.appending(path: image.fileName + ".partial")
+        defer { try? fileManager.removeItem(at: partial) }
+        let pieces = files
+        // Stream the pieces; loading a multi-gigabyte desktop image into memory would freeze the Mac.
+        let assembly = Task.detached(priority: .userInitiated) {
+            try Data().write(to: partial)
+            let output = try FileHandle(forWritingTo: partial)
+            defer { try? output.close() }
+            var hasher = SHA256()
+            for file in pieces {
+                let input = try FileHandle(forReadingFrom: file)
+                defer { try? input.close() }
+                while let chunk = try input.read(upToCount: 4 << 20), !chunk.isEmpty {
+                    try Task.checkCancellation()
+                    try output.write(contentsOf: chunk)
+                    hasher.update(data: chunk)
+                }
+            }
+            let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
+                throw DownloadError.checksumMismatch(fileName: image.fileName)
+            }
+        }
+        try await withTaskCancellationHandler {
+            try await assembly.value
+        } onCancel: {
+            assembly.cancel()
+        }
+        try Task.checkCancellation()
+        let destination = cachedURL(for: image)
+        try fileManager.moveItem(at: partial, to: destination)
+        try? fileManager.removeItem(at: directory)
         return destination
     }
 
@@ -119,8 +231,6 @@ public struct ImageDownloader: Sendable {
     private func download(
         _ url: URL, to destination: URL, unfinishedAt unfinished: URL, progress: @escaping @Sendable (Progress) -> Void
     ) async throws {
-        activity.begin()
-        defer { activity.end() }
         let delegate = DownloadDelegate(destination: destination, progress: progress)
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
@@ -279,15 +389,15 @@ struct UnfinishedDownload: Codable {
 /// Counts the downloads under way, so that the app can wait for them on its way out.
 private final class DownloadActivity: @unchecked Sendable {
     private let condition = NSCondition()
-    private var count = 0
+    private var destinations: Set<URL> = []
 
-    func begin() {
-        condition.withLock { count += 1 }
+    func begin(_ destination: URL) -> Bool {
+        condition.withLock { destinations.insert(destination).inserted }
     }
 
-    func end() {
+    func end(_ destination: URL) {
         condition.withLock {
-            count -= 1
+            destinations.remove(destination)
             condition.broadcast()
         }
     }
@@ -295,7 +405,7 @@ private final class DownloadActivity: @unchecked Sendable {
     func waitUntilIdle(timeout: TimeInterval) -> Bool {
         let deadline = Date(timeIntervalSinceNow: timeout)
         return condition.withLock {
-            while count > 0 {
+            while !destinations.isEmpty {
                 guard condition.wait(until: deadline) else { return false }
             }
             return true

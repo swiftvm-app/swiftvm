@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 import DiskTools
@@ -517,6 +518,71 @@ private func blockPatternedPayload() -> Data {
     }
 }
 
+@Suite(.timeLimit(.minutes(1))) struct MultipartImageTests {
+    private func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    @Test func resumesTheInterruptedPieceWithoutDownloadingCompletedPiecesAgain() async throws {
+        let first = Data("first piece".utf8)
+        let second = blockPatternedPayload()
+        let firstServer = try FlakyFileServer(payload: first, droppingFirstResponseAfter: first.count)
+        let secondServer = try FlakyFileServer(payload: second, droppingFirstResponseAfter: 2 << 20, waitsForClient: true)
+        defer { firstServer.stop(); secondServer.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-parts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "https://example.org/desktop.qcow2")!, sha256: digest(first + second), parts: [
+            .init(url: URL(string: "http://127.0.0.1:\(firstServer.port)/part0")!, sha256: digest(first), bytes: Int64(first.count)),
+            .init(url: URL(string: "http://127.0.0.1:\(secondServer.port)/part1")!, sha256: digest(second), bytes: Int64(second.count)),
+        ])
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        let (arrivals, arrival) = AsyncStream<Void>.makeStream()
+        let attempt = Task {
+            try await downloader.fetch(image) { update in
+                if update.bytesReceived > first.count + (1 << 20) { arrival.yield() }
+            }
+        }
+        for await _ in arrivals { break }
+        attempt.cancel()
+        _ = await attempt.result
+        #expect(!downloader.isCached(image))
+        #expect(downloader.waitForDownloadsToWindUp(timeout: 5))
+
+        // A new downloader models restarting the app. Both creations must share the assembled image,
+        // not race to consume the same resume data or remove each other's pieces.
+        let restarted = ImageDownloader(cacheDirectory: cache)
+        async let one = restarted.fetch(image) { _ in }
+        async let two = restarted.fetch(image) { _ in }
+        let (file, other) = try await (one, two)
+        #expect(file == other)
+        #expect(try Data(contentsOf: file) == first + second)
+        #expect(firstServer.requestedRanges.count == 1)
+        #expect(secondServer.requestedRanges.count == 2)
+        #expect(secondServer.requestedRanges.last??.hasPrefix("bytes=") == true)
+        #expect(await restarted.remoteSize(of: image) == Int64(first.count + second.count))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.path) == [image.fileName])
+    }
+
+    @Test(arguments: [true, false])
+    func rejectsDamageInAPieceOrInTheWholeImage(damagedPiece: Bool) async throws {
+        let payload = Data("image contents".utf8)
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: payload.count)
+        defer { server.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "swiftvm-parts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let incorrect = String(repeating: "0", count: 64)
+        let image = RemoteImage(
+            url: URL(string: "https://example.org/desktop.qcow2")!, sha256: damagedPiece ? digest(payload) : incorrect,
+            parts: [.init(url: URL(string: "http://127.0.0.1:\(server.port)/part0")!,
+                          sha256: damagedPiece ? incorrect : digest(payload), bytes: Int64(payload.count))]
+        )
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        await #expect(throws: ImageDownloader.DownloadError.self) { try await downloader.fetch(image) { _ in } }
+        #expect(!downloader.isCached(image))
+        #expect(!FileManager.default.fileExists(atPath: cache.appending(path: image.fileName + ".partial").path))
+    }
+}
+
 @Suite struct DistributionCatalogTests {
     @Test func bundledCatalogLoads() {
         #expect(!DistributionCatalog.builtIn.isEmpty)
@@ -527,13 +593,30 @@ private func blockPatternedPayload() -> Data {
         }
     }
 
+    @Test func onlyBuiltInSetupsSelectPreparedImages() throws {
+        var distribution = try #require(DistributionCatalog.builtIn.first { $0.id == "arch" })
+        let image = RemoteImage(url: URL(string: "https://example.org/desktop.qcow2")!)
+        distribution.setupImages = ["desktop": image]
+        var script = try SetupScript(source: "# category: desktop\necho setup", fileName: "desktop.sh")
+        #expect(distribution.image(for: [script]) == distribution.cloudImage)
+        script.origin = .library
+        #expect(distribution.image(for: [script]) == distribution.cloudImage)
+        script.origin = .builtIn
+        #expect(distribution.image(for: [script]) == image)
+        let other = try SetupScript(source: "# category: desktop\necho other", fileName: "other.sh")
+        #expect([script, other].problem(for: distribution, memorySize: 8 << 30, diskCapacity: 64 << 30) != nil)
+    }
+
     /// A download with nothing to check it against is taken as it arrives.
     @Test func everyImageCanBeVerified() {
-        let images = DistributionCatalog.builtIn.flatMap { [$0.cloudImage].compactMap { $0 } + $0.installers.map(\.image) }
+        let images = DistributionCatalog.builtIn.flatMap {
+            [$0.cloudImage].compactMap { $0 } + Array(($0.setupImages ?? [:]).values) + $0.installers.map(\.image)
+        }
         for image in images {
             let isPinned = image.sha256?.count == 64
             let isListed = image.checksumsURL != nil && image.checksumAlgorithm != nil
-            #expect(isPinned || isListed, "\(image.fileName) has no checksum")
+            let isDiscovered = image.latestRelease != nil
+            #expect(isPinned || isListed || isDiscovered, "\(image.fileName) has no checksum source")
             #expect(image.url.scheme == "https", "\(image.fileName) isn't downloaded over HTTPS")
         }
     }

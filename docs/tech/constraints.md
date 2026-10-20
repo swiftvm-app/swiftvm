@@ -51,8 +51,9 @@ See [Networking](../features/networking.md) for addresses and port forwarding.
   and [Windows graphics](../features/windows-guests.md#graphics-acceleration).
 - macOS needs the guest tools for unattended shutdown. Without them, confirm
   shutdown in the guest's window.
-- Linux clipboard sharing requires `spice-vdagent` and may not work in every
-  Wayland session. Clipboard sharing supports text only.
+- Linux clipboard sharing without graphics acceleration requires `spice-vdagent`.
+  With acceleration it needs guest tools 1.4 or newer, `wl-clipboard`, and a Wayland
+  desktop with data-control support, such as Omarchy. Clipboard sharing supports text only.
 - The accessibility tree requires a logged-in desktop session. Linux needs
   `python3-gi` and `gir1.2-atspi-2.0`; macOS requires permission in the guest.
   Windows does not support this feature.
