@@ -95,7 +95,9 @@ jobs:
           if [[ $draft == true ]]; then
             gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber -- ./*
           fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$RUNNER_TEMP/release.json"
+          # A draft's tag need not exist yet, so the API's tag lookup cannot find it.
+          release_id=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RUNNER_TEMP/release.json"
           python3 - <<'PY'
           import hashlib, json, os, pathlib
           release = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'release.json').read_text())
