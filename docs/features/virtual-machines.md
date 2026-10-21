@@ -143,6 +143,14 @@ Moving needs the machine shut down.
 **Delete…** moves a machine that is shut down, with its disks and snapshots, to
 the Trash.
 
+**Delete All Virtual Machines…**, in the **…** at the top of the menu bar
+panel, deletes every machine that is shut down at once, after asking. Machines
+that are running or busy stay as they are.
+
+To skip the Trash, turn on **Delete virtual machines immediately** in
+Settings. Deleted machines are then removed for good, which frees their space
+right away. This also applies to `swiftvm delete`.
+
 ## Quitting
 
 Quitting SwiftVM while machines are running asks what to do with them:

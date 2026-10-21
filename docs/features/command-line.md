@@ -32,7 +32,7 @@ swiftvm info web-server      # one machine in detail
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
 | `compression <machine> on\|off` | Enable or disable [disk compression](disks.md#keeping-the-disk-compressed) for a shut-down Linux or Windows machine |
 | `open <machine>` | Show the machine's window |
-| `delete <machine>` | Move a stopped machine to the Trash |
+| `delete <machine>` | Move a stopped machine to the Trash, or delete it for good if set so in Settings |
 
 `<system>` is `macos`, `windows`, or a Linux image: `ubuntu-26.04`,
 `ubuntu-24.04`, `debian-13`, or `arch`.

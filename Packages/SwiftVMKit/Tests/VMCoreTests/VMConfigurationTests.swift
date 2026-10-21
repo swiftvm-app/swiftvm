@@ -1,6 +1,35 @@
+import AppKit
 import Foundation
 import Testing
 @testable import VMCore
+
+/// A guest that starts and stops at once, and does nothing else.
+@MainActor
+private final class StubBackend: VMBackend {
+    var eventHandler: (@MainActor (VMBackendEvent) -> Void)?
+    let displayView = NSView()
+    let canRequestStop = true
+
+    func start(options: VMStartOptions) async throws {}
+    func requestStop() throws {}
+    func stop() async throws {}
+    func pause() async throws {}
+    func resume() async throws {}
+    func saveState(to url: URL) async throws {}
+    func setNetworkInterface(_ id: UUID, connected: Bool) throws {}
+    func setSharedFolders(_ folders: [SharedFolder]) throws {}
+    func attachRemovableImage(_ image: RemovableImage) async throws {}
+    func detachRemovableImage(_ id: UUID) async throws {}
+    func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {}
+    func connectToGuest(port: UInt32) async throws -> FileHandle { throw POSIXError(.ECONNRESET) }
+    func invalidate() {}
+}
+
+@MainActor
+private final class StubProvider: VMBackendProvider {
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { StubBackend() }
+    func backendDidStop(for machine: VirtualMachine) {}
+}
 
 @Suite struct VMConfigurationTests {
     private func sample() -> VMConfiguration {
@@ -163,6 +192,36 @@ import Testing
 
         try library.remove(machine, movingToTrash: false)
         #expect(library.machines.isEmpty)
+        // Not to the Trash means gone for good, not left behind.
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func runningMachinesAreNotRemovable() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "swiftvm-library-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = StubProvider()
+        let library = VMLibrary(rootDirectory: root)
+        library.backendProvider = provider
+        library.load()
+        func add(_ name: String) throws -> VirtualMachine {
+            let configuration = VMConfiguration(name: name, os: GuestOS(family: .linux), cpuCount: 2, memorySize: 4 << 30, disks: [])
+            let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: name), configuration: configuration))
+            // Whatever the Mac running the tests is doing.
+            machine.isHostLocked = { false }
+            return machine
+        }
+        let running = try add("Running")
+        let stopped = try add("Stopped")
+        await running.start()
+        try #require(running.state == .running)
+
+        #expect(library.removableMachines.map(\.id) == [stopped.id])
+        for machine in library.removableMachines {
+            try library.remove(machine, movingToTrash: false)
+        }
+        #expect(library.machines.map(\.id) == [running.id])
+        #expect(FileManager.default.fileExists(atPath: running.bundle.url.path))
+        await running.forceStop()
     }
 
     @Test func suspendedStateIsDetectedFromBundle() throws {

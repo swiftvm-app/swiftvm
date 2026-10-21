@@ -355,7 +355,15 @@ public final class VMLibrary {
         return machine
     }
 
-    /// Removes a machine from the library, optionally moving its bundle to the Trash.
+    /// The machines that ``remove(_:movingToTrash:)`` takes right now: shut down, and with nothing being
+    /// done with their files.
+    public var removableMachines: [VirtualMachine] {
+        machines.filter { !$0.state.isActive && $0.activity == nil }
+    }
+
+    /// Deletes a machine: takes it out of the library along with its bundle.
+    ///
+    /// - Parameter movingToTrash: Move its bundle to the Trash rather than remove it for good.
     public func remove(_ machine: VirtualMachine, movingToTrash: Bool) throws {
         guard !machine.state.isActive else {
             throw VMError.invalidConfiguration("Stop “\(machine.name)” before deleting it.")
@@ -365,6 +373,8 @@ public final class VMLibrary {
         }
         if movingToTrash {
             try FileManager.default.trashItem(at: machine.bundle.url, resultingItemURL: nil)
+        } else {
+            try FileManager.default.removeItem(at: machine.bundle.url)
         }
         machines.removeAll { $0.id == machine.id }
         entries.removeAll { $0.details?.id == machine.id || $0.url.path == machine.bundle.url.path }

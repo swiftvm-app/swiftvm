@@ -157,7 +157,9 @@ struct MachinePanelRow: View {
                 Text("Delete “\(machine.name)”?")
                     .fontWeight(.medium)
                     .lineLimit(2)
-                Text("The virtual machine and its disks are moved to the Trash.")
+                Text(model.deletesMachinesPermanently
+                    ? "The virtual machine and its disks are deleted immediately. This can't be undone."
+                    : "The virtual machine and its disks are moved to the Trash.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -165,7 +167,7 @@ struct MachinePanelRow: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { isAskingToDelete = false }
-                Button("Move to Trash", role: .destructive) {
+                Button(model.deletesMachinesPermanently ? "Delete" : "Move to Trash", role: .destructive) {
                     isAskingToDelete = false
                     model.delete(machine)
                 }

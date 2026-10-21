@@ -39,6 +39,17 @@ struct AppSettingsView: View {
             }
 
             storageSection
+
+            Section {
+                Toggle("Delete virtual machines immediately", isOn: Binding(
+                    get: { model.deletesMachinesPermanently },
+                    set: { model.deletesMachinesPermanently = $0 }
+                ))
+            } header: {
+                Text("Deleting")
+            } footer: {
+                Text("A virtual machine that is deleted, here or with “swiftvm delete”, is removed with its disks and snapshots at once instead of moved to the Trash. Their space is free right away, and they can't be brought back.")
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)

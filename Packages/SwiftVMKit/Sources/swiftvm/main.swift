@@ -45,7 +45,8 @@ Usage: swiftvm <command> [arguments]
   pause <machine> | resume <machine>
   restart <machine>
   open <machine>                    Show the machine's window
-  delete <machine>                  Move a stopped machine to the Trash
+  delete <machine>                  Move a stopped machine to the Trash, or delete it for good if set so
+                                    in Settings
   clone <machine> [name]            Copy a machine that is shut down
   move <machine> <folder>           Move a machine that is shut down into another folder, which may be on
                                     another disk. Waits until it is there
