@@ -105,6 +105,9 @@ struct MenuBarPanel: View {
                     dismiss()
                 }
                 Divider()
+                Button("Delete All Virtual Machines…", role: .destructive, action: confirmDeletingAll)
+                    .disabled(model.library.removableMachines.isEmpty)
+                Divider()
                 if UpdateService.shared.isAvailable {
                     Button("Check for Updates…") {
                         UpdateService.shared.checkForUpdates()
@@ -241,6 +244,40 @@ struct MenuBarPanel: View {
     private func showNewMachine() {
         model.windows.showNewMachine()
         dismiss()
+    }
+
+    /// Asks in a dialog of its own, not in the panel: the question is about every machine, not one row.
+    /// Machines that are running or being worked on can't be deleted, so they aren't offered.
+    private func confirmDeletingAll() {
+        dismiss()
+        // Once the panel is gone, which a dialog that waits for an answer would otherwise hold up.
+        Task { @MainActor in
+            let machines = model.library.removableMachines
+            guard !machines.isEmpty else { return }
+            let permanently = model.deletesMachinesPermanently
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            let others = model.library.machines.count - machines.count
+            alert.messageText = machines.count == 1
+                ? "Delete “\(machines[0].name)”?"
+                : others > 0 ? "Delete \(machines.count) virtual machines?" : "Delete all \(machines.count) virtual machines?"
+            alert.informativeText = permanently
+                ? "Their disks and snapshots are deleted immediately. This can't be undone."
+                : "They are moved to the Trash with their disks and snapshots."
+            if others > 0 {
+                alert.informativeText += others == 1
+                    ? " One virtual machine that is running or busy stays as it is."
+                    : " \(others) virtual machines that are running or busy stay as they are."
+            }
+            let delete = alert.addButton(withTitle: permanently ? "Delete" : "Move to Trash")
+            delete.hasDestructiveAction = true
+            alert.addButton(withTitle: "Cancel")
+            // Return doesn't delete everything by accident. Escape still cancels.
+            delete.keyEquivalent = ""
+            model.windows.bringAppForward()
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            model.delete(machines)
+        }
     }
 
     private func moveHighlight(by offset: Int) -> KeyPress.Result {

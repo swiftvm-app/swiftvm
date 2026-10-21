@@ -103,6 +103,13 @@ final class AppModel {
 
     /// Where the folder for downloads is kept when it isn't the default one.
     private static let downloadsDirectoryKey = "downloadsDirectory"
+    private static let deletesMachinesPermanentlyKey = "deletesMachinesPermanently"
+
+    /// Machines that are deleted are removed for good at once, rather than moved to the Trash. Their
+    /// space is free then, which matters with many machines made by agents and scripts.
+    var deletesMachinesPermanently = UserDefaults.standard.bool(forKey: AppModel.deletesMachinesPermanentlyKey) {
+        didSet { UserDefaults.standard.set(deletesMachinesPermanently, forKey: Self.deletesMachinesPermanentlyKey) }
+    }
 
     private init() {
         library = VMLibrary(rootDirectory: ControlPaths.applicationSupport)
@@ -687,14 +694,37 @@ final class AppModel {
     }
 
     func delete(_ machine: VirtualMachine) {
-        let alias = machine.configuration.ssh.alias
         do {
-            try library.remove(machine, movingToTrash: true)
-            if !alias.isEmpty {
-                sshWriter.forgetHostKey(for: alias)
-            }
+            try remove(machine)
         } catch {
             generalError = VMErrorInfo(title: "Couldn't delete “\(machine.name)”", message: error.localizedDescription)
+        }
+    }
+
+    /// Deletes each of `machines`. One that can't be deleted, as one that was started in the meantime,
+    /// doesn't keep the others from it; what went wrong is said once for all of them.
+    func delete(_ machines: [VirtualMachine]) {
+        var problems: [String] = []
+        for machine in machines {
+            do {
+                try remove(machine)
+            } catch {
+                problems.append("“\(machine.name)”: \(error.localizedDescription)")
+            }
+        }
+        guard !problems.isEmpty else { return }
+        generalError = VMErrorInfo(
+            title: problems.count == 1 ? "Couldn't delete a virtual machine" : "Couldn't delete \(problems.count) virtual machines",
+            message: problems.joined(separator: "\n")
+        )
+    }
+
+    /// Takes the machine out of the library and its files to the Trash or away for good, as set in Settings.
+    private func remove(_ machine: VirtualMachine) throws {
+        let alias = machine.configuration.ssh.alias
+        try library.remove(machine, movingToTrash: !deletesMachinesPermanently)
+        if !alias.isEmpty {
+            sshWriter.forgetHostKey(for: alias)
         }
     }
 
