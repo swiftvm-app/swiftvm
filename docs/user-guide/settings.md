@@ -4,15 +4,15 @@ SwiftVM has two kinds of settings: the app's own, and each virtual machine's.
 
 ## App settings
 
-Choose **Settings…** in the panel, or press `Cmd+,`.
+Choose **Settings…** in the panel, or press `Cmd+,`. The panes are in the
+sidebar on the left.
 
-| Section | What's in it |
+| Pane | What's in it |
 | --- | --- |
-| SSH | **Add machines to ~/.ssh/config**, to reach every machine with plain `ssh <machine>`. See [SSH](../features/ssh.md) |
-| Network | The address range of the shared network, and this Mac's address on it. See [Networking](../features/networking.md) |
-| Command Line | Install or uninstall the [`swiftvm`](../features/command-line.md) command |
-| Updates | Check for updates, and whether to install them automatically |
+| General | Check for updates, and whether to install them automatically. **Delete virtual machines immediately** |
 | Storage | Where new virtual machines, templates, and downloaded images are kept. **Change** picks another folder for each, on another disk if you like |
+| Network | The address range of the shared network, and this Mac's address on it (see [Networking](../features/networking.md)). **Add machines to ~/.ssh/config**, to reach every machine with plain `ssh <machine>` (see [SSH](../features/ssh.md)) |
+| Command Line | Install or uninstall the [`swiftvm`](../features/command-line.md) command |
 
 ## Updates
 
@@ -21,7 +21,7 @@ menu bar panel, without opening an update window on its own.
 
 - Choose **Update…** next to the version to open the update dialog and decide
   whether to install. The button is unavailable while a download is in progress.
-- **Check for Updates…** is in **Settings → Updates** and in the panel's
+- **Check for Updates…** is in **Settings → General** and in the panel's
   **…** menu.
 - **Automatically download and install updates** installs an update the next
   time SwiftVM quits.
@@ -54,19 +54,17 @@ Available**.
 
 Choose **Settings…** in a machine's menu, or the gear in its window's toolbar.
 
-| Section | What's in it |
+| Pane | What's in it |
 | --- | --- |
 | General | Name, system, and where the machine is on disk. **Move…** takes it to [another folder or disk](../features/virtual-machines.md#where-machines-are-kept) |
-| Processor and Memory | Processors and memory |
+| Hardware | Processors and memory. Whether the display resizes with the window; with that off, **Resolution** sets the display's size. Sound output and microphone |
 | Storage | The disk and its size, and attached disc and disk images. See [Disks and images](../features/disks.md) |
-| Shared Folders | Folders of your Mac the guest can use. See [Shared folders and clipboard](../features/sharing.md) |
-| Clipboard | **Share Clipboard** |
-| Automation | **Allow Automation**: whether `swiftvm` may run commands in the guest, see its screen, and use its mouse and keyboard. See [Automation](../features/automation.md) |
-| Network and SSH | Cable, addresses, and the [SSH](../features/ssh.md) name, user, and port. See [Networking](../features/networking.md) |
-| Port Forwarding | Ports of the guest reachable as `localhost` on your Mac |
+| Sharing | Folders of your Mac the guest can use, and **Share Clipboard**. See [Shared folders and clipboard](../features/sharing.md) |
+| Network | Cable and addresses, and ports of the guest reachable as `localhost` on your Mac. See [Networking](../features/networking.md) |
+| SSH | The [SSH](../features/ssh.md) name, user, and port |
 | USB Devices | Devices the machine takes whenever they are plugged in. See [USB devices](../features/usb-devices.md) |
-| Devices | Sound output, microphone, and whether the display resizes with the window. With that off, **Resolution** sets the display's size |
 | Keyboard | **Send System Shortcuts to the Guest** |
+| Automation | **Allow Automation**: whether `swiftvm` may run commands in the guest, see its screen, and use its mouse and keyboard. See [Automation](../features/automation.md) |
 | Startup | **Secure Boot** and **Rosetta for x86-64 Programs**, for Linux guests |
 
 Shut down the machine to change processors, memory, display, audio, or startup
