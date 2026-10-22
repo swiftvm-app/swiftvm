@@ -72,7 +72,8 @@ SwiftVM shows the script and step that failed, often during a download.
 - The machine must be running and have an address. Check with
   `swiftvm ip <machine>`.
 - A guest installed from a disc may have no SSH server or no key of yours.
-  Install one in the guest, and set **SSH User** in the machine's settings.
+  Install one in the guest, and set **User** in the **SSH** pane of the
+  machine's settings.
 - If only a Linux guest's network is down, try
   `swiftvm ssh <machine> --vsock`.
 

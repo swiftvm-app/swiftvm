@@ -1,5 +1,88 @@
 import SwiftUI
+import VMControl
 import VMCore
+
+/// The panes of a machine's settings.
+nonisolated enum MachineSettingsPane: String, SettingsPane {
+    case general, hardware, storage, sharing, network, ssh, usb, keyboard, automation, startup
+
+    /// The panes for a machine with this configuration, when the app can take USB devices as `usb` says.
+    static func panes(for configuration: VMConfiguration, usb: USBPassthrough.Availability) -> [Self] {
+        var panes: [Self] = [.general, .hardware, .storage, .sharing, .network, .ssh]
+        // A copy that isn't signed for USB devices has none to show, but a machine may have been
+        // told elsewhere to take some by itself, and that can be taken back here.
+        // QEMU isn't handed USB devices: only the Virtualization framework's machines take them.
+        if configuration.engine == .virtualization, usb != .notSigned || !configuration.usb.autoConnect.isEmpty {
+            panes.append(.usb)
+        }
+        panes += [.keyboard, .automation]
+        // Secure Boot and Rosetta are Apple's virtualization's. A Linux machine with graphics
+        // acceleration runs on QEMU, which has neither.
+        if configuration.os.family == .linux, configuration.engine == .virtualization {
+            panes.append(.startup)
+        }
+        return panes
+    }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .hardware: "Hardware"
+        case .storage: "Storage"
+        case .sharing: "Sharing"
+        case .network: "Network"
+        case .ssh: "SSH"
+        case .usb: "USB Devices"
+        case .keyboard: "Keyboard"
+        case .automation: "Automation"
+        case .startup: "Startup"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape.fill"
+        case .hardware: "cpu.fill"
+        case .storage: "internaldrive.fill"
+        case .sharing: "folder.fill"
+        case .network: "network"
+        case .ssh: "apple.terminal.fill"
+        case .usb: "cable.connector"
+        case .keyboard: "keyboard.fill"
+        case .automation: "wand.and.sparkles"
+        case .startup: "power"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .general, .keyboard: .gray
+        case .hardware: .blue
+        case .storage: .indigo
+        case .sharing: .teal
+        case .network: .green
+        case .ssh: Color(white: 0.22)
+        case .usb: .orange
+        case .automation: .purple
+        case .startup: .red
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .general: "The name of the virtual machine, its system, and where it is kept."
+        case .hardware: "Processors, memory, display and sound."
+        case .storage: "The disk, and disc and disk images plugged in as drives."
+        case .sharing: "Folders and the clipboard shared with this Mac."
+        case .network: "The network connection, and ports forwarded from this Mac."
+        case .ssh: "How ssh and swiftvm reach the virtual machine."
+        case .usb: "USB devices of this Mac that the virtual machine uses."
+        case .keyboard: "Where system shortcuts go while the virtual machine has focus."
+        case .automation: "What the swiftvm command may do in the virtual machine."
+        case .startup: "How the virtual machine starts its system."
+        }
+    }
+}
 
 /// Per-machine settings. Hardware changes apply the next time the machine starts; sharing and the network
 /// cable apply immediately.
@@ -8,6 +91,7 @@ struct MachineSettingsView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @State private var selection = MachineSettingsPane.general
     @State private var name = ""
     @State private var sshAlias = ""
     @State private var sshUser = ""
@@ -20,69 +104,142 @@ struct MachineSettingsView: View {
     private var configuration: VMConfiguration { machine.configuration }
     private var isActive: Bool { machine.state != .stopped }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                generalSection
-                resourcesSection
-                storageSection
-                sharingSection
-                clipboardSection
-                automationSection
-                networkSection
-                if !configuration.networkInterfaces.isEmpty {
-                    portForwardingSection
-                }
-                // A copy that isn't signed for USB devices has none to show, but a machine may have been
-                // told elsewhere to take some by itself, and that can be taken back here.
-                // QEMU isn't handed USB devices: only the Virtualization framework's machines take them.
-                if configuration.engine == .virtualization, model.usb.availability != .notSigned || !configuration.usb.autoConnect.isEmpty {
-                    usbSection
-                }
-                devicesSection
-                keyboardSection
-                // Secure Boot and Rosetta are Apple's virtualization's. A Linux machine with graphics
-                // acceleration runs on QEMU, which has neither.
-                if configuration.os.family == .linux, configuration.engine == .virtualization {
-                    bootSection
-                }
-            }
-            .formStyle(.grouped)
+    private var panes: [MachineSettingsPane] {
+        MachineSettingsPane.panes(for: configuration, usb: model.usb.availability)
+    }
 
-            Divider()
-            HStack {
-                if isActive {
-                    Label("Changes to hardware apply after the virtual machine is shut down and started again.", systemImage: "info.circle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+    var body: some View {
+        SettingsSplitView(panes: panes, selection: $selection) {
+            sidebarHeader
+        } detail: { pane in
+            VStack(spacing: 0) {
+                SettingsPage(pane: pane) {
+                    content(for: pane)
                 }
-                Spacer()
-                Button("Done") {
-                    // What can't be saved as it is typed stays on the screen to be put right.
-                    if commitTextFields() {
-                        dismiss()
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
+                Divider()
+                bottomBar
             }
-            .padding(16)
         }
-        .frame(width: 560, height: 640)
+        .frame(width: 780, height: 580)
         .onAppear {
             name = configuration.name
             sshAlias = configuration.ssh.alias
             sshUser = configuration.ssh.user
             sshPort = String(configuration.ssh.port)
         }
+        // What was typed in a pane is saved when another one is chosen, as its fields are gone then.
+        .onChange(of: selection) { commitTextFields() }
+        // A pane that is no longer on offer, as USB devices may stop being, gives way to the first one.
+        .onChange(of: panes) {
+            if !panes.contains(selection) {
+                selection = .general
+            }
+        }
         // In a window of their own the settings can be closed without Done. What was typed is kept all
         // the same, as far as it can be.
         .onDisappear { commitTextFields() }
     }
 
-    // MARK: Sections
+    /// The machine the settings are for, above the panes.
+    private var sidebarHeader: some View {
+        HStack(spacing: 10) {
+            OSGlyph(os: configuration.os, size: 36, isLit: machine.state.isActive)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(machine.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(configuration.os.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(stateColor)
+                        .frame(width: 6, height: 6)
+                    Text(machine.state.label)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var stateColor: Color {
+        switch machine.state {
+        case .running: .green
+        case .stopped: .secondary.opacity(0.5)
+        case .paused, .suspended: .yellow
+        case .starting, .restoring, .suspending, .stopping: .orange
+        }
+    }
+
+    private var bottomBar: some View {
+        HStack(spacing: 12) {
+            if isActive {
+                Label("Changes to hardware apply after the virtual machine is shut down and started again.", systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button("Done") {
+                // What can't be saved as it is typed stays on the screen to be put right.
+                if commitTextFields() {
+                    dismiss()
+                } else {
+                    selection = .ssh
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private func content(for pane: MachineSettingsPane) -> some View {
+        switch pane {
+        case .general:
+            generalSection
+        case .hardware:
+            resourcesSection
+            displaySection
+            soundSection
+        case .storage:
+            diskSection
+            drivesSection
+        case .sharing:
+            sharingSection
+            clipboardSection
+        case .network:
+            networkSection
+            if !configuration.networkInterfaces.isEmpty {
+                portForwardingSection
+            }
+        case .ssh:
+            sshSection
+        case .usb:
+            usbSection
+        case .keyboard:
+            keyboardSection
+        case .automation:
+            automationSection
+        case .startup:
+            bootSection
+        }
+    }
+
+    // MARK: General
 
     private var generalSection: some View {
-        Section("General") {
+        Section {
             TextField("Name", text: $name)
                 .onSubmit { commitTextFields() }
             LabeledContent("System", value: configuration.os.summary)
@@ -124,6 +281,8 @@ struct MachineSettingsView: View {
         model.moveReportingErrors(machine, to: folder)
     }
 
+    // MARK: Hardware
+
     private var resourcesSection: some View {
         Section("Processor and Memory") {
             Stepper(value: binding(\.cpuCount), in: 1...HostResources.cpuCount) {
@@ -143,9 +302,37 @@ struct MachineSettingsView: View {
         .disabled(isActive)
     }
 
-    private var storageSection: some View {
+    private var displaySection: some View {
+        Section("Display") {
+            Toggle("Resize Display with Window", isOn: binding(\.display.automaticallyResizes))
+            if !configuration.display.automaticallyResizes {
+                // A display that doesn't follow the window has a size of its own.
+                Picker("Resolution", selection: resolutionBinding) {
+                    ForEach(DisplayResolution.choices(for: configuration)) { resolution in
+                        Text(resolution.label(for: configuration)).tag(resolution)
+                    }
+                }
+            }
+        }
+        .disabled(isActive)
+    }
+
+    private var soundSection: some View {
+        Section("Sound") {
+            Toggle("Sound Output", isOn: binding(\.audio.outputEnabled))
+            // QEMU's sound card only plays.
+            if configuration.engine != .qemu {
+                Toggle("Microphone", isOn: binding(\.audio.inputEnabled))
+            }
+        }
+        .disabled(isActive)
+    }
+
+    // MARK: Storage
+
+    private var diskSection: some View {
         Section {
-            LabeledContent("Disk") {
+            LabeledContent("Size") {
                 HStack {
                     Text("\(Formatting.bytes(machine.allocatedDiskSize)) used of \(Formatting.bytes(configuration.totalDiskCapacity))")
                     Button("Resize…") { isResizingDisk = true }
@@ -182,17 +369,28 @@ struct MachineSettingsView: View {
                     }
                 }
             }
+        } header: {
+            Text("Disk")
+        } footer: {
+            Text("The disk only takes up what the guest has written to it.")
+        }
+    }
+
+    private var drivesSection: some View {
+        Section {
             RemovableDrivesEditor(machine: machine)
         } header: {
-            Text("Storage")
+            Text("Disc and Disk Images")
         } footer: {
-            Text("The disk only takes up what the guest has written to it. Disc and disk images are plugged in as USB drives and can be changed while the virtual machine runs.")
+            Text("Disc and disk images are plugged in as USB drives and can be changed while the virtual machine runs.")
         }
     }
 
     private var isDiskCompressed: Bool {
         configuration.systemDisk?.format == .compressed
     }
+
+    // MARK: Sharing
 
     private var sharingSection: some View {
         Section {
@@ -220,50 +418,18 @@ struct MachineSettingsView: View {
         }
     }
 
-    private var automationSection: some View {
-        Section {
-            Toggle("Allow Automation", isOn: binding(\.automation.isAllowed))
-        } header: {
-            Text("Automation")
-        } footer: {
-            Text(configuration.os.family == .macOS || configuration.engine == .qemu
-                ? "The swiftvm command can see the virtual machine's screen and use its mouse and keyboard. With the guest tools in the virtual machine it can also run commands there and copy files."
-                : "The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
-        }
-    }
+    // MARK: Network
 
-    @ViewBuilder
     private var networkSection: some View {
-        Section {
+        Section("Connection") {
             if let interface = configuration.networkInterfaces.first {
                 Toggle("Connected", isOn: binding(\.networkInterfaces[0].isConnected))
                 LabeledContent("IP Address", value: model.address(for: machine) ?? "Assigned when the machine starts")
                 LabeledContent("MAC Address", value: interface.macAddress)
+                    .textSelection(.enabled)
             } else {
                 Text("This virtual machine has no network interface.")
                     .foregroundStyle(.secondary)
-            }
-            TextField("SSH Name", text: $sshAlias)
-                .onSubmit { commitTextFields() }
-                .help("The name that ssh and swiftvm reach this virtual machine by")
-            TextField("SSH User", text: $sshUser, prompt: Text(NSUserName()))
-                .onSubmit { commitTextFields() }
-            TextField("SSH Port", text: $sshPort, prompt: Text("22"))
-                .onSubmit { commitTextFields() }
-            if let command = model.sshCommand(for: machine) {
-                LabeledContent("Connect") {
-                    Text(command)
-                        .font(.body.monospaced())
-                        .textSelection(.enabled)
-                }
-            }
-        } header: {
-            Text("Network and SSH")
-        } footer: {
-            if let sshProblem {
-                Text(sshProblem).foregroundStyle(.red)
-            } else if !model.isSSHIncludeInstalled {
-                Text("Turn on “Add machines to ~/.ssh/config” in SwiftVM Settings to connect with just “ssh \(configuration.ssh.alias)”.")
             }
         }
     }
@@ -278,43 +444,58 @@ struct MachineSettingsView: View {
         }
     }
 
+    // MARK: SSH
+
+    private var sshSection: some View {
+        Section {
+            TextField("Name", text: $sshAlias)
+                .onSubmit { commitTextFields() }
+                .help("The name that ssh and swiftvm reach this virtual machine by")
+            TextField("User", text: $sshUser, prompt: Text(NSUserName()))
+                .onSubmit { commitTextFields() }
+            TextField("Port", text: $sshPort, prompt: Text("22"))
+                .onSubmit { commitTextFields() }
+            if let command = model.sshCommand(for: machine) {
+                LabeledContent("Connect") {
+                    Text(command)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        } footer: {
+            if let sshProblem {
+                Text(sshProblem).foregroundStyle(.red)
+            } else if !model.isSSHIncludeInstalled {
+                Text("Turn on “Add machines to ~/.ssh/config” in the Network pane of \(AppIdentity.current.name) Settings to connect with just “ssh \(configuration.ssh.alias)”.")
+            }
+        }
+    }
+
+    // MARK: USB, keyboard, automation and startup
+
     private var usbSection: some View {
         Section {
             USBDevicesEditor(machine: machine)
-        } header: {
-            Text("USB Devices")
         } footer: {
             USBDevicesFootnote()
         }
     }
 
-    private var devicesSection: some View {
-        Section("Devices") {
-            Toggle("Sound Output", isOn: binding(\.audio.outputEnabled))
-            // QEMU's sound card only plays.
-            if configuration.engine != .qemu {
-                Toggle("Microphone", isOn: binding(\.audio.inputEnabled))
-            }
-            Toggle("Resize Display with Window", isOn: binding(\.display.automaticallyResizes))
-            if !configuration.display.automaticallyResizes {
-                // A display that doesn't follow the window has a size of its own.
-                Picker("Resolution", selection: resolutionBinding) {
-                    ForEach(DisplayResolution.choices(for: configuration)) { resolution in
-                        Text(resolution.label(for: configuration)).tag(resolution)
-                    }
-                }
-            }
-        }
-        .disabled(isActive)
-    }
-
     private var keyboardSection: some View {
         Section {
             Toggle("Send System Shortcuts to the Guest", isOn: binding(\.keyboard.capturesSystemKeys))
-        } header: {
-            Text("Keyboard")
         } footer: {
             Text("Shortcuts such as Command-Tab and Command-Space go to the guest while its window has focus. Turn this off to keep them for your Mac.")
+        }
+    }
+
+    private var automationSection: some View {
+        Section {
+            Toggle("Allow Automation", isOn: binding(\.automation.isAllowed))
+        } footer: {
+            Text(configuration.os.family == .macOS || configuration.engine == .qemu
+                ? "The swiftvm command can see the virtual machine's screen and use its mouse and keyboard. With the guest tools in the virtual machine it can also run commands there and copy files."
+                : "The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
         }
     }
 
@@ -322,8 +503,6 @@ struct MachineSettingsView: View {
         Section {
             Toggle("Secure Boot", isOn: binding(\.boot.secureBoot))
             Toggle("Rosetta for x86-64 Programs", isOn: binding(\.boot.rosetta))
-        } header: {
-            Text("Startup")
         } footer: {
             Text("Secure Boot only starts systems signed with Microsoft's UEFI keys, which most major distributions are.")
         }
