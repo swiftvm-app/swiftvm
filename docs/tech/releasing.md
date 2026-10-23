@@ -52,6 +52,7 @@ in between, run **Deploy Website**.
 | Update Homebrew Tap | Writes the cask to `swiftvm-app/homebrew-tap`. Runs after a release, or by hand |
 | Republish Beta Appcast | Puts a beta back into the beta appcast |
 | Build Release | The build that both releases share |
+| Build QEMU | Builds the QEMU that releases carry when `scripts/build-qemu.sh`, `Native/QEMU` or the display bridge's headers change on `main`, and keeps it in the `qemu-builds` pre-release. Also by hand |
 | Deploy Website | Builds [the website](../../website/README.md) and puts it online. Runs after a release, or by hand |
 | Build Arch Linux ARM Image | Builds the image that [Arch Linux ARM machines](#the-arch-linux-arm-image) start from and publishes it. By hand |
 
@@ -63,7 +64,9 @@ SDK.
 1. `scripts/build-release.sh` builds the app, including QEMU with Linux graphics
    acceleration and experimental Windows Direct3D enabled by default, sets its
    version and update feed, and signs it with the Developer ID certificate and
-   the USB provisioning profile. It then creates the disk image.
+   the USB provisioning profile. It then creates the disk image. The workflow
+   hands it the QEMU that Build QEMU kept for the commit, and the script builds
+   QEMU itself only when there is none, which takes far longer.
 2. The workflow has Apple notarize the disk image and staples the ticket to
    it.
 3. `scripts/generate-appcast.sh` signs the disk image with the update key and

@@ -45,8 +45,25 @@ jobs:
       - name: Install create-dmg
         run: npm install --global create-dmg
 
-      # What scripts/build-qemu.sh builds the QEMU for Windows guests and accelerated Linux guests with.
+      # The QEMU for Windows guests and accelerated Linux guests, as the Build QEMU workflow kept it for
+      # this commit's build-qemu.sh and Native/QEMU. It is built here only when that hasn't happened yet.
+      - name: Download QEMU
+        id: qemu
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET: QEMU-${{ hashFiles('scripts/build-qemu.sh', 'Native/QEMU/**', 'Packages/SwiftVMKit/Sources/GuestDisplayBridge/include/**') }}.tar.gz
+        run: |
+          if gh release download qemu-builds --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$RUNNER_TEMP"; then
+            mkdir "$RUNNER_TEMP/qemu"
+            tar -xzf "$RUNNER_TEMP/$ASSET" -C "$RUNNER_TEMP/qemu"
+            echo "SWIFTVM_QEMU=$RUNNER_TEMP/qemu/QEMU" >> "$GITHUB_ENV"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No QEMU is kept for this commit yet, so it is built here, which takes far longer. The Build QEMU workflow keeps one."
+          fi
+
       - name: Install QEMU's build tools and libraries
+        if: steps.qemu.outputs.found != 'true'
         run: |
           brew install cmake ninja meson pkgconf glib pixman openssl@3 python
           xcodebuild -downloadComponent MetalToolchain
@@ -54,6 +71,7 @@ jobs:
       # Its sources and the libraries made from them, which take most of its first build. The script
       # itself tells whether what it finds still fits.
       - name: Cache QEMU's build
+        if: steps.qemu.outputs.found != 'true'
         uses: actions/cache@v4
         with:
           path: .build/qemu

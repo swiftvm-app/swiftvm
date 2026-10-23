@@ -1,0 +1,89 @@
+name: Build QEMU
+
+# The QEMU a release carries changes only with what scripts/build-qemu.sh builds it from, and takes far
+# longer to build than the app. It is built here when that changes, and kept as an asset of the
+# qemu-builds release, named after those files, for the release workflows to take as it is.
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-qemu.sh
+      - Native/QEMU/**
+      - Packages/SwiftVMKit/Sources/GuestDisplayBridge/include/**
+      - .github/workflows/build-qemu.yml
+  workflow_dispatch:
+
+concurrency:
+  group: build-qemu
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same name build-release.yml looks for.
+      - name: Name the build
+        id: name
+        run: |
+          echo "asset=QEMU-${{ hashFiles('scripts/build-qemu.sh', 'Native/QEMU/**', 'Packages/SwiftVMKit/Sources/GuestDisplayBridge/include/**') }}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Look for it among the kept builds
+        id: kept
+        env:
+          ASSET: ${{ steps.name.outputs.asset }}
+        run: |
+          if gh release view qemu-builds --repo "$REPO" --json assets --jq '.assets[].name' 2> /dev/null | grep -qxF "$ASSET"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$ASSET is kept already."
+          fi
+
+      - name: Install QEMU's build tools and libraries
+        if: steps.kept.outputs.found != 'true'
+        run: |
+          brew install cmake ninja meson pkgconf glib pixman openssl@3 python
+          xcodebuild -downloadComponent MetalToolchain
+
+      # Its sources and the libraries made from them, so that a change compiles only what it touches.
+      - name: Cache QEMU's build
+        if: steps.kept.outputs.found != 'true'
+        uses: actions/cache@v4
+        with:
+          path: .build/qemu
+          key: qemu-${{ runner.os }}-${{ hashFiles('scripts/build-qemu.sh', 'Native/QEMU/**', 'Packages/SwiftVMKit/Sources/GuestDisplayBridge/include/**') }}
+          restore-keys: |
+            qemu-${{ runner.os }}-
+
+      - name: Build QEMU
+        if: steps.kept.outputs.found != 'true'
+        env:
+          ASSET: ${{ steps.name.outputs.asset }}
+        run: |
+          qemu=$(scripts/build-qemu.sh)
+          tar -czf "$RUNNER_TEMP/$ASSET" -C "$(dirname "$qemu")" QEMU
+
+      - name: Keep it
+        if: steps.kept.outputs.found != 'true'
+        env:
+          ASSET: ${{ steps.name.outputs.asset }}
+        run: |
+          if ! gh release view qemu-builds --repo "$REPO" > /dev/null 2>&1; then
+            gh release create qemu-builds --repo "$REPO" --target "$GITHUB_SHA" \
+              --title "QEMU builds" --prerelease --latest=false \
+              --notes "QEMU as scripts/build-qemu.sh builds it, for the release workflows to put into the app. Each asset is named after the files it is built from. This is no SwiftVM release. Do not delete."
+          fi
+          gh release upload qemu-builds --repo "$REPO" --clobber "$RUNNER_TEMP/$ASSET"
+          # The ten newest are kept, for releases of earlier commits.
+          gh release view qemu-builds --repo "$REPO" --json assets \
+            --jq '.assets | sort_by(.createdAt) | reverse | .[10:] | .[].name' |
+            while read -r old; do
+              gh release delete-asset qemu-builds "$old" --repo "$REPO" --yes
+            done

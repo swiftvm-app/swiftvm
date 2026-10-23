@@ -15,7 +15,8 @@
 # SWIFTVM_SIGN_IDENTITY and SWIFTVM_PROVISIONING_PROFILE. Notarizing is the workflow's part.
 #
 # A release always carries the QEMU that runs Windows guests and Linux guests with graphics
-# acceleration: scripts/build-qemu.sh says what building it takes.
+# acceleration: scripts/build-qemu.sh says what building it takes. SWIFTVM_QEMU names one it made
+# earlier, which the release workflows take from the Build QEMU workflow, to use as it is.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
@@ -49,7 +50,11 @@ check_replaceable "$app"
 swift build -c release --product SwiftVM
 swift build -c release --package-path Packages/SwiftVMKit --product swiftvm
 swift build -c release --package-path Packages/SwiftVMKit --product swiftvm-agent
-qemu=$("$root/scripts/build-qemu.sh")
+if [[ -n ${SWIFTVM_QEMU:-} ]]; then
+    qemu=${SWIFTVM_QEMU:a}
+else
+    qemu=$("$root/scripts/build-qemu.sh")
+fi
 
 bundle_options=(--version "$version" --build-number "$build_number" --timestamp --qemu "$qemu")
 if [[ -n $sparkle_public_key || -n $sparkle_feed_url ]]; then
