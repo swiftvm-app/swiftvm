@@ -132,7 +132,9 @@ meson_build() {
     local directory=$1
     shift
     local reconfigure=()
-    [[ ! -f $directory/build/build.ninja ]] || reconfigure=(--reconfigure)
+    # Meson keeps the dependencies it found from one setup to the next, and with them Homebrew's
+    # versioned folders, which go when Homebrew moves to another version.
+    [[ ! -f $directory/build/build.ninja ]] || reconfigure=(--reconfigure --clearcache)
     meson setup $reconfigure "$directory/build" "$directory" --prefix="$prefix" --libdir=lib --buildtype=release -Dauto_features=disabled "$@"
     meson compile -C "$directory/build"
     meson install -C "$directory/build"
