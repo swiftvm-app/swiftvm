@@ -183,12 +183,16 @@ build_libraries() {
         patch --batch -d "$angle" -p1 < "$angle_patch" > /dev/null || fail "${angle_patch:t} doesn't apply to ANGLE."
         touch "$angle/.swiftvm-patched"
     fi
-    (
-        cd "$angle"
-        xcodebuild archive -archivePath "$prefix/ANGLE" -scheme ANGLE -sdk macosx -arch arm64 -configuration Release \
-            WEBCORE_LIBRARY_DIR=/usr/local/lib NORMAL_UMBRELLA_FRAMEWORKS_DIR= CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=NO \
-            MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET 'WK_LIBCPP_ASSERTIONS_CFLAGS_MACOS_SINCE_1400=-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE'
-    )
+    local angle_build=(xcodebuild archive -archivePath "$prefix/ANGLE" -scheme ANGLE -sdk macosx -arch arm64 -configuration Release
+        WEBCORE_LIBRARY_DIR=/usr/local/lib NORMAL_UMBRELLA_FRAMEWORKS_DIR= CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=NO
+        MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET 'WK_LIBCPP_ASSERTIONS_CFLAGS_MACOS_SINCE_1400=-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE')
+    # Xcode keeps what it built outside the cache, so ANGLE is built again only when what goes into it
+    # changes, rather than from the start whenever anything else does.
+    local angle_stamp=$( { print -r -- "${angle_build[*]}"; git -C "$sources/WebKit" rev-parse HEAD; cat "$angle_patch"; xcodebuild -version; } | shasum -a 256 | cut -d' ' -f1)
+    if [[ ! -f $prefix/ANGLE.xcarchive/.swiftvm-stamp || $(<"$prefix/ANGLE.xcarchive/.swiftvm-stamp") != $angle_stamp ]]; then
+        (cd "$angle" && $angle_build)
+        print -r -- "$angle_stamp" > "$prefix/ANGLE.xcarchive/.swiftvm-stamp"
+    fi
     cp -R "$prefix/ANGLE.xcarchive/Products/usr/local/lib/" "$prefix/lib/"
     cp -R "$angle/include/" "$prefix/include/"
     unpack epoxy.tar.gz epoxy "$native/epoxy-dylibs.patch"
@@ -240,15 +244,12 @@ build_display() {
 }
 
 build_qemu() {
-    # Unpacked afresh for each build, which its patches decide as much as its version does.
-    tar -xf "$sources/qemu-$qemu_version.tar.xz" -C "$work"
-    local source_dir=$work/qemu-$qemu_version patch_file
-    for patch_file in "$native"/qemu-*.patch; do
-        patch --batch -d "$source_dir" -p1 < "$patch_file" > /dev/null || fail "${patch_file:t} no longer applies to QEMU $qemu_version."
-    done
-    mkdir "$source_dir/build"
+    # Its build stays with the sources, and goes with them when its patches change, so that the next
+    # compiles only what changed. configure sets Meson up afresh each time.
+    unpack qemu-$qemu_version.tar.xz qemu "$native"/qemu-*.patch
+    mkdir -p "$sources/qemu/build"
     (
-        cd "$source_dir/build"
+        cd "$sources/qemu/build"
         ../configure --python="$python" --prefix=/ --extra-cflags="-I$prefix/include" $configure_options
         ninja qemu-system-aarch64
     )
@@ -278,7 +279,7 @@ copy_libraries() {
 }
 
 package() {
-    local source_dir=$work/qemu-$qemu_version
+    local source_dir=$sources/qemu
     out=$work/QEMU
     mkdir -p "$out/bin" "$out/lib" "$out/share/keymaps" "$out/licenses"
     cp "$source_dir/build/qemu-system-aarch64" "$out/bin/"
@@ -346,7 +347,7 @@ import pathlib, shutil, sys
 source, target = map(pathlib.Path, sys.argv[1:3])
 direct3d = sys.argv[3] == 'yes'
 for component in source.iterdir():
-    if not component.is_dir() or component.name in ('WebKit', 'llvm-project'):
+    if not component.is_dir() or component.name in ('WebKit', 'llvm-project', 'qemu'):
         continue
     if not direct3d and component.name in ('dxmt', 'directx-headers'):
         continue
