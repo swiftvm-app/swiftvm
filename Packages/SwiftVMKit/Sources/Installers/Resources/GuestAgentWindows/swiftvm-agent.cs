@@ -37,7 +37,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.4";
+        public const string Version = "1.5";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -1060,7 +1060,7 @@ namespace SwiftVM
             string architecture = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
             if (architecture != null) system["architecture"] = architecture.ToLowerInvariant();
 
-            var features = new List<object> { "clipboard", "time-zone", "exec", "display-size", "seamless" };
+            var features = new List<object> { "clipboard", "time-zone", "exec", "display-size", "seamless", "agent-desktop" };
             if (HasResizableDisplayDriver()) features.Add("resizable-display");
             if (HasDisplayDriver("viogpu3d.inf_*")) features.Add("accelerated-display");
 
@@ -1285,7 +1285,7 @@ namespace SwiftVM
         {
             var job = Json.Read(connection.ReadLine(256 * 1024));
             string type = Json.String(job, "type");
-            if (type != "exec")
+            if (type != "exec" && type != "desktop")
             {
                 Answer("The guest tools in Windows don't do “" + (type ?? "nothing") + "” jobs.");
                 return;
@@ -1293,7 +1293,7 @@ namespace SwiftVM
             Commands.Running command;
             try
             {
-                command = Commands.Start(job);
+                command = Commands.Start(job, type == "desktop");
             }
             catch (Exception error)
             {
@@ -1467,7 +1467,7 @@ namespace SwiftVM
 
         static readonly object LaunchGate = new object();
 
-        public static Running Start(Dictionary<string, object> job)
+        public static Running Start(Dictionary<string, object> job, bool desktop = false)
         {
             object value;
             var arguments = job.TryGetValue("arguments", out value) && value is object[]
@@ -1478,8 +1478,20 @@ namespace SwiftVM
             string directory = Json.String(job, "directory");
             var environment = job.TryGetValue("environment", out value) ? value as Dictionary<string, object> : null;
 
+            if (desktop)
+            {
+                if (arguments.Any(argument => argument.IndexOf('\0') >= 0))
+                    throw new ArgumentException("An agent-desktop argument contains a null byte.");
+                string program = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"SwiftVM\agent-desktop\agent-desktop.exe");
+                if (!File.Exists(program))
+                    throw new InvalidOperationException("agent-desktop isn't installed in this guest. Connect the guest to the internet and reinstall Guest Tools with `swiftvm install-tools <machine>`.");
+                arguments.Insert(0, program);
+                user = null;
+                directory = null;
+                environment = null;
+            }
             IntPtr token = IntPtr.Zero;
-            bool asSystem = string.IsNullOrEmpty(user) ? Sessions.ConsoleUser() == null : IsAdministrator(user);
+            bool asSystem = !desktop && (string.IsNullOrEmpty(user) ? Sessions.ConsoleUser() == null : IsAdministrator(user));
             if (!asSystem)
             {
                 string loggedIn = Sessions.ConsoleUser();

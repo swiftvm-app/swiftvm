@@ -20,7 +20,7 @@ public enum GuestProtocol {
     public static let maximumLineLength = 256 * 1024
     /// The version of the agent for macOS guests that is built from these sources, as it reports it
     /// when it connects. The agent for Linux keeps its own, in its script.
-    public static let macAgentVersion = "1.2"
+    public static let macAgentVersion = "1.3"
 
     /// The time on this Mac, in nanoseconds since 1970, as the agent takes it for setting the guest's clock.
     public static func currentTimeInNanoseconds() -> Int64 {
@@ -41,6 +41,8 @@ public enum GuestFeature {
     public static let timeZone = "time-zone"
     /// Takes ``GuestJob``s on ``GuestProtocol/jobPort``, and runs commands: ``GuestJob/exec(_:)``.
     public static let exec = "exec"
+    /// Runs agent-desktop in the logged-in graphical session: ``GuestJob/desktop(_:)``.
+    public static let desktop = "agent-desktop"
     /// Shows what is on the screen: ``GuestJob/screenshot``.
     public static let screen = "screen"
     /// Uses the mouse and the keyboard: ``GuestJob/pointer(_:)`` and ``GuestJob/keys(_:)``.
@@ -67,7 +69,7 @@ public enum GuestFeature {
     public static let seamless = "seamless"
 
     /// The features that are kinds of ``GuestJob``.
-    public static let jobs = [exec, screen, input, accessibility]
+    public static let jobs = [exec, screen, input, accessibility, desktop]
 }
 
 /// What an agent says about itself and its system when a connection opens.

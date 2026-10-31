@@ -879,9 +879,47 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(await later.receive(GuestJobAnswer.self)?.error?.contains("record-screen") == true)
     }
 
-    @Test func theScreenIsNobodysWhileNobodyIsLoggedIn() async {
+    @Test func desktopCommandsPreserveArgumentsStreamsAndExitStatus() async {
+        let (agent, mac) = FarEnd.makeLine()
+        defer { mac.hangUp() }
+        let literal = "quotes ' \" ; $HOME\nünïcödé"
+        let request = GuestJob.Desktop(arguments: ["-c", "printf '%s' \"$1\"; cat; printf '%s' \"$TMPDIR\" >&2; exit 7", "desktop-test", literal])
+        Thread.detachNewThread { [system] in
+            DesktopJob.run(request, on: agent, system: system, program: "/bin/sh")
+            GuestJobLine.hangUp(agent)
+        }
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        mac.send(JobFrame(.input, Data("input".utf8)).encoded)
+        mac.send(JobFrame(.input).encoded)
+        var output = Data()
+        var errors = Data()
+        var end: JobEnd?
+        while end == nil, let frame = await mac.frame() {
+            if frame.kind == .output { output.append(frame.payload) }
+            if frame.kind == .errorOutput { errors.append(frame.payload) }
+            end = frame.end
+        }
+        #expect(String(decoding: output, as: UTF8.self) == literal + "input")
+        #expect(String(decoding: errors, as: UTF8.self) == NSTemporaryDirectory())
+        #expect(end == JobEnd(status: 7))
+    }
+
+    @Test func aMissingDesktopToolDoesNotFallBackToAnotherExecutable() async {
+        let (agent, mac) = FarEnd.makeLine()
+        defer { mac.hangUp() }
+        Thread.detachNewThread { [system] in
+            DesktopJob.run(.init(arguments: ["status"]), on: agent, system: system, program: "/no-such-swiftvm-tool/agent-desktop")
+            GuestJobLine.hangUp(agent)
+        }
+        let answer = await mac.receive(GuestJobAnswer.self)
+        #expect(answer?.ok == false)
+        #expect(answer?.error?.contains("install-tools") == true)
+    }
+
+    @Test(arguments: [GuestJob.screenshot, .desktop(.init(arguments: ["status"]))])
+    func theScreenIsNobodysWhileNobodyIsLoggedIn(job: GuestJob) async {
         let daemon = AgentDaemon(system: system, queue: queue)
-        let mac = send(.screenshot, to: daemon)
+        let mac = send(job, to: daemon)
         defer { mac.hangUp() }
         let answer = await mac.receive(GuestJobAnswer.self)
         #expect(answer?.ok == false)

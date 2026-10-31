@@ -40,14 +40,15 @@ import threading
 import time
 import zlib
 
-AGENT_VERSION = "1.4"
+AGENT_VERSION = "1.5"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
 # Where jobs are taken, each on a connection of its own.
 JOB_PORT = 718
 # What this agent does beyond what every agent does, as it tells the app.
-FEATURES = ["exec", "screen", "input", "accessibility", "display-size"]
+FEATURES = ["exec", "screen", "input", "accessibility", "display-size", "agent-desktop"]
+DESKTOP_PROGRAM = "/usr/local/lib/swiftvm/agent-desktop/agent-desktop"
 MAX_LINE = 256 * 1024
 MAX_INTERFACES = 64
 # A clock that is this close to the Mac's is left to the system's time service.
@@ -1843,8 +1844,8 @@ class Job:
             # What starts a process as another user came with that version.
             self.answer("This takes Python 3.9 or newer in the guest, which has %d.%d." % sys.version_info[:2])
             return
-        if kind == "exec":
-            self.run_command(request)
+        if kind in ("exec", "desktop"):
+            self.run_command(request, desktop=kind == "desktop")
             return
         work = {
             "screenshot": self.system.screenshot,
@@ -1871,7 +1872,7 @@ class Job:
             self.send_frame(FRAME_OUTPUT, output)
         self.end(status=0)
 
-    def run_command(self, request):
+    def run_command(self, request, desktop=False):
         """Runs a command as an account of this system. What it prints goes to the app as it comes,
         what the app sends is its input, and how it exits ends the job."""
         try:
@@ -1879,8 +1880,23 @@ class Job:
             if (not isinstance(arguments, list) or not arguments or not arguments[0]
                     or not all(isinstance(argument, str) and "\0" not in argument for argument in arguments)):
                 raise AgentError("The request has no command.")
-            account = self.system.account(request.get("user"))
+            if desktop:
+                # A desktop job cannot choose a program, account or environment. In particular,
+                # a configured SSH account and a root fallback are not the user's desktop.
+                user = self.system.session_user(active_only=True)
+                if user is None:
+                    raise AgentError("Log in and unlock the guest's desktop before using agent-desktop.")
+                account = pwd.getpwuid(user)
+                if not os.access(DESKTOP_PROGRAM, os.X_OK):
+                    raise AgentError("agent-desktop isn't installed in this guest. Connect the guest to the internet and reinstall Guest Tools with `swiftvm install-tools <machine>`.")
+                arguments = [DESKTOP_PROGRAM] + arguments
+                request = {}
+            else:
+                account = self.system.account(request.get("user"))
             environment = self.system.environment(account)
+            if desktop and (not environment.get("DBUS_SESSION_BUS_ADDRESS") or not
+                            (environment.get("DISPLAY") or environment.get("WAYLAND_DISPLAY"))):
+                raise AgentError("The guest's graphical session has no display or session bus. Log out and back in, then retry agent-desktop.")
             added = request.get("environment") or {}
             if not isinstance(added, dict) or not all(
                 isinstance(name, str) and isinstance(value, str) and name and "=" not in name and "\0" not in name + value

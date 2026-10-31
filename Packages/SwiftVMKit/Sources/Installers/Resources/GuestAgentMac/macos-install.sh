@@ -92,6 +92,14 @@ esac
 # Sent over SSH it arrives for one account's eyes only. There is nothing in it to hide.
 chmod 644 "$directory/install.sh" 2>/dev/null || true
 
+cat > "$directory/desktop-install.sh" <<'SWIFTVM_END_OF_FILE'
+@@desktop-install.sh@@
+SWIFTVM_END_OF_FILE
+# Internet access is only needed for this download, never for the desktop control connection.
+if ! sh "$directory/desktop-install.sh" > "$directory/agent-desktop-install.log" 2>&1; then
+    echo "swiftvm: agent-desktop wasn't installed; see $directory/agent-desktop-install.log and reinstall Guest Tools to retry" >&2
+fi
+
 # Stopping first is what puts a newer agent in the place of a running older one.
 users=$(session_users)
 stop_agents

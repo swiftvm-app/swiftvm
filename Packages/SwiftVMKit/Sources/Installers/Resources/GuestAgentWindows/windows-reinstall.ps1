@@ -11,7 +11,7 @@ for ($attempt = 0; $attempt -lt 50; $attempt++) {
 }
 if (-not $disc) { throw 'The guest tools disc did not appear.' }
 $source = $disc.DeviceID + '\'
-foreach ($file in 'install.ps1', 'swiftvm-agent.cs') {
+foreach ($file in 'install.ps1', 'swiftvm-agent.cs', 'desktop-install.ps1') {
     Copy-Item -LiteralPath (Join-Path $source $file) -Destination $d
 }
 if (Test-Path -LiteralPath (Join-Path $source 'graphics-driver.zip')) {

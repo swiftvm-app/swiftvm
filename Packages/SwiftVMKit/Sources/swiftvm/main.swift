@@ -129,7 +129,12 @@ Usage: swiftvm <command> [arguments]
                                     for ui tree, press, set and focus. macOS asks someone at its screen
                                     for that: this turns the switch on in its System Settings and gives
                                     the account's password, with the machine's own mouse and keyboard
-  automation <machine> on|off       Let exec, cp, screenshot and ui work in the machine, or not
+  desktop <machine> [--timeout <seconds>] [--] <agent-desktop arguments>
+                                    Run agent-desktop in the guest's logged-in desktop, never on this Mac.
+                                    Start with status, skills get desktop, and skills get platform.
+                                    Arguments, input, output and exit status pass through unchanged.
+                                    Requires current Guest Tools; times out after 120 seconds by default
+  automation <machine> on|off       Let exec, cp, screenshot, ui and desktop work in the machine, or not
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
@@ -554,6 +559,9 @@ case "cp":
 
 case "screenshot":
     GuestJobs.screenshot(arguments)
+
+case "desktop":
+    GuestJobs.desktop(arguments)
 
 case "ui":
     GuestJobs.ui(arguments)

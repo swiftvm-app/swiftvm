@@ -164,6 +164,25 @@ private final class AgentProvider: VMBackendProvider {
         await machine.forceStop()
     }
 
+    @Test(arguments: [GuestFamily.linux, .macOS, .windows])
+    func desktopJobsStayInTheGuestAndRespectAutomation(family: GuestFamily) async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        provider.backend.features = [GuestFeature.desktop]
+        provider.backend.echoInput = true
+        let machine = try await startMachine(automation: false, family: family)
+        let job = GuestJob.desktop(.init(arguments: ["type", "@snapshot:e1", "quotes ' \" ; $HOME\nünïcödé"]))
+        await #expect(throws: GuestJobError.notAllowed(name: "Web")) { _ = try await machine.openJob(job) }
+        #expect(provider.backend.jobs.isEmpty)
+        #expect(!machine.doesItself(job))
+        try machine.updateConfiguration { $0.automation.isAllowed = true }
+        let input = Data("batch input\n".utf8)
+        #expect(try await machine.collect(job, input: input, patience: 5) == input)
+        let line = try #require(provider.backend.jobs.first)
+        #expect(GuestMessageCoding.message(GuestJob.self, from: Data(line.utf8)) == job)
+        #expect(provider.backend.deskCalls.isEmpty)
+        await machine.forceStop()
+    }
+
     @Test func anAgentIsOnlyAskedForWhatItSaysItDoes() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         // An agent from before it could show the screen.
@@ -173,6 +192,9 @@ private final class AgentProvider: VMBackendProvider {
         }
         await #expect(throws: GuestJobError.notOffered(name: "Web", version: "9.9")) {
             _ = try await machine.openJob(.unknown(type: "later"))
+        }
+        await #expect(throws: GuestJobError.notOffered(name: "Web", version: "9.9")) {
+            _ = try await machine.openJob(.desktop(.init(arguments: ["status"])))
         }
         // A job that is longer than a line may be would be passed over without a word. It isn't sent.
         await #expect(throws: GuestJobError.tooLong) {
