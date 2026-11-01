@@ -71,6 +71,14 @@ case "$0" in
     */install.sh | install.sh) cp "$0" "$directory/install.sh" 2>/dev/null || true ;;
 esac
 
+cat > "$directory/desktop-install.sh" <<'SWIFTVM_END_OF_FILE'
+@@desktop-install.sh@@
+SWIFTVM_END_OF_FILE
+# An offline or unsupported guest still gets the core tools. Reinstalling retries this step.
+if ! sh "$directory/desktop-install.sh" > "$directory/agent-desktop-install.log" 2>&1; then
+    echo "swiftvm: agent-desktop wasn't installed; see $directory/agent-desktop-install.log and reinstall Guest Tools to retry" >&2
+fi
+
 systemctl daemon-reload
 systemctl --quiet enable swiftvm-agent.service swiftvm-sshd-vsock.socket
 # Restarting is what puts a newer agent in the place of a running older one.

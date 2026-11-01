@@ -77,6 +77,14 @@ if ($LASTEXITCODE -ne 0) {
     throw "The guest agent couldn't be built: $output"
 }
 
+# Downloading the optional desktop tool must not keep the core tools out of an offline guest.
+try {
+    & (Join-Path $Source 'desktop-install.ps1') *> (Join-Path $program 'agent-desktop-install.log')
+} catch {
+    $_ | Out-String | Add-Content -LiteralPath (Join-Path $program 'agent-desktop-install.log')
+    Write-Warning 'agent-desktop was not installed. See agent-desktop-install.log in Program Files\SwiftVM and reinstall Guest Tools to retry.'
+}
+
 # An older agent goes first: its service, and its halves in the sessions of whoever is logged in.
 $service = Get-Service -Name SwiftVMAgent -ErrorAction SilentlyContinue
 if ($service) {

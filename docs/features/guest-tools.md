@@ -19,6 +19,7 @@ connection.
 | `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes | Yes |
 | `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Works without the guest tools | Works without the guest tools |
 | `swiftvm` [reads the screen as a tree](automation.md#what-is-on-the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests): `swiftvm allow-accessibility` | No |
+| `swiftvm desktop` uses [agent-desktop](automation.md#agent-desktop) | Logged-in desktop with AT-SPI | Logged-in desktop with permissions | Logged-in desktop |
 | The display follows the window | Works without the guest tools | Works without the guest tools | Yes, with the driver they bring |
 | [Seamless Mode](windows-guests.md#seamless-mode) shows each app in its own window | No | No | Yes, from version 1.4 |
 

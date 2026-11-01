@@ -45,6 +45,9 @@ enum SessionJob {
               let job = GuestMessageCoding.message(GuestJob.self, from: line)
         else { return }
         switch job {
+        case .desktop(let request):
+            DesktopJob.run(request, on: descriptor)
+            return
         case .screenshot, .pointer, .keys, .tree, .element, .permission:
             break
         case .exec, .unknown:
@@ -71,7 +74,7 @@ enum SessionJob {
                 output = try desktop.act(on: request)
             case .permission(let request):
                 output = try desktop.permission(request)
-            case .exec, .unknown:
+            case .exec, .desktop, .unknown:
                 output = nil
             }
             if let output, !output.isEmpty {

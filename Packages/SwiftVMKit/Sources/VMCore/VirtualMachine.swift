@@ -590,7 +590,7 @@ public final class VirtualMachine: Identifiable {
         let outcome: Result<Data, GuestJobError> = await withCheckedContinuation { continuation in
             Thread.detachNewThread {
                 let writer = DispatchGroup()
-                if case .exec = job {
+                if job.takesInput {
                     _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
                     writer.enter()
                     Thread.detachNewThread {
@@ -660,7 +660,7 @@ public final class VirtualMachine: Identifiable {
             return true
         case .keys(let keys):
             return (keys.text ?? "").allSatisfy { MacKeys.press(typing: $0) != nil } || !agent.offers(GuestFeature.input)
-        case .exec, .tree, .element, .permission, .unknown:
+        case .exec, .desktop, .tree, .element, .permission, .unknown:
             return false
         }
     }
@@ -692,7 +692,7 @@ public final class VirtualMachine: Identifiable {
             try await backend.pointer(request, guestTurnsWheel: turnsWheel)
         case .keys(let request):
             try await backend.keys(request)
-        case .exec, .tree, .element, .permission, .unknown:
+        case .exec, .desktop, .tree, .element, .permission, .unknown:
             throw MachineDeskError.unavailable
         }
         return Data()

@@ -15,6 +15,8 @@ import Foundation
 public enum GuestJob: Sendable, Hashable {
     /// Run a command. Its input and output travel as frames, and its exit status ends the job.
     case exec(Exec)
+    /// Run agent-desktop in the guest's graphical session. Output and status are passed through.
+    case desktop(Desktop)
     /// What is on the screen, as a PNG.
     case screenshot
     case pointer(Pointer)
@@ -26,6 +28,15 @@ public enum GuestJob: Sendable, Hashable {
     case permission(Permission)
     /// A kind of job this build doesn't know.
     case unknown(type: String)
+
+    public struct Desktop: Codable, Sendable, Hashable {
+        /// Arguments only: the guest chooses its installed executable, with no shell or account override.
+        public var arguments: [String]
+
+        public init(arguments: [String]) {
+            self.arguments = arguments
+        }
+    }
 
     public struct Exec: Codable, Sendable, Hashable {
         /// The command and its arguments. No shell reads them.
@@ -161,10 +172,19 @@ public enum GuestJob: Sendable, Hashable {
         }
     }
 
+    /// Whether this job streams input to a process, including an empty frame for end of input.
+    public var takesInput: Bool {
+        switch self {
+        case .exec, .desktop: true
+        default: false
+        }
+    }
+
     /// The ``GuestFeature`` an agent has to offer to be given this job.
     public var feature: String? {
         switch self {
         case .exec: GuestFeature.exec
+        case .desktop: GuestFeature.desktop
         case .screenshot: GuestFeature.screen
         case .pointer, .keys: GuestFeature.input
         case .tree, .element: GuestFeature.accessibility
@@ -252,6 +272,7 @@ extension GuestJob: Codable {
         let type = try decoder.container(keyedBy: TypeKey.self).decode(String.self, forKey: .type)
         switch type {
         case "exec": self = .exec(try Exec(from: decoder))
+        case "desktop": self = .desktop(try Desktop(from: decoder))
         case "screenshot": self = .screenshot
         case "pointer": self = .pointer(try Pointer(from: decoder))
         case "keys": self = .keys(try Keys(from: decoder))
@@ -268,6 +289,9 @@ extension GuestJob: Codable {
         case .exec(let exec):
             try container.encode("exec", forKey: .type)
             try exec.encode(to: encoder)
+        case .desktop(let desktop):
+            try container.encode("desktop", forKey: .type)
+            try desktop.encode(to: encoder)
         case .screenshot:
             try container.encode("screenshot", forKey: .type)
         case .pointer(let pointer):

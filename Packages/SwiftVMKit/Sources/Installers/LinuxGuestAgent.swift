@@ -32,7 +32,7 @@ public enum LinuxGuestAgent {
         "sudo sh -c 'mkdir -p /run/swiftvm-tools && mount -o ro /dev/disk/by-label/\(toolsVolumeName) /run/swiftvm-tools"
         + " && sh /run/swiftvm-tools/install.sh; umount /run/swiftvm-tools'"
 
-    static let fileNames = ["swiftvm-agent.py", "swiftvm-agent.service", "swiftvm-sshd-vsock.socket", "swiftvm-sshd-vsock@.service"]
+    static let fileNames = ["swiftvm-agent.py", "swiftvm-agent.service", "swiftvm-sshd-vsock.socket", "swiftvm-sshd-vsock@.service", "desktop-install.sh"]
 
     static func resourceURL(_ name: String) -> URL? {
         let url = URL(fileURLWithPath: name)

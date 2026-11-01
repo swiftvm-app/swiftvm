@@ -52,6 +52,7 @@ let package = Package(
         .testTarget(name: "InstallersTests", dependencies: ["Installers", "DiskTools", "GuestChannel"]),
         .testTarget(name: "VMNetworkingTests", dependencies: ["VMNetworking"]),
         .testTarget(name: "VMControlTests", dependencies: ["VMControl", "GuestChannel"]),
+        .testTarget(name: "SwiftVMCLITests", dependencies: ["SwiftVMCLI", "VMControl", "GuestChannel"]),
         .testTarget(name: "VZEngineTests", dependencies: ["VZEngine", "VMCore"]),
         .testTarget(name: "QEMUEngineTests", dependencies: ["QEMUEngine", "VMCore", "GuestChannel"]),
         .testTarget(name: "FileSharingTests", dependencies: ["FileSharing"]),
