@@ -71,9 +71,13 @@ else
 
     if [ "$ID" = ubuntu ]; then
         echo "==> Installing Firefox"
-        # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
-        # still a desktop.
-        apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+        # Ubuntu's Firefox comes from its store, which may not answer, or crawl so that the setup would
+        # take hours. A desktop without a browser is still a desktop: after ten minutes it goes without,
+        # and the store's download is called off.
+        if ! timeout 600 snap install firefox; then
+            snap abort --last=install > /dev/null 2>&1 || true
+            echo "Firefox couldn't be installed. Install it later with: sudo snap install firefox"
+        fi
     fi
 fi
 
@@ -88,6 +92,26 @@ mkdir -p /etc/lightdm/lightdm.conf.d
 greeter=slick-greeter
 [ ! -e /usr/share/xgreeters/lightdm-slick-greeter.desktop ] || greeter=lightdm-slick-greeter
 printf '[Seat:*]\ngreeter-session=%s\nuser-session=%s\ngreeter-hide-users=false\n' "$greeter" "$session" > /etc/lightdm/lightdm.conf.d/90-swiftvm.conf
+# The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up, and
+# its screen doesn't lock while nobody types: whoever drives the desktop from the Mac (swiftvm
+# desktop) finds it there after every start. The password still unlocks a locked screen, sudo and
+# SSH. Arch Linux lets only the autologin group in.
+if [ -n "${SWIFTVM_USER:-}" ]; then
+    printf '[Seat:*]\nautologin-user=%s\nautologin-session=%s\n' "$SWIFTVM_USER" "$session" > /etc/lightdm/lightdm.conf.d/91-swiftvm-autologin.conf
+    groupadd -rf autologin
+    gpasswd -a "$SWIFTVM_USER" autologin > /dev/null
+fi
+mkdir -p /etc/dconf/profile /etc/dconf/db/local.d
+[ -e /etc/dconf/profile/user ] || printf 'user-db:user\n' > /etc/dconf/profile/user
+grep -qx 'system-db:local' /etc/dconf/profile/user || echo 'system-db:local' >> /etc/dconf/profile/user
+cat > /etc/dconf/db/local.d/90-swiftvm << 'END'
+[org/cinnamon/desktop/session]
+idle-delay=uint32 0
+
+[org/cinnamon/desktop/screensaver]
+lock-enabled=false
+END
+dconf update
 # The network card stays with the service that has it, which asks for an address by the card's
 # own: that is what the Mac keeps the machine's address by. The desktop's NetworkManager only
 # watches the card, so that the desktop knows it is online. Two services that both configure

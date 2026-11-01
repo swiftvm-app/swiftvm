@@ -7,10 +7,9 @@ without a guest network connection or SSH key.
 ## Getting ready
 
 ```bash
-swiftvm start desk
-swiftvm wait desk               # until the guest tools answer
-swiftvm info desk               # the Automation line says what works
-swiftvm allow-accessibility desk --password '…'   # a macOS guest, once: for ui tree
+swiftvm create macos --name desk --password '…'   # or windows, or ubuntu-24.04 --script gnome
+swiftvm wait desk               # until it is set up and ready
+swiftvm desktop desk status     # agent-desktop answers from the logged-in desktop
 ```
 
 If a command needs newer [guest tools](guest-tools.md), update them with
@@ -18,9 +17,13 @@ If a command needs newer [guest tools](guest-tools.md), update them with
 [guest tools disc](guest-tools.md#windows) on Windows. Linux automation
 requires Python 3.9 or newer, included in every Quick Create image.
 
-`wait` only waits for the guest tools to connect. It does not wait for setup
-scripts, Windows installation, or a desktop login to finish. Check
-`swiftvm info <machine>` for setup progress.
+`wait` returns once the machine is ready for `exec`, `cp` and `desktop`: it has been
+created, its guest tools answer, the setup it was created with is done, restarts
+included, and a desktop that logs in by itself is logged in. That is the Windows
+installation, a Linux machine's setup scripts, or a new macOS machine's guest tools
+and the permissions below. A setup that failed is reported. Without `--timeout`, it
+waits 300 seconds and then says what it is still waiting for; run it again to wait
+on. `swiftvm info <machine>` shows setup progress meanwhile.
 
 ## What works where
 

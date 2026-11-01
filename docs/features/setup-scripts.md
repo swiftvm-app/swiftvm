@@ -73,7 +73,10 @@ are only partly built. It remains available on Ubuntu and Debian.
 
 A desktop needs an account password. Most desktops install packages on the first
 start, taking about ten minutes. Omarchy downloads a ready-made desktop instead.
-The machine restarts into its login screen when setup finishes.
+The machine restarts when setup finishes, and SwiftVM's desktops log in to the account by
+themselves, as macOS and Windows machines do, and don't lock the screen while it is
+idle. The password still unlocks a locked screen, and is what `sudo` asks for.
+Omarchy is the exception: it starts at its login screen.
 Scripts selected after the desktop finish before that restart.
 
 Desktop scripts install the desktop, a browser, and `spice-vdagent` for

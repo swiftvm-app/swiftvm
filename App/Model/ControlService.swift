@@ -2,6 +2,7 @@ import AppKit
 import GuestChannel
 import Installers
 import QEMUEngine
+import SSHIntegration
 import VMControl
 import VMCore
 import VZEngine
@@ -107,6 +108,14 @@ extension AppModel {
         }
 
         guard let identifier = request.machine else { return .failure("Missing machine name.") }
+        // `wait` right after `create`, which was cut short or ran in the background, finds a machine
+        // that is still being installed: it waits for that too.
+        let startedWaiting = ContinuousClock.now
+        if request.command == .wait, findMachine(identifier) == nil, let creation = creationInProgress(named: identifier) {
+            if let problem = await waitForCreation(creation, timeout: request.waitTimeout) {
+                return .failure(problem)
+            }
+        }
         guard let machine = findMachine(identifier) else { return notFound(identifier) }
         machine.lastError = nil
 
@@ -384,7 +393,8 @@ extension AppModel {
             }
             return details(machine)
         case .wait:
-            if let problem = await waitForGuestTools(of: machine, timeout: request.waitTimeout) {
+            let left = request.waitTimeout - (ContinuousClock.now - startedWaiting)
+            if let problem = await waitUntilReady(machine, timeout: max(left, .zero)) {
                 return .failure(problem)
             }
         case .discardState:
@@ -607,34 +617,120 @@ extension AppModel {
         return [error.localizedDescription, advice, wakes].compactMap { $0 }.joined(separator: " ")
     }
 
-    /// Waits until the guest tools of a machine that is up, or coming up, have answered. Returns what
-    /// is in the way if they don't.
-    private func waitForGuestTools(of machine: VirtualMachine, timeout: Duration) async -> String? {
+    /// How far a machine is from being ready for `exec`, `cp` and `desktop`.
+    private enum Readiness {
+        case ready
+        /// Still on its way, busy with what is said.
+        case waiting(String)
+        /// It won't get there by itself, for the reason that is said.
+        case failed(String)
+    }
+
+    /// Waits until a machine that is up, or coming up, is ready to be worked by scripts and agents: its
+    /// guest tools answer, the setup it was created with has come to its end, restarts included, and a
+    /// desktop it logs in to by itself is logged in, so that `swiftvm desktop` works. Returns what is in
+    /// the way if it doesn't get there in time.
+    private func waitUntilReady(_ machine: VirtualMachine, timeout: Duration) async -> String? {
         let deadline = ContinuousClock.now + timeout
-        while !machine.agent.isConnected {
-            // A machine that is down isn't on its way to answering anything.
-            guard machine.state.isActive, machine.state != .stopping, machine.state != .suspending else {
-                return "“\(machine.name)” isn't running."
+        var hasDesktop: Bool?
+        while true {
+            // A machine that is down isn't on its way to anything. One that restarts at the end of its
+            // setup is down for a moment, on its way back up.
+            let isUp = machine.state.isActive && machine.state != .stopping && machine.state != .suspending
+            guard isUp || machine.isRestartPending else { return "“\(machine.name)” isn't running." }
+            switch await readiness(of: machine, hasDesktop: &hasDesktop) {
+            case .ready:
+                return nil
+            case .failed(let reason):
+                return reason
+            case .waiting(let what):
+                guard ContinuousClock.now < deadline else {
+                    let alias = machine.configuration.ssh.alias.isEmpty ? machine.id.uuidString : machine.configuration.ssh.alias
+                    return "“\(machine.name)” isn't ready yet: \(what). `swiftvm wait \(alias)` waits on."
+                }
             }
-            guard ContinuousClock.now < deadline else {
-                return "The guest tools in “\(machine.name)” haven't answered in time. If they aren't installed, `swiftvm install-tools` installs them."
-            }
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(500))
         }
+    }
+
+    /// Says `yes` in a macOS or Linux guest whose desktop logs in to an account by itself when the
+    /// system starts: macOS's automatic login, or that of GDM, SDDM or LightDM, the login screens of
+    /// SwiftVM's desktops.
+    private static let logsInByItself = """
+        if [ "$(uname -s)" = Darwin ]; then
+            defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser > /dev/null 2>&1 && echo yes || echo no
+        elif [ -e /etc/systemd/system/display-manager.service ] && {
+            grep -qsi '^ *AutomaticLoginEnable *= *true' /etc/gdm3/custom.conf /etc/gdm/custom.conf ||
+            grep -rqs '^ *User *= *[^ ]' /etc/sddm.conf /etc/sddm.conf.d ||
+            grep -rqs '^ *autologin-user *= *[^ ]' /etc/lightdm; }; then
+            echo yes
+        else
+            echo no
+        fi
+        """
+
+    private func readiness(of machine: VirtualMachine, hasDesktop: inout Bool?) async -> Readiness {
+        let isWindowsBeingInstalled = machine.configuration.os.family == .windows && machine.configuration.installation.attachesSeedImage
+        guard machine.state == .running, machine.agent.isConnected else {
+            if isWindowsBeingInstalled { return .waiting("Windows is being installed") }
+            if machinesBeingSetUp.contains(machine.id) { return .waiting("macOS is setting up its account") }
+            return .waiting("its guest tools haven't answered. If they aren't installed, `swiftvm install-tools` installs them")
+        }
+        if let setup = machine.agent.setup {
+            let step = setup.step.map { ": \($0)" } ?? ""
+            switch setup.state {
+            case .pending, .running:
+                return .waiting("\(setup.title)\(step)")
+            case .failed:
+                let what = setup.name ?? "The setup script"
+                let place = setup.step.map { ", at “\($0)”" } ?? ""
+                guard machine.configuration.os.family == .linux else {
+                    return .failed("\(what) couldn't be set up in “\(machine.name)”\(place).")
+                }
+                let alias = machine.configuration.ssh.alias.isEmpty ? machine.id.uuidString : machine.configuration.ssh.alias
+                return .failed("\(what) couldn't be set up in “\(machine.name)”\(place). What it printed is in \(GuestIntegration.setupLogPath) in the guest. To run it again: swiftvm exec \(alias) --root -- systemctl start swiftvm-setup")
+            case .finished:
+                break
+            }
+        }
+        // Windows starts once more at the end of its setup, which the app finishes as it stops.
+        if isWindowsBeingInstalled { return .waiting("Windows is finishing its setup, and restarts") }
         // A new macOS machine is ready once the app has finished setting it up: until then it may still
         // be clicking through the guest's System Settings and typing the password there.
-        while machinesBeingSetUp.contains(machine.id) {
-            guard machine.state.isActive else { return "“\(machine.name)” isn't running." }
-            guard ContinuousClock.now < deadline else {
-                return "“\(machine.name)” is still being set up. Try `swiftvm wait` again in a moment."
-            }
-            try? await Task.sleep(for: .milliseconds(200))
+        if machinesBeingSetUp.contains(machine.id) {
+            return .waiting("the guest tools are being installed and allowed to work the desktop")
         }
         // Said once: whoever waits next has been told, or has seen to it.
         if let problem = automationSetupProblems.removeValue(forKey: machine.id) {
-            return "“\(machine.name)” is running, but its setup didn't let automation work its desktop: \(problem)"
+            return .failed("“\(machine.name)” is running, but its setup didn't let automation work its desktop: \(problem)")
         }
-        return nil
+        guard machine.configuration.automation.isAllowed, machine.agent.offers(GuestFeature.desktop),
+              machine.agent.offers(GuestFeature.exec)
+        else { return .ready }
+        // A desktop is waited for only where it logs in by itself, as SwiftVM sets them up: one that
+        // waits for someone at its login screen would be waited for in vain.
+        if hasDesktop == nil {
+            switch machine.configuration.os.family {
+            case .windows:
+                // Windows Setup is told to log in by itself, for good.
+                hasDesktop = true
+            case .macOS, .linux:
+                let probe = GuestJob.exec(.init(arguments: ["/bin/sh", "-c", Self.logsInByItself], user: "root"))
+                guard let said = try? await machine.collect(probe, patience: 10) else {
+                    return .waiting("its guest tools are starting")
+                }
+                hasDesktop = String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+            }
+        }
+        guard hasDesktop == true else { return .ready }
+        do {
+            _ = try await machine.collect(.desktop(.init(arguments: ["--version"])), patience: 20)
+            return .ready
+        } catch GuestJobError.refused(let reason) where reason.contains("agent-desktop isn't installed") {
+            return .failed("“\(machine.name)” is running, but \(reason)")
+        } catch {
+            return .waiting("its desktop isn't logged in yet")
+        }
     }
 
     /// Connects a `swiftvm console` session to a machine's serial console and returns when the tool hangs
@@ -1016,6 +1112,28 @@ extension AppModel {
         machine.agent.isConnected ? "" : " With the guest tools it does so without asking: swiftvm install-tools."
     }
 
+    /// The machine being created that `identifier` names, by its name or the SSH name it is going to get.
+    private func creationInProgress(named identifier: String) -> MachineCreation? {
+        let lowered = identifier.lowercased()
+        return creationsInProgress.first { $0.name.lowercased() == lowered || SSHAlias.slug(from: $0.name) == lowered }
+    }
+
+    /// Waits until `creation` has put its machine in the library. Returns why not, if it doesn't.
+    private func waitForCreation(_ creation: MachineCreation, timeout: Duration) async -> String? {
+        let deadline = ContinuousClock.now + timeout
+        while creations.contains(where: { $0.id == creation.id }) {
+            if let message = creation.errorMessage {
+                return "“\(creation.name)” couldn't be created: \(message)"
+            }
+            guard ContinuousClock.now < deadline else {
+                let progress = creation.fraction.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
+                return "“\(creation.name)” isn't ready yet: it is still being created, \(creation.status)\(progress). `swiftvm wait \(SSHAlias.slug(from: creation.name))` waits on."
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return nil
+    }
+
     /// Finds a machine by UUID, name or SSH alias (case-insensitive).
     func findMachine(_ identifier: String) -> VirtualMachine? {
         if let id = UUID(uuidString: identifier), let machine = library.machine(id: id) {
@@ -1195,6 +1313,10 @@ extension AppModel {
 
     private func notFound(_ identifier: String) -> ControlResponse {
         let lowered = identifier.lowercased()
+        if let creation = creationInProgress(named: identifier) {
+            let progress = creation.fraction.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
+            return .failure("“\(creation.name)” is still being created: \(creation.status)\(progress). `swiftvm wait \(identifier)` waits until it is ready.")
+        }
         if let away = library.unavailableMachines.first(where: { $0.name.lowercased() == lowered || $0.sshAlias == lowered }) {
             return .failure(away.explanation)
         }

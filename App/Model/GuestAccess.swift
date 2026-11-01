@@ -126,10 +126,16 @@ extension AppModel {
     /// the question said when it wasn't recognized. Its window is there before what is in it has faded
     /// in, so it is read until it says so, for a few seconds.
     private func allowButton(in alert: CGRect, on machine: VirtualMachine) async throws -> (CGRect?, String) {
-        let deadline = ContinuousClock.now + .seconds(8)
+        let deadline = ContinuousClock.now + .seconds(15)
         var said = ""
+        var alert = alert
         while true {
             try await Task.sleep(for: .milliseconds(700))
+            // The question moves into place after its window is there: where it is is asked again each
+            // time, or the picture is read where it was, and only part of what it says is there.
+            if let now = try? await permission(.check, .screenRecording, on: machine).alert, now.count == 4 {
+                alert = CGRect(x: now[0], y: now[1], width: now[2], height: now[3])
+            }
             // As for the settings' list: the time is that of the picture, not of reading it.
             let takenAt = ContinuousClock.now
             let picture = try await machine.carryOut(.screenshot)
@@ -163,6 +169,12 @@ extension AppModel {
             }
             if state.sheet == nil {
                 guard let (line, window) = try await listedLine(kind, on: machine, from: settings) else {
+                    // macOS 27 at times refuses a program that asks to record the screen without putting
+                    // it on the list. The list's own Add button takes it by its path instead.
+                    if kind == .screenRecording, let added = try await addToList(kind, on: machine, password: password) {
+                        state = added
+                        continue
+                    }
                     throw AccessError.failed("System Settings in “\(machine.name)” doesn't show the guest tools on its \(kind.listName) list. If something lies over the window, or the screen is locked, see to that and try again.")
                 }
                 guard let place = MacGuestTools.switchPlace(onLine: line, of: window, scale: state.scale) else {
@@ -192,6 +204,46 @@ extension AppModel {
         guard state.isAllowed else {
             throw AccessError.failed("The switch for the guest tools in “\(machine.name)” didn't stay on. In the guest, turn on swiftvm-agent under System Settings › Privacy & Security › \(kind.listName).")
         }
+    }
+
+    /// Puts the guest tools on the settings' list with its Add button, which asks for the password and
+    /// then for the program, and turns its switch on. The button is found in the tree of what is on
+    /// the screen, which the guest tools read once they may work the desktop: the switch for that comes
+    /// first. Returns how things stand afterwards, or `nil` if there is no button to press.
+    private func addToList(
+        _ kind: GuestJob.Permission.Kind, on machine: VirtualMachine, password: String
+    ) async throws -> GuestPermissionState? {
+        guard machine.agent.offers(GuestFeature.accessibility),
+              try await permission(.check, .accessibility, on: machine).isAllowed,
+              let tree = try? await machine.collect(.tree(.init(application: "System Settings", depth: 40, all: true)), patience: 30),
+              let add = MacGuestTools.addButton(inTree: tree)
+        else { return nil }
+        _ = try await machine.collect(.element(.init(action: .press, element: add)), patience: 15)
+        var state = try await waitForPermission(kind, on: machine, for: .seconds(8)) { $0.isAllowed || $0.sheet != nil }
+        guard state.sheet != nil, !state.isAllowed else { return state }
+        // As for the switch: what is typed while the question slides into place is lost.
+        try await Task.sleep(for: .milliseconds(1500))
+        _ = try await machine.carryOut(.keys(.init(text: password, keys: ["Return"])))
+        // A password that is taken makes way for a panel to choose the program in, which isn't one
+        // of the settings' windows. The question that is still there has shaken its head.
+        state = try await waitForPermission(kind, on: machine, for: .seconds(6)) { $0.sheet == nil }
+        guard state.sheet == nil else {
+            _ = try? await machine.carryOut(.keys(.init(keys: ["Escape"])))
+            throw AccessError.failed("macOS in “\(machine.name)” didn't take the password. It has to be that of an administrator's account that is logged in at the guest's screen.")
+        }
+        try await Task.sleep(for: .seconds(2))
+        // Go to Folder takes the program's path. Its first Return goes there, the second chooses it.
+        _ = try await machine.carryOut(.keys(.init(keys: ["cmd+shift+g"])))
+        try await Task.sleep(for: .milliseconds(1500))
+        _ = try await machine.carryOut(.keys(.init(text: MacGuestTools.programPath, keys: ["Return"])))
+        try await Task.sleep(for: .milliseconds(1500))
+        _ = try await machine.carryOut(.keys(.init(keys: ["Return"])))
+        state = try await waitForPermission(kind, on: machine, for: .seconds(10)) { $0.isAllowed }
+        if !state.isAllowed {
+            // A panel that is still open would take what is typed next.
+            _ = try? await machine.carryOut(.keys(.init(keys: ["Escape"])))
+        }
+        return state
     }
 
     /// Where the list names the guest tools, and the window it is in. The settings' window may still be
@@ -274,6 +326,28 @@ extension GuestJob.Permission.Kind {
 nonisolated enum MacGuestTools {
     /// The name on the list of what may read the screen: the program's, as the installer puts it there.
     static let listedName = "swiftvm-agent"
+
+    /// Where the installer puts the program, for adding it to a list by hand.
+    static let programPath = "/usr/local/lib/swiftvm/swiftvm-agent"
+
+    /// The `id` of the first Add button in a tree of the settings' window, as the guest tools give it
+    /// (``GuestJob/tree(_:)``): the one under the page's first list. `nil` if there is none.
+    static func addButton(inTree tree: Data) -> String? {
+        guard let root = try? JSONSerialization.jsonObject(with: tree) as? [String: Any],
+              let applications = root["applications"] as? [[String: Any]]
+        else { return nil }
+        func find(in parts: [[String: Any]]) -> String? {
+            for part in parts {
+                if part["role"] as? String == "button", part["name"] as? String == "Add",
+                   (part["actions"] as? [String])?.contains("press") == true, let id = part["id"] as? String {
+                    return id
+                }
+                if let found = find(in: part["children"] as? [[String: Any]] ?? []) { return found }
+            }
+            return nil
+        }
+        return find(in: applications)
+    }
 
     /// How far in from the window's right edge the middle of a line's switch is, in points: the
     /// window's margin, the list's own, and half the switch.
