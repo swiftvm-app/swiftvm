@@ -355,9 +355,16 @@ private final class EventLog: @unchecked Sendable {
         defer { client.close() }
         client.requestSize(width: 2048, height: 1152)
         client.requestSize(width: 2560, height: 1440)
-        let thread = Thread { self.greet(server, width: 640, height: 480) }
+        // The handshake is read to its end before this test reads on: `open` can return while the
+        // encodings it sent are still unread, and they would be read here instead.
+        let greeted = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            self.greet(server, width: 640, height: 480)
+            greeted.signal()
+        }
         thread.start()
         try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: greeted) }.value)
         // Neither size may be sent until the server supports resizing.
         #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 2, 128, 1, 224]))
 

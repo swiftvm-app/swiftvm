@@ -18,7 +18,10 @@ extension AppModel {
                 guard let machine = findMachine(identifier) else { return notFound(identifier) }
                 return success(machine)
             }
-            return ControlResponse(ok: true, machines: library.machines.map { summary(of: $0) })
+            // A machine being created holds its name, so it is listed too, with how far it has got.
+            return ControlResponse(
+                ok: true, machines: library.machines.map { summary(of: $0) }, creations: creations.map { summary(of: $0) }
+            )
         case .info:
             guard let identifier = request.machine else { return .failure("Missing machine name.") }
             guard let machine = findMachine(identifier) else { return notFound(identifier) }
@@ -111,10 +114,20 @@ extension AppModel {
         // `wait` right after `create`, which was cut short or ran in the background, finds a machine
         // that is still being installed: it waits for that too.
         let startedWaiting = ContinuousClock.now
-        if request.command == .wait, findMachine(identifier) == nil, let creation = creationInProgress(named: identifier) {
+        if request.command == .wait, let creation = creationRatherThanMachine(identifier) {
+            guard creation.errorMessage == nil else { return notFound(identifier) }
             if let problem = await waitForCreation(creation, timeout: request.waitTimeout) {
                 return .failure(problem)
             }
+        }
+        // Deleting a machine that is still being created calls the creation off, as its row's button in
+        // the menu bar panel does, and one that failed is cleared away. Either way its name is free again.
+        if request.command == .delete, let creation = creationRatherThanMachine(identifier) {
+            let note = creation.errorMessage == nil
+                ? "Cancelled creating “\(creation.name)”."
+                : "Cleared “\(creation.name)”, which couldn't be created."
+            dismiss(creation)
+            return ControlResponse(ok: true, note: note)
         }
         guard let machine = findMachine(identifier) else { return notFound(identifier) }
         machine.lastError = nil
@@ -811,7 +824,7 @@ extension AppModel {
                 counter += 1
             }
         } else if isNameTaken(name) {
-            return .failure("A virtual machine named “\(name)” already exists.")
+            return .failure(nameTakenProblem(name))
         }
         // Sizes are in GB. One typed in bytes would overflow further down.
         if let memory = parameters.memoryGigabytes, !(1...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
@@ -953,7 +966,7 @@ extension AppModel {
                 counter += 1
             }
         } else if isNameTaken(name) {
-            return .failure("A virtual machine named “\(name)” already exists.")
+            return .failure(nameTakenProblem(name))
         }
         if let memory = parameters.memoryGigabytes, !(4...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
             return .failure("Windows needs 4 GB of memory or more, and no more than this Mac has. The size is in GB.")
@@ -1019,7 +1032,7 @@ extension AppModel {
         }
         let name = parameters.name ?? nameForMachine(from: template)
         if parameters.name != nil, isNameTaken(name) {
-            return .failure("A virtual machine named “\(name)” already exists.")
+            return .failure(nameTakenProblem(name))
         }
         // Sizes are in GB. One typed in bytes would overflow further down.
         if let memory = parameters.memoryGigabytes, !(1...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
@@ -1100,6 +1113,10 @@ extension AppModel {
         case .failure(let error):
             // The caller reports the failure; don't leave a failed row behind in the menu bar panel.
             creations.removeAll { $0.name == name && $0.errorMessage != nil }
+            // Called off from the menu bar panel, or by `swiftvm delete` in another terminal.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                return .failure("Creating “\(name)” was cancelled.")
+            }
             return .failure(error.localizedDescription)
         }
     }
@@ -1112,10 +1129,48 @@ extension AppModel {
         machine.agent.isConnected ? "" : " With the guest tools it does so without asking: swiftvm install-tools."
     }
 
-    /// The machine being created that `identifier` names, by its name or the SSH name it is going to get.
-    private func creationInProgress(named identifier: String) -> MachineCreation? {
+    /// The machine being created, or that failed to be, that `identifier` names, by its name or the SSH
+    /// name it is going to get.
+    private func creation(named identifier: String) -> MachineCreation? {
         let lowered = identifier.lowercased()
-        return creationsInProgress.first { $0.name.lowercased() == lowered || SSHAlias.slug(from: $0.name) == lowered }
+        return creations.first { $0.name.lowercased() == lowered } ?? creations.first { SSHAlias.slug(from: $0.name) == lowered }
+    }
+
+    /// The creation that `identifier` names, where a machine could be named by it too. A name goes before
+    /// an SSH name: a machine that was renamed keeps its SSH name, which can be a new machine's name, and
+    /// `swiftvm delete` of the new one mustn't delete the old.
+    private func creationRatherThanMachine(_ identifier: String) -> MachineCreation? {
+        let lowered = identifier.lowercased()
+        if let id = UUID(uuidString: identifier), library.machine(id: id) != nil { return nil }
+        if library.machines.contains(where: { $0.name.lowercased() == lowered }) { return nil }
+        if let creation = creations.first(where: { $0.name.lowercased() == lowered }) { return creation }
+        if library.machines.contains(where: { $0.configuration.ssh.alias == lowered }) { return nil }
+        return creations.first { SSHAlias.slug(from: $0.name) == lowered }
+    }
+
+    /// Why `name`, which ``isNameTaken(_:)``, can't be given to a new machine, and what frees it when a
+    /// creation holds it.
+    private func nameTakenProblem(_ name: String) -> String {
+        guard let creation = creation(named: name), creation.name.lowercased() == name.lowercased() else {
+            return "A virtual machine named “\(name)” already exists."
+        }
+        let identifier = shellWord(creation.name)
+        guard let error = creation.errorMessage else {
+            return "“\(creation.name)” is being created already: \(progress(of: creation)). `swiftvm wait \(identifier)` waits until it is ready, `swiftvm delete \(identifier)` cancels it."
+        }
+        return "“\(creation.name)” couldn't be created: \(Self.sentence(error)) `swiftvm delete \(identifier)` clears it, so that the name can be used again."
+    }
+
+    /// `Downloading… (42%)`
+    private func progress(of creation: MachineCreation) -> String {
+        creation.status + (creation.fraction.map { " (\(Int(($0 * 100).rounded()))%)" } ?? "")
+    }
+
+    private func summary(of creation: MachineCreation) -> CreationSummary {
+        CreationSummary(
+            name: creation.name, system: creation.os.summary,
+            status: creation.status, fraction: creation.fraction, error: creation.errorMessage
+        )
     }
 
     /// Waits until `creation` has put its machine in the library. Returns why not, if it doesn't.
@@ -1127,7 +1182,7 @@ extension AppModel {
             }
             guard ContinuousClock.now < deadline else {
                 let progress = creation.fraction.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
-                return "“\(creation.name)” isn't ready yet: it is still being created, \(creation.status)\(progress). `swiftvm wait \(SSHAlias.slug(from: creation.name))` waits on."
+                return "“\(creation.name)” isn't ready yet: it is still being created, \(creation.status)\(progress). `swiftvm wait \(shellWord(creation.name))` waits on."
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
@@ -1313,9 +1368,12 @@ extension AppModel {
 
     private func notFound(_ identifier: String) -> ControlResponse {
         let lowered = identifier.lowercased()
-        if let creation = creationInProgress(named: identifier) {
-            let progress = creation.fraction.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
-            return .failure("“\(creation.name)” is still being created: \(creation.status)\(progress). `swiftvm wait \(identifier)` waits until it is ready.")
+        if let creation = creation(named: identifier) {
+            let name = shellWord(creation.name)
+            guard let error = creation.errorMessage else {
+                return .failure("“\(creation.name)” is still being created: \(progress(of: creation)). `swiftvm wait \(name)` waits until it is ready, `swiftvm delete \(name)` cancels it.")
+            }
+            return .failure("“\(creation.name)” couldn't be created: \(Self.sentence(error)) `swiftvm delete \(name)` clears it, so that the name can be used again.")
         }
         if let away = library.unavailableMachines.first(where: { $0.name.lowercased() == lowered || $0.sshAlias == lowered }) {
             return .failure(away.explanation)
