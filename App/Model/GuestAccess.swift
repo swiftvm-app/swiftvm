@@ -130,6 +130,8 @@ extension AppModel {
         var said = ""
         while true {
             try await Task.sleep(for: .milliseconds(700))
+            // As for the settings' list: the time is that of the picture, not of reading it.
+            let takenAt = ContinuousClock.now
             let picture = try await machine.carryOut(.screenshot)
             if let lines = try? await ScreenText.lines(in: picture, within: alert) {
                 said = lines.map(\.text).joined(separator: " ")
@@ -142,7 +144,7 @@ extension AppModel {
                     return (lines[allow].frame, said)
                 }
             }
-            guard ContinuousClock.now < deadline else { return (nil, said) }
+            guard takenAt < deadline else { return (nil, said) }
         }
     }
 
@@ -202,11 +204,15 @@ extension AppModel {
         var frame = settings
         while true {
             let window = CGRect(x: frame[0], y: frame[1], width: frame[2], height: frame[3])
+            // The time is that of the picture, not of reading it: the first reading in the app loads
+            // what reads, which has taken as long as the whole patience, and the picture it read was
+            // then of a list not yet filled in.
+            let takenAt = ContinuousClock.now
             let picture = try await machine.carryOut(.screenshot)
             if let line = try await ScreenText.find(MacGuestTools.listedName, in: picture, within: window) {
                 return (line, window)
             }
-            guard ContinuousClock.now < deadline else { return nil }
+            guard takenAt < deadline else { return nil }
             try await Task.sleep(for: .seconds(1))
             if let now = try await permission(.check, kind, on: machine).settings, now.count == 4 {
                 frame = now
