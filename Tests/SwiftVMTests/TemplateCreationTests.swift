@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import VMControl
 import VMCore
 @testable import SwiftVM
 
@@ -71,5 +72,40 @@ import VMCore
         await retry.task?.value
         try #require(retry.errorMessage == nil)
         #expect(model.library.machines.first { $0.name == "Retry" }?.configuration.ssh.alias == "retry")
+
+        try await theCommandLineSeesAndFreesTheNamesThatCreationsHold(model: model, template: template)
+    }
+
+    /// A creation holds its name before there is a machine: `list` shows it, and `delete` lets it go,
+    /// whether it is still working, as one is that a stopped `swiftvm create` left behind, or failed.
+    private func theCommandLineSeesAndFreesTheNamesThatCreationsHold(model: AppModel, template: VMTemplate) async throws {
+        let staging = VMLibrary.stagingDirectory(in: model.library.machinesDirectory)
+        try Data().write(to: staging)
+        let failed = model.create(TemplateCreateRequest(name: "Broken One", template: template))
+        await failed.task?.value
+        try #require(failed.errorMessage != nil)
+        try FileManager.default.removeItem(at: staging)
+
+        let listed = await model.handle(ControlRequest(command: .list))
+        #expect(listed.creations?.first { $0.name == "Broken One" }?.error != nil)
+        let again = await model.handle(ControlRequest(
+            command: .create, create: .init(distribution: "", name: "broken one", template: template.name, start: false)
+        ))
+        #expect(again.ok == false)
+        #expect(again.error?.contains("swiftvm delete 'Broken One'") == true)
+        let cleared = await model.handle(ControlRequest(command: .delete, machine: "broken-one"))
+        #expect(cleared.ok)
+        #expect(!model.isNameTaken("Broken One"))
+
+        // Nothing runs on the main actor until this test waits, so the creation hasn't got anywhere. Its
+        // name is the SSH name of "Original", which is the machine that mustn't be deleted for it.
+        let pending = model.create(TemplateCreateRequest(name: "Base", template: template))
+        let cancelled = await model.handle(ControlRequest(command: .delete, machine: "base"))
+        #expect(cancelled.ok)
+        #expect(cancelled.note?.hasPrefix("Cancelled") == true)
+        #expect(!model.isNameTaken("Base"))
+        await pending.task?.value
+        #expect(!model.library.machines.contains { $0.name == "Base" })
+        #expect(model.library.machines.contains { $0.name == "Original" })
     }
 }

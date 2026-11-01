@@ -23,7 +23,7 @@ swiftvm info web-server      # one machine in detail
 
 | Command | What it does |
 | --- | --- |
-| `list` | List virtual machines |
+| `list` | List virtual machines, and those still being created or that failed to be |
 | `info <machine>` | Show one machine in detail |
 | `create <system> [options]` | Create a machine and start it, unless `--no-start` is given |
 | `create --template <template> [options]` | Create a machine from a [template](templates.md#creating-a-machine-from-one) |
@@ -32,7 +32,7 @@ swiftvm info web-server      # one machine in detail
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
 | `compression <machine> on\|off` | Enable or disable [disk compression](disks.md#keeping-the-disk-compressed) for a shut-down Linux or Windows machine |
 | `open <machine>` | Show the machine's window |
-| `delete <machine>` | Move a stopped machine to the Trash, or delete it for good if set so in Settings |
+| `delete <machine>` | Move a stopped machine to the Trash, or delete it for good if set so in Settings. A machine still being created is cancelled, and one that failed to be is cleared, which frees its name |
 
 `<system>` is `macos`, `windows`, or a Linux image: `ubuntu-26.04`,
 `ubuntu-24.04`, `debian-13`, or `arch`.
@@ -41,6 +41,10 @@ swiftvm info web-server      # one machine in detail
 the guest to finish. `swiftvm wait <machine>` waits for that: until the machine is
 ready for `exec`, `cp` and `desktop`. It also waits for a machine that is still being
 created, so it can follow a `create` that was interrupted or run in the background.
+
+Stopping `create` with Ctrl-C doesn't stop the creation: the app goes on with it,
+and `create` says so as it stops. `swiftvm list` shows the machines still being created,
+and `swiftvm delete <machine>` cancels one, which frees its name.
 
 `swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
 SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and

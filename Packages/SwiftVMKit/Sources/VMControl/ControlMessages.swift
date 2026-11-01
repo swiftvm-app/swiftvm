@@ -323,6 +323,28 @@ public struct MachineSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// A machine the app is still creating, or failed to create, which holds its name until it is done or
+/// deleted.
+public struct CreationSummary: Codable, Sendable, Equatable {
+    /// Also what `swiftvm wait` and `swiftvm delete` take for it.
+    public var name: String
+    public var system: String
+    /// What it is busy with, such as downloading.
+    public var status: String
+    /// How far along the current step is, from 0 to 1, when that can be told.
+    public var fraction: Double?
+    /// Why it couldn't be created. `nil` while it is still being created.
+    public var error: String?
+
+    public init(name: String, system: String, status: String, fraction: Double?, error: String?) {
+        self.name = name
+        self.system = system
+        self.status = status
+        self.fraction = fraction
+        self.error = error
+    }
+}
+
 /// The parts of a machine that don't fit in a table row.
 public struct MachineDetails: Codable, Sendable, Equatable {
     public struct Drive: Codable, Sendable, Equatable {
@@ -556,10 +578,14 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     public var setupScripts: [SetupScriptSummary]?
     /// The templates, for the commands that deal with them.
     public var templates: [TemplateSummary]?
+    /// The machines still being created, or that failed to be, for `list`. Missing from an app older
+    /// than this.
+    public var creations: [CreationSummary]?
 
     public init(
         ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil,
-        usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil, templates: [TemplateSummary]? = nil
+        usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil, templates: [TemplateSummary]? = nil,
+        creations: [CreationSummary]? = nil
     ) {
         self.ok = ok
         self.error = error
@@ -569,6 +595,7 @@ public struct ControlResponse: Codable, Sendable, Equatable {
         self.usbDevices = usbDevices
         self.setupScripts = setupScripts
         self.templates = templates
+        self.creations = creations
     }
 
     public static func failure(_ message: String) -> ControlResponse {

@@ -6,7 +6,7 @@ import VMControl
 let usage = """
 Usage: swiftvm <command> [arguments]
 
-  list                              List virtual machines
+  list                              List virtual machines, and those still being created
   info <machine>                    Show one machine in detail
   create <system> [options]         Create a machine and start it. Then `swiftvm wait` until it is ready
       <system> is macos, windows, or a Linux image such as ubuntu-26.04
@@ -46,7 +46,7 @@ Usage: swiftvm <command> [arguments]
   restart <machine>
   open <machine>                    Show the machine's window
   delete <machine>                  Move a stopped machine to the Trash, or delete it for good if set so
-                                    in Settings
+                                    in Settings. Cancels a machine still being created
   clone <machine> [name]            Copy a machine that is shut down
   move <machine> <folder>           Move a machine that is shut down into another folder, which may be on
                                     another disk. Waits until it is there
@@ -173,8 +173,22 @@ func formatBytes(_ value: UInt64) -> String {
     return formatter.string(fromByteCount: Int64(clamping: value))
 }
 
-func printTable(_ machines: [MachineSummary]) {
-    guard !machines.isEmpty else {
+/// The table's row for a machine the app is still creating, or failed to create. Its numbers aren't
+/// known before it is made.
+func creationRow(_ creation: CreationSummary) -> [String] {
+    let state: String
+    if creation.error != nil {
+        state = "failed to create"
+    } else if let fraction = creation.fraction {
+        state = "creating (\(Int((fraction * 100).rounded()))%)"
+    } else {
+        state = "creating"
+    }
+    return [creation.name, state, "-", "-", "-", "-", "-", creation.system]
+}
+
+func printTable(_ machines: [MachineSummary], creations: [CreationSummary] = []) {
+    guard !machines.isEmpty || !creations.isEmpty else {
         print("No virtual machines.")
         return
     }
@@ -189,11 +203,22 @@ func printTable(_ machines: [MachineSummary]) {
             "\(formatBytes(machine.diskAllocated)) of \(formatBytes(machine.diskCapacity))",
             machine.system,
         ]
-    }
+    } + creations.map(creationRow)
     let widths = (0..<rows[0].count).map { column in rows.map { $0[column].count }.max() ?? 0 }
     for row in rows {
         let line = zip(row, widths).map { cell, width in cell.padding(toLength: width, withPad: " ", startingAt: 0) }
         print(line.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
+    }
+    // What holds a name that no machine has yet, and how to let it go.
+    if !creations.isEmpty {
+        print("")
+        for creation in creations {
+            if let error = creation.error {
+                print("“\(creation.name)” couldn't be created: \(error.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(".") ? error : error + ".") `swiftvm delete \(shellWord(creation.name))` clears it.")
+            } else {
+                print("“\(creation.name)” is being created: \(creation.status) `swiftvm wait \(shellWord(creation.name))` waits for it, `swiftvm delete \(shellWord(creation.name))` cancels it.")
+            }
+        }
     }
 }
 
@@ -378,7 +403,8 @@ case "help", "--help", "-h":
     print(usage)
 
 case "list", "ls":
-    printTable(send(ControlRequest(command: .list)).machines)
+    let listed = send(ControlRequest(command: .list))
+    printTable(listed.machines, creations: listed.creations ?? [])
 
 case "create":
     // What the machine is made from: a system to install, which comes first, or a template.
@@ -438,7 +464,36 @@ case "create":
             fail("\(option) isn't for a machine made from a template, which keeps the template's system and account.")
         }
     }
+    // The app creates the machine, and goes on with it when this tool is stopped while it waits.
+    // Whoever stopped it is told so, and how to wait for the machine or to call its creation off.
+    let creating = parameters.name.map { name in
+        "`swiftvm wait \(shellWord(name))` waits until it is ready, `swiftvm delete \(shellWord(name))` cancels it."
+    } ?? "`swiftvm list` shows it, `swiftvm delete <name>` cancels it."
+    let stopMessage = "\nswiftvm: Stopped waiting. \(AppIdentity.current.name) goes on creating the machine: \(creating)\n"
+    // A signal that was ignored when this tool started, as Ctrl-C is for `create &` in a script, stays so.
+    let ignored = unsafeBitCast(SIG_IGN, to: Int.self)
+    let interruptions = [SIGINT, SIGTERM, SIGHUP].compactMap { signalNumber -> (Int32, sig_t?, any DispatchSourceSignal)? in
+        let previous = signal(signalNumber, SIG_IGN)
+        guard unsafeBitCast(previous, to: Int.self) != ignored else { return nil }
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
+        // Not on the main actor, which top-level code is on: it runs on a queue of its own.
+        source.setEventHandler { @Sendable in
+            // Not with FileHandle, which throws an exception where it can't write, as to a closed terminal.
+            _ = stopMessage.withCString { write(STDERR_FILENO, $0, strlen($0)) }
+            // Ended by the signal itself, not by exiting with its number: a shell that runs this in a loop
+            // stops at Ctrl-C only when the tool it waited for died of it.
+            signal(signalNumber, SIG_DFL)
+            kill(getpid(), signalNumber)
+            exit(128 + signalNumber)
+        }
+        source.resume()
+        return (signalNumber, previous, source)
+    }
     let created = send(ControlRequest(command: .create, create: parameters))
+    for (signalNumber, previous, source) in interruptions {
+        source.cancel()
+        signal(signalNumber, previous)
+    }
     printTable(created.machines)
     if let note = created.note {
         print("\n" + note)
@@ -784,5 +839,12 @@ default:
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(usage)")
     }
-    printTable(send(ControlRequest(command: command, machine: requireMachine())).machines)
+    let response = send(ControlRequest(command: command, machine: requireMachine()))
+    // `delete` of a machine that was still being created has no machine to show, only what it did.
+    if !response.machines.isEmpty || response.note == nil {
+        printTable(response.machines)
+    }
+    if let note = response.note {
+        print(response.machines.isEmpty ? note : "\n" + note)
+    }
 }
