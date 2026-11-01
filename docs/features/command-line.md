@@ -117,7 +117,7 @@ see [Automation](automation.md#what-works-where).
 
 | Command | What it does |
 | --- | --- |
-| `wait <machine>` | Wait until the guest tools answer. `--timeout <seconds>` |
+| `wait <machine>` | Wait until the guest tools answer, and for a new macOS machine until its setup, which lets automation work its desktop, is done. A setup that failed is reported. `--timeout <seconds>` |
 | `exec <machine> [--] <command>` | [Run a command](automation.md#commands) in the guest, and end with its exit status. `--root`, `--user <name>`, `--cwd <folder>`, `--env <name>=<value>`, `--timeout <seconds>` |
 | `cp <from> <to>` | [Copy a file or a folder](automation.md#files) into the guest or out of it. The guest's side is `<machine>:<path>`. `--root`, `--user <name>` |
 | `screenshot <machine> [file]` | Save [what is on the guest's screen](automation.md#the-screen) as a PNG |
@@ -126,7 +126,7 @@ see [Automation](automation.md#what-works-where).
 | `ui <machine> key <key>…` | Press keys: `Return`, `ctrl+c` |
 | `ui <machine> tree` | Print [what is on the screen](automation.md#what-is-on-the-screen) as a tree, in JSON. `--app <name>`, `--depth <levels>`, `--all` |
 | `ui <machine> press <element>` | Press a part of the tree, by its `id`. Also `focus <element>` and `set <element> <text>` |
-| `allow-accessibility <machine> --password <password>` | Have a macOS guest [let the guest tools read its screen as a tree](automation.md#macos-guests), once |
+| `allow-accessibility <machine> --password <password>` | Have a macOS guest [let the guest tools and agent-desktop work its desktop](automation.md#macos-guests), once. Quick Create does it by itself |
 | `automation <machine> on\|off` | Enable or disable `exec`, `cp`, `screenshot`, and `ui`. See [Automation](automation.md#turning-it-off) |
 
 ## Snapshots

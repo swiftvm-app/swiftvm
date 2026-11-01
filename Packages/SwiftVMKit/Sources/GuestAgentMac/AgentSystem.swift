@@ -34,6 +34,8 @@ protocol AgentSystem: Sendable {
     func account(named name: String?) throws -> AgentAccount
     /// What to start, program first, so that `command` runs as `account`.
     func launch(_ command: [String], as account: AgentAccount) -> [String]
+    /// Starts the agent's half in the session of `user`, who is logged in at the screen without it.
+    func startSession(for user: uid_t)
 }
 
 /// macOS itself. Changing the clock, the time zone or the power takes root.
@@ -93,6 +95,17 @@ struct MacSystem: AgentSystem {
         // It grumbles on its error output even when it succeeds; its exit status tells the two apart.
         try Self.run("/usr/sbin/systemsetup", ["-settimezone", identifier], timeout: 20)
         AgentLog.note("The time zone is now \(identifier).")
+    }
+
+    /// The guest tools may be installed while someone is still logging in, after launchd has looked
+    /// for what to start in the new session and before the installer sees who it is for.
+    func startSession(for user: uid_t) {
+        let job = "/Library/LaunchAgents/com.swiftvm.agent.session.plist"
+        guard FileManager.default.fileExists(atPath: job) else { return }
+        // A session that has it already says so, and nothing changes.
+        if (try? Self.run("/bin/launchctl", ["bootstrap", "gui/\(user)", job], timeout: 10)) != nil {
+            AgentLog.note("Started the guest tools in the session of user \(user), which was without them.")
+        }
     }
 
     func shutDown() throws {

@@ -56,6 +56,10 @@ private final class PretendSystem: AgentSystem, @unchecked Sendable {
     func launch(_ command: [String], as account: AgentAccount) -> [String] {
         ["/usr/bin/env"] + command
     }
+
+    func startSession(for user: uid_t) {
+        lock.withLock { done.append("start session \(user)") }
+    }
 }
 
 /// A desktop that only writes down what it is asked to do.
@@ -235,6 +239,26 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         let (agent, test) = FarEnd.makeLine()
         queue.sync { daemon.serveSession(on: agent) }
         return test
+    }
+
+    /// The guest tools installed while someone was logging in: their session never got its half.
+    @Test func startsTheSessionHalfForWhoeverIsLoggedInWithoutIt() async throws {
+        let daemon = makeDaemon()
+        // Nobody at the screen, and a login still under way, are left alone.
+        queue.sync { daemon.checkSession(of: 0); daemon.checkSession(of: 0); daemon.checkSession(of: 501) }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!system.calls.contains { $0.hasPrefix("start session") })
+
+        queue.sync { daemon.checkSession(of: 501) }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(system.calls.filter { $0.hasPrefix("start session") } == ["start session 501"])
+
+        // A session that has its half is left alone too.
+        let session = connectSession(to: daemon)
+        defer { session.hangUp() }
+        queue.sync { daemon.checkSession(of: 501); daemon.checkSession(of: 501) }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(system.calls.filter { $0.hasPrefix("start session") }.count == 1)
     }
 
     @Test func theAgentAndTheAppUnderstandEachOther() async throws {
@@ -902,6 +926,62 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(String(decoding: output, as: UTF8.self) == literal + "input")
         #expect(String(decoding: errors, as: UTF8.self) == NSTemporaryDirectory())
         #expect(end == JobEnd(status: 7))
+    }
+
+    @Test func desktopCommandsGetAClipboardHelperOfTheAccountsOwn() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "desktop-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let installed = folder.appending(path: "installed")
+        try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+        let tool = installed.appending(path: "agent-desktop")
+        try Data("#!/bin/sh\nprintf '%s' \"$AGENT_DESKTOP_MACOS_HELPER_PATH\"\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        try Data("helper".utf8).write(to: installed.appending(path: DesktopHelper.name))
+        let accounts = folder.appending(path: "account")
+
+        let (agent, mac) = FarEnd.makeLine()
+        defer { mac.hangUp() }
+        Thread.detachNewThread { [system] in
+            DesktopJob.run(.init(arguments: ["status"]), on: agent, system: system, program: tool.path, helperFolder: accounts)
+            GuestJobLine.hangUp(agent)
+        }
+        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        var output = Data()
+        while let frame = await mac.frame(), frame.end == nil {
+            if frame.kind == .output { output.append(frame.payload) }
+        }
+        let copy = accounts.appending(path: DesktopHelper.name)
+        #expect(String(decoding: output, as: UTF8.self) == copy.path)
+        #expect(try Data(contentsOf: copy) == Data("helper".utf8))
+        let attributes = try FileManager.default.attributesOfItem(atPath: copy.path)
+        #expect(attributes[.ownerAccountID] as? Int == Int(geteuid()))
+        #expect(attributes[.posixPermissions] as? Int == 0o755)
+    }
+
+    @Test func aStaleOrSharedHelperCopyIsReplaced() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "helper-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let installed = folder.appending(path: DesktopHelper.name)
+        try Data("new helper".utf8).write(to: installed)
+        let accounts = folder.appending(path: "account")
+
+        // From before the guest tools were updated.
+        let copy = try DesktopHelper.privateCopy(of: installed, in: accounts)
+        try Data("old helper".utf8).write(to: copy)
+        #expect(try Data(contentsOf: DesktopHelper.privateCopy(of: installed, in: accounts)) == Data("new helper".utf8))
+
+        // Another name for the same file lets whoever holds it change the helper.
+        let link = folder.appending(path: "link")
+        try FileManager.default.linkItem(at: copy, to: link)
+        _ = try DesktopHelper.privateCopy(of: installed, in: accounts)
+        try Data("changed through the link".utf8).write(to: link)
+        #expect(try Data(contentsOf: copy) == Data("new helper".utf8))
+
+        // Writable by others.
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: copy.path)
+        _ = try DesktopHelper.privateCopy(of: installed, in: accounts)
+        #expect(try FileManager.default.attributesOfItem(atPath: copy.path)[.posixPermissions] as? Int == 0o755)
     }
 
     @Test func aMissingDesktopToolDoesNotFallBackToAnotherExecutable() async {

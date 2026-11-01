@@ -99,7 +99,8 @@ Usage: swiftvm <command> [arguments]
                                     Connect this terminal to the machine's serial console
   wait <machine> [--timeout <seconds>]
                                     Wait until the machine's guest tools answer, which is when the
-                                    commands below work
+                                    commands below work. A new macOS machine is also waited for until
+                                    its setup is done, and a setup that failed is said why
   exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>]
        [--timeout <seconds>] [--] <command> [arguments]
                                     Run a command in the machine, as its own account or another. No
@@ -125,10 +126,12 @@ Usage: swiftvm <command> [arguments]
                                     Do to one part of the tree, by its id, what a click on it would or
                                     another of its actions, give it the keyboard, or replace its text
   allow-accessibility <machine> --password <password>
-                                    Have a macOS machine let its guest tools read the screen as a tree,
-                                    for ui tree, press, set and focus. macOS asks someone at its screen
-                                    for that: this turns the switch on in its System Settings and gives
-                                    the account's password, with the machine's own mouse and keyboard
+                                    Have a macOS machine let its guest tools and agent-desktop work its
+                                    desktop: read the screen as a tree and record it. macOS asks someone
+                                    at its screen for that: this turns the switches on in its System
+                                    Settings and gives the account's password, with the machine's own
+                                    mouse and keyboard. Quick Create and install-tools --password do it
+                                    by themselves
   desktop <machine> [--timeout <seconds>] [--] <agent-desktop arguments>
                                     Run agent-desktop in the guest's logged-in desktop, never on this Mac.
                                     Start with status, skills get desktop, and skills get platform.
@@ -142,7 +145,7 @@ Usage: swiftvm <command> [arguments]
 
 exec and cp need the guest tools in the machine: swiftvm install-tools. So do screenshot and ui in a
 Linux machine. A macOS machine's screen, mouse and keyboard need nothing in it. Its tree needs the
-guest tools, and macOS to let them: swiftvm allow-accessibility.
+guest tools, and macOS to let them: swiftvm allow-accessibility, which Quick Create has done already.
 """
 
 func fail(_ message: String, status: Int32 = 1) -> Never {
@@ -433,7 +436,11 @@ case "create":
             fail("\(option) isn't for a machine made from a template, which keeps the template's system and account.")
         }
     }
-    printTable(send(ControlRequest(command: .create, create: parameters)).machines)
+    let created = send(ControlRequest(command: .create, create: parameters))
+    printTable(created.machines)
+    if let note = created.note {
+        print("\n" + note)
+    }
 
 case "scripts":
     guard arguments.count <= 1 else { fail("Usage: swiftvm scripts [<system>]") }
