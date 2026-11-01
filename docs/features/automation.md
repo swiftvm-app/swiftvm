@@ -78,11 +78,13 @@ and actions. A changed UI or stale ref requires a fresh snapshot.
 
 ### Guest requirements and limits
 
-- **macOS:** log in, then run `swiftvm desktop desk permissions --guide` and grant
-  the permissions it identifies in the **guest's** System Settings. Accessibility
-  is required; native screenshots also require Screen Recording. The existing
-  `swiftvm allow-accessibility` flow is for SwiftVM's legacy tree, not a substitute
-  for checking agent-desktop's own permissions. No host privacy grants are needed.
+- **macOS:** agent-desktop needs Accessibility, and Screen Recording for native
+  screenshots, both granted to **swiftvm-agent** in the **guest**. Quick Create and
+  `swiftvm install-tools <machine> --password <password>` grant them, and answer
+  macOS's question whether agent-desktop may record the screen, so a new machine is
+  ready for `swiftvm desktop` without further steps. For a machine set up another
+  way, run [`swiftvm allow-accessibility`](#macos-guests) once. `swiftvm desktop desk
+  status` shows what is granted. No host privacy grants are needed.
 - **Windows:** log in at the guest console. Commands run with that user's token,
   never as SYSTEM in Session 0. Elevated apps and the UAC secure desktop are not
   fully controllable by an ordinary process. Windows application-control policies
@@ -256,27 +258,37 @@ swiftvm ui desk focus 10345/0/3/1
 ## macOS guests
 
 Screenshots and basic mouse and keyboard input work without guest tools or
-permission in the guest. The accessibility tree requires permission for
-**swiftvm-agent**. Grant it once per guest:
+permission in the guest. The accessibility tree and [agent-desktop](#agent-desktop)
+require permission for **swiftvm-agent**. Quick Create, and `swiftvm install-tools
+<machine> --password <password>`, grant it by themselves. For a guest set up
+another way, grant it once:
 
 ```bash
 swiftvm allow-accessibility desk --password 'the account password'
 ```
 
-The command opens System Settings in the guest and enables access using the
-supplied administrator password.
+The command opens System Settings in the guest and turns on **swiftvm-agent** under
+Accessibility and under Screen Recording, using the supplied administrator password.
+It then has agent-desktop take one screenshot and answers **Allow** when macOS asks
+whether agent-desktop, or swiftvm-agent for it, may record the screen without the
+window picker. macOS may ask
+that again after a long time; run the command again then. With SwiftVM's releases
+the grants stay when the guest tools are updated, and machines made from a template
+keep them. `swiftvm wait` waits until a new machine's setup, these grants
+included, has finished.
 
 - Log in to an administrator account at the guest's screen first. Accounts
   created by SwiftVM are administrators.
 - Leave the guest's mouse and keyboard alone while it runs.
-- Guest tools version 1.2 or newer is required. `swiftvm info <machine>` shows
-  the installed version.
+- Guest tools version 1.2 or newer is required, and 1.4 or newer for Screen
+  Recording. `swiftvm info <machine>` shows the installed version.
 - The password is typed on the machine's keyboard, so it has to be made of
   what a US keyboard has keys for.
 
 To do it by hand instead, open **System Settings › Privacy & Security › Device
 Control and Data Access** in the guest, which earlier versions call
-**Accessibility**, and turn on **swiftvm-agent**.
+**Accessibility**, and turn on **swiftvm-agent**. Do the same under **Screen &
+System Audio Recording**.
 
 A copy of the machine keeps what you allowed. `exec` and `cp` need none of it.
 

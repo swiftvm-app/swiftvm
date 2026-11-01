@@ -45,6 +45,9 @@ echo 'swiftvm /mnt/shared virtiofs rw,nofail 0 0' | sudo tee -a /etc/fstab
 ## Clipboard
 
 Text you copy on your Mac can be pasted in the guest, and the other way round.
+Machines created in the app share the clipboard from the start. Machines created
+with `swiftvm create`, often worked by scripts and AI agents, don't: turn it on with
+`swiftvm share-clipboard <machine> on` or **Share Clipboard** in the machine's settings.
 
 | Guest | Needs |
 | --- | --- |

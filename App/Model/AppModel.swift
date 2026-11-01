@@ -52,6 +52,11 @@ final class AppModel {
     /// Machines whose guest is being asked to let the guest tools read its screen right now. The app
     /// uses the guest's mouse and keyboard for that, which two askers would do across each other.
     @ObservationIgnored var machinesBeingAllowed: Set<UUID> = []
+    /// macOS machines whose first setup, from the SSH key to letting automation work the desktop, the
+    /// app is still carrying out. `swiftvm wait` waits for it, so nothing else works the guest meanwhile.
+    @ObservationIgnored var machinesBeingSetUp: Set<UUID> = []
+    /// Why a new macOS machine's setup didn't let automation work its desktop, for `swiftvm wait` to say.
+    @ObservationIgnored var automationSetupProblems: [UUID: String] = [:]
     /// Whether the app's item is in the menu bar. It always is: with no window open the item is all there
     /// is of the app. macOS lets an item be dragged out of the menu bar all the same, so one that is
     /// taken out is put back.

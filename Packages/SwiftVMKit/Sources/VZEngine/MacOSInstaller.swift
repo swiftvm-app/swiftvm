@@ -51,7 +51,20 @@ public enum MacOSInstaller {
     ) async throws {
         guard image.requirements != nil else { throw InstallError.unsupportedImage(image.productName) }
         guard !image.isRemote else { throw InstallError.imageNotDownloaded }
+        try await runInstaller(image, into: bundle, configuration: configuration, progress: progress)
+        // The installer's machine is gone now, but the process that ran it lets go of the auxiliary
+        // storage a moment later. A start before then fails to lock it.
+        _ = try await FileLock.waitUntilFree(bundle.auxiliaryStorageURL, timeout: .seconds(30))
+    }
 
+    /// Everything that holds on to the installer's machine lives in here, so that it is released once
+    /// this returns.
+    private static func runInstaller(
+        _ image: MacRestoreImage,
+        into bundle: VMBundle,
+        configuration: VMConfiguration,
+        progress: @escaping @MainActor (Double) -> Void
+    ) async throws {
         // The installer needs no network, so the machine is built without attachments.
         var diskExports: [CompressedDiskExport] = []
         let vzConfiguration = try VZConfigurationBuilder(bundle: bundle, configuration: configuration).build(diskExports: &diskExports)

@@ -22,6 +22,8 @@ final class AgentDaemon: @unchecked Sendable {
     var settleTime: TimeInterval = 0.3
     /// How often to look anyway, while the app is there to tell.
     var lookInterval: TimeInterval = 30
+    /// How often to see that whoever is logged in at the screen has the agent's half in their session.
+    var sessionCheckInterval: TimeInterval = 10
 
     private let system: any AgentSystem
     private let queue: DispatchQueue
@@ -37,6 +39,8 @@ final class AgentDaemon: @unchecked Sendable {
     private var sources: [any DispatchSourceProtocol] = []
     private var addressWatcher: AddressWatcher?
     private var isLookDue = false
+    /// The user at the screen whose session was without the agent's half at the last check.
+    private var userWithoutSession: uid_t?
     private lazy var jobs = AgentJobs(system: system, version: version) { [weak self] token in
         self?.announceJob(token) ?? false
     }
@@ -71,7 +75,27 @@ final class AgentDaemon: @unchecked Sendable {
             regularLook.setEventHandler { [weak self] in self?.reportAddresses() }
             regularLook.resume()
             sources.append(regularLook)
+            let sessionCheck = DispatchSource.makeTimerSource(queue: queue)
+            sessionCheck.schedule(deadline: .now() + sessionCheckInterval, repeating: sessionCheckInterval, leeway: .seconds(2))
+            sessionCheck.setEventHandler { [weak self] in self?.checkSession(of: AgentSockets.consoleUser()) }
+            sessionCheck.resume()
+            sources.append(sessionCheck)
         }
+    }
+
+    /// Starts the agent's half for the user at the screen when it hasn't come at two checks in a row: a
+    /// login takes a moment to start what it starts.
+    func checkSession(of user: uid_t?) {
+        guard session == nil, let user, user != 0 else {
+            userWithoutSession = nil
+            return
+        }
+        guard userWithoutSession == user else {
+            userWithoutSession = user
+            return
+        }
+        userWithoutSession = nil
+        slowWork.async { [system] in system.startSession(for: user) }
     }
 
     /// Waits for as long as it takes for the socket device to be there: early in a start it isn't yet.
@@ -170,7 +194,7 @@ final class AgentDaemon: @unchecked Sendable {
             agent: version, system: system.describe(), hostName: system.hostName(),
             features: [
                 GuestFeature.clipboard, GuestFeature.timeZone, GuestFeature.exec, GuestFeature.screen, GuestFeature.input,
-                GuestFeature.accessibility, GuestFeature.permission, GuestFeature.desktop,
+                GuestFeature.accessibility, GuestFeature.permission, GuestFeature.screenRecordingPermission, GuestFeature.desktop,
             ]
         )))
         reportAddresses(always: true)

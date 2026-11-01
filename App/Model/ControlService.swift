@@ -285,6 +285,17 @@ extension AppModel {
                     return response
                 }
                 try await installGuestTools(on: machine, password: request.password)
+                // The password that installed them also lets them, and agent-desktop, work the desktop.
+                if machine.configuration.os.family == .macOS, let password = request.password, !password.isEmpty {
+                    do {
+                        try await allowAutomation(on: machine, password: password, sessionPatience: .seconds(120))
+                    } catch {
+                        // The tools are in. What they may do on the desktop is for later.
+                        var response = details(machine)
+                        response.note = "macOS in “\(machine.name)” doesn't let the guest tools work its desktop yet: \(Self.explanation(of: error, for: machine)) `swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
+                        return response
+                    }
+                }
             } catch let error as ProcessRunner.Failure {
                 if let complaint = LinuxGuestAgent.installerComplaint(in: error) {
                     // The installer ran and gave up; from the disc it would give up the same way.
@@ -367,7 +378,7 @@ extension AppModel {
                 return .failure("macOS takes this from someone who knows the account's password. Give it with --password <password>.")
             }
             do {
-                try await allowAccessibility(on: machine, password: password)
+                try await allowAutomation(on: machine, password: password)
             } catch {
                 return .failure(Self.explanation(of: error, for: machine))
             }
@@ -609,6 +620,19 @@ extension AppModel {
                 return "The guest tools in “\(machine.name)” haven't answered in time. If they aren't installed, `swiftvm install-tools` installs them."
             }
             try? await Task.sleep(for: .milliseconds(100))
+        }
+        // A new macOS machine is ready once the app has finished setting it up: until then it may still
+        // be clicking through the guest's System Settings and typing the password there.
+        while machinesBeingSetUp.contains(machine.id) {
+            guard machine.state.isActive else { return "“\(machine.name)” isn't running." }
+            guard ContinuousClock.now < deadline else {
+                return "“\(machine.name)” is still being set up. Try `swiftvm wait` again in a moment."
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        // Said once: whoever waits next has been told, or has seen to it.
+        if let problem = automationSetupProblems.removeValue(forKey: machine.id) {
+            return "“\(machine.name)” is running, but its setup didn't let automation work its desktop: \(problem)"
         }
         return nil
     }
@@ -954,6 +978,16 @@ extension AppModel {
         }
         switch result {
         case .success(let machine):
+            // Machines made from the command line are often worked by scripts and AI agents, which
+            // shouldn't be handed whatever was copied on this Mac. `swiftvm share-clipboard` turns it on.
+            var note: String?
+            if machine.configuration.clipboard.isShared {
+                do {
+                    try machine.updateConfiguration { $0.clipboard.isShared = false }
+                } catch {
+                    note = "“\(machine.name)” shares this Mac's clipboard, because turning that off failed: \(error.localizedDescription) `swiftvm share-clipboard \(machine.configuration.ssh.alias) off` tries again."
+                }
+            }
             if startsMachine {
                 guard !isQuittingUnattended else {
                     return .failure("“\(machine.name)” was created but not started, because \(AppIdentity.current.name) is quitting.")
@@ -961,10 +995,12 @@ extension AppModel {
                 await machine.start()
                 if let error = machine.lastError {
                     machine.lastError = nil
-                    return .failure("\(error.title): \(error.message)")
+                    return .failure("\(error.title): \(error.message)" + (note.map { " " + $0 } ?? ""))
                 }
             }
-            return success(machine)
+            var response = success(machine)
+            response.note = note
+            return response
         case .failure(let error):
             // The caller reports the failure; don't leave a failed row behind in the menu bar panel.
             creations.removeAll { $0.name == name && $0.errorMessage != nil }

@@ -165,10 +165,22 @@ public enum GuestJob: Sendable, Hashable {
             case finish
         }
 
-        public var action: Action
+        /// What the system is to let the agent do.
+        public enum Kind: String, Codable, Sendable, Hashable, CaseIterable {
+            /// Read the screen as a tree, act on its parts, and use the mouse and the keyboard.
+            case accessibility
+            /// Record what is on the screen, for agent-desktop's screenshots.
+            case screenRecording = "screen-recording"
+        }
 
-        public init(action: Action) {
+        public var action: Action
+        /// `nil` is ``Kind/accessibility``, the only kind there was before agents offered
+        /// ``GuestFeature/screenRecordingPermission``. Those ignore it.
+        public var kind: Kind?
+
+        public init(action: Action, kind: Kind? = nil) {
             self.action = action
+            self.kind = kind
         }
     }
 
@@ -197,7 +209,8 @@ public enum GuestJob: Sendable, Hashable {
 /// What an agent puts out for a ``GuestJob/permission(_:)``, in JSON: how things stand, and where on
 /// the screen the answer is given. Places are in the pixels of a screenshot: left, top, width, height.
 public struct GuestPermissionState: Codable, Sendable, Hashable {
-    /// The system lets the agent read the screen as a tree and act on its parts.
+    /// The system lets the agent do what was asked about: read the screen as a tree and act on its
+    /// parts, or record the screen.
     public var isAllowed: Bool
     /// How many pixels of a screenshot make one of the points the system lays its windows out in.
     public var scale: Double
@@ -205,12 +218,16 @@ public struct GuestPermissionState: Codable, Sendable, Hashable {
     public var settings: [Int]?
     /// What the settings have put in front of their window: the question for the password.
     public var sheet: [Int]?
+    /// A question the system asks about another program, such as agent-desktop's for recording the
+    /// screen without the window picker. Said by agents that offer ``GuestFeature/screenRecordingPermission``.
+    public var alert: [Int]?
 
-    public init(isAllowed: Bool, scale: Double = 1, settings: [Int]? = nil, sheet: [Int]? = nil) {
+    public init(isAllowed: Bool, scale: Double = 1, settings: [Int]? = nil, sheet: [Int]? = nil, alert: [Int]? = nil) {
         self.isAllowed = isAllowed
         self.scale = scale
         self.settings = settings
         self.sheet = sheet
+        self.alert = alert
     }
 }
 

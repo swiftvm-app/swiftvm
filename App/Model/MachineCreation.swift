@@ -526,7 +526,9 @@ extension AppModel {
     /// with the password as soon as the guest answers. Installing the guest tools takes the password
     /// too, for `sudo`. It stays in memory until then, and nowhere else.
     private func finishSetup(of machine: VirtualMachine, account: GuestProvisioning, keyPair: SSHKeyManager.KeyPair) {
+        machinesBeingSetUp.insert(machine.id)
         Task {
+            defer { machinesBeingSetUp.remove(machine.id) }
             // The first start may be a while off if the machine isn't started right away.
             while !machine.configuration.installation.isProvisioned {
                 guard library.machine(id: machine.id) != nil else { return }
@@ -569,26 +571,45 @@ extension AppModel {
             try await installGuestTools(on: machine, password: password)
             // From here on the machine sees to the rest by itself, through the agent.
         } catch {
+            automationSetupProblems[machine.id] = "The guest tools couldn't be installed: \(error.localizedDescription) `swiftvm install-tools \(machine.configuration.ssh.alias) --password <password>` tries again."
+            await setTimeZoneWithoutGuestTools(of: machine, password: password, after: error)
+            return
+        }
+        // Automation in the guest, the swiftvm tool's and agent-desktop's, needs macOS to let the
+        // guest tools work its desktop. Only now does the app still have the password for that.
+        do {
+            try await allowAutomation(on: machine, password: password, sessionPatience: .seconds(120))
+        } catch {
             guard machine.state.isActive else { return }
-            // Nobody was asked where this Mac is, so the guest would stay on Pacific time. Without the
-            // agent the time zone is set the way it was before there was one.
-            let alias = machine.configuration.ssh.alias
-            let configURL = sshWriter.generatedConfigURL
-            let isSet = await Task.detached {
-                (try? GuestTimeZone.set(on: alias, configURL: configURL, password: password)) != nil
-            }.value
-            if isSet {
-                try? machine.updateConfiguration { $0.installation.hasHostTimeZone = true }
-            }
-            var reason = error.localizedDescription
-            if let failure = error as? ProcessRunner.Failure, let complaint = LinuxGuestAgent.installerComplaint(in: failure) {
-                reason = Self.sentence(complaint)
-            }
+            automationSetupProblems[machine.id] = "\(error.localizedDescription) `swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
             machine.notice = VMErrorInfo(
-                title: "The guest tools couldn't be installed in “\(machine.name)”",
-                message: "\(reason)\n\nThe virtual machine works without them, but it asks on its screen before it shuts down and doesn't share the clipboard. Install Guest Tools… in the machine's menu tries again."
+                title: "“\(machine.name)” doesn't let automation work its desktop yet",
+                message: "\(error.localizedDescription)\n\n`swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
             )
         }
+    }
+
+    /// Sets the time zone of a macOS guest whose guest tools couldn't be installed, and says why they weren't.
+    private func setTimeZoneWithoutGuestTools(of machine: VirtualMachine, password: String, after error: any Error) async {
+        guard machine.state.isActive else { return }
+        // Nobody was asked where this Mac is, so the guest would stay on Pacific time. Without the
+        // agent the time zone is set the way it was before there was one.
+        let alias = machine.configuration.ssh.alias
+        let configURL = sshWriter.generatedConfigURL
+        let isSet = await Task.detached {
+            (try? GuestTimeZone.set(on: alias, configURL: configURL, password: password)) != nil
+        }.value
+        if isSet {
+            try? machine.updateConfiguration { $0.installation.hasHostTimeZone = true }
+        }
+        var reason = error.localizedDescription
+        if let failure = error as? ProcessRunner.Failure, let complaint = LinuxGuestAgent.installerComplaint(in: failure) {
+            reason = Self.sentence(complaint)
+        }
+        machine.notice = VMErrorInfo(
+            title: "The guest tools couldn't be installed in “\(machine.name)”",
+            message: "\(reason)\n\nThe virtual machine works without them, but it asks on its screen before it shuts down and doesn't share the clipboard. Install Guest Tools… in the machine's menu tries again."
+        )
     }
 
     private func download(_ image: RemoteImage, named name: String, creation: MachineCreation) async throws -> URL {

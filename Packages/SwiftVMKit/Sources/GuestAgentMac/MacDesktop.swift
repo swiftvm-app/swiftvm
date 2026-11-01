@@ -206,32 +206,82 @@ struct MacDesktop: AgentDesktop {
     private static let settingsIdentifier = "com.apple.systempreferences"
     /// The question the system puts on the screen by itself when it is asked.
     private static let questionIdentifier = "com.apple.accessibility.universalAccessAuthWarn"
-    /// The page of the settings that lists who may read the screen and use the mouse and the keyboard.
-    private static let settingsPage = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    /// The pages of the settings that list who may read the screen and use the mouse and the keyboard,
+    /// and who may record the screen.
+    private static func settingsPage(for kind: GuestJob.Permission.Kind) -> String {
+        switch kind {
+        case .accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        case .screenRecording: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+    }
+    /// What puts the system's questions about other programs on the screen, such as agent-desktop's
+    /// for recording the screen without the window picker.
+    private static let alertIdentifier = "com.apple.UserNotificationCenter"
+    /// How the session half asks a new copy of itself whether it may record the screen, and has one
+    /// ask macOS for it.
+    static let screenRecordingMode = "may-record-screen"
+    static let screenRecordingRequestMode = "request-screen-recording"
     /// The settings were opened by this half, and are its to close again.
     private static let hasOpenedSettings = Flag()
 
     func permission(_ request: GuestJob.Permission) throws -> Data {
+        let kind = request.kind ?? .accessibility
         // The system's question leads to the settings and nowhere else, and lies over them.
         Self.dismissQuestion()
         switch request.action {
         case .check:
             break
         case .ask:
-            try Self.ask()
+            try Self.ask(kind)
         case .finish:
             Self.putAway()
         }
-        return try JSONEncoder().encode(Self.permissionState())
+        return try JSONEncoder().encode(Self.permissionState(kind))
     }
 
-    private static func ask() throws {
-        guard !AXIsProcessTrusted() else { return }
+    private static func isAllowed(_ kind: GuestJob.Permission.Kind) -> Bool {
+        switch kind {
+        case .accessibility: AXIsProcessTrusted()
+        case .screenRecording: mayRecordScreen()
+        }
+    }
+
+    /// Asked of a new copy of this program, which macOS answers as it is now.
+    private static func mayRecordScreen() -> Bool {
+        runCopy(screenRecordingMode) ?? CGPreflightScreenCaptureAccess()
+    }
+
+    /// Runs a new copy of this program in `mode`, and says whether it ended well. `nil` if it couldn't.
+    private static func runCopy(_ mode: String, patience: TimeInterval = 5) -> Bool? {
+        guard let program = Bundle.main.executableURL else { return nil }
+        let process = Process()
+        process.executableURL = program
+        process.arguments = [mode]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        guard (try? process.run()) != nil else { return nil }
+        guard finished.wait(timeout: .now() + patience) == .success else {
+            process.terminate()
+            return false
+        }
+        return process.terminationStatus == 0
+    }
+
+    private static func ask(_ kind: GuestJob.Permission.Kind) throws {
+        guard !isAllowed(kind) else { return }
         // Asking is what puts this program on the settings' list.
-        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        switch kind {
+        case .accessibility: _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        case .screenRecording:
+            if runCopy(screenRecordingRequestMode, patience: 10) == nil {
+                _ = CGRequestScreenCaptureAccess()
+            }
+        }
         dismissQuestion(patience: 3)
         let wasOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier).isEmpty
-        guard let page = URL(string: settingsPage), NSWorkspace.shared.open(page) else {
+        guard let page = URL(string: settingsPage(for: kind)), NSWorkspace.shared.open(page) else {
             throw AgentFailure("System Settings couldn't be opened in the guest.")
         }
         if !wasOpen {
@@ -272,13 +322,14 @@ struct MacDesktop: AgentDesktop {
         }
     }
 
-    private static func permissionState() -> GuestPermissionState {
+    private static func permissionState(_ kind: GuestJob.Permission.Kind) -> GuestPermissionState {
         let scale = (try? screen().scale) ?? 1
-        var state = GuestPermissionState(isAllowed: AXIsProcessTrusted(), scale: scale)
+        var state = GuestPermissionState(isAllowed: isAllowed(kind), scale: scale)
         let windows = settingsWindows()
         func pixels(_ window: CGRect) -> [Int] {
             [window.minX, window.minY, window.width, window.height].map { Int(($0 * scale).rounded()) }
         }
+        state.alert = onScreenWindows(of: alertIdentifier, onLayer: nil).first.map(pixels)
         if let window = windows.max(by: { $0.width * $0.height < $1.width * $1.height }) {
             state.settings = pixels(window)
             // What the settings put in front of their window is smaller, and comes before it.
@@ -292,11 +343,18 @@ struct MacDesktop: AgentDesktop {
     /// The windows of the system's settings that are on the screen, from the front to the back. Where
     /// windows are is no secret to a program that isn't let see what is in them.
     private static func settingsWindows() -> [CGRect] {
-        let processes = Set(NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier).map(\.processIdentifier))
+        onScreenWindows(of: settingsIdentifier, onLayer: 0)
+    }
+
+    /// The windows of the application with `identifier` that are on the screen, from the front to the
+    /// back, on `layer` or on any layer for `nil`.
+    private static func onScreenWindows(of identifier: String, onLayer layer: Int?) -> [CGRect] {
+        let processes = Set(NSRunningApplication.runningApplications(withBundleIdentifier: identifier).map(\.processIdentifier))
         guard !processes.isEmpty else { return [] }
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.compactMap { window in
-            guard window[kCGWindowLayer as String] as? Int == 0, let process = window[kCGWindowOwnerPID as String] as? pid_t,
+            guard layer.map({ window[kCGWindowLayer as String] as? Int == $0 }) ?? true,
+                  let process = window[kCGWindowOwnerPID as String] as? pid_t,
                   processes.contains(process), let bounds = window[kCGWindowBounds as String] as? NSDictionary
             else { return nil }
             return CGRect(dictionaryRepresentation: bounds)
