@@ -73,9 +73,13 @@ else
 
     if [ "$ID" = ubuntu ]; then
         echo "==> Installing Firefox"
-        # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
-        # still a desktop.
-        apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+        # Ubuntu's Firefox comes from its store, which may not answer, or crawl so that the setup would
+        # take hours. A desktop without a browser is still a desktop: after ten minutes it goes without,
+        # and the store's download is called off.
+        if ! timeout 600 snap install firefox; then
+            snap abort --last=install > /dev/null 2>&1 || true
+            echo "Firefox couldn't be installed. Install it later with: sudo snap install firefox"
+        fi
     fi
 fi
 
@@ -84,6 +88,16 @@ if [ "$ID" != debian ]; then
     mkdir -p /etc/sddm.conf.d
     printf '[Theme]\nCurrent=breeze\n' > /etc/sddm.conf.d/90-swiftvm.conf
 fi
+# The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up, and
+# its screen doesn't lock while nobody types: whoever drives the desktop from the Mac (swiftvm
+# desktop) finds it there after every start. The password still unlocks a locked screen, sudo and SSH.
+# Plasma's own session, which is Wayland from Plasma 6 and X11 before.
+if [ -n "${SWIFTVM_USER:-}" ]; then
+    mkdir -p /etc/sddm.conf.d
+    printf '[Autologin]\nUser=%s\nSession=plasma.desktop\n' "$SWIFTVM_USER" > /etc/sddm.conf.d/80-swiftvm-autologin.conf
+fi
+mkdir -p /etc/xdg
+printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > /etc/xdg/kscreenlockerrc
 # The network card stays with the service that has it, which asks for an address by the card's
 # own: that is what the Mac keeps the machine's address by. The desktop's NetworkManager only
 # watches the card, so that the desktop knows it is online. Two services that both configure

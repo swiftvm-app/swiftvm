@@ -203,17 +203,22 @@ while [ "$number" -lt "$total" ]; do
     sync
 done
 
-finish finished "$name"
 # A script that brought the system up to date may have replaced the kernel that runs. Arch Linux
 # takes the old kernel's modules away with it, so nothing that needs one more works until the
 # system starts the new kernel.
 if [ ! -d "/usr/lib/modules/$(uname -r)" ]; then
     restart=yes
 fi
-# Started by hand when everything was done already, there is nothing to restart for.
+# Started by hand when everything was done already, there is nothing to restart for. Until the
+# system is back up the setup isn't finished: whoever waits for it (swiftvm wait) would otherwise
+# start on a machine that is about to go down. The unit, still enabled, says so after the restart,
+# when every script is done already.
 if [ "$restart" = yes ] && [ "$ran" = yes ]; then
     say "==== Restarting. ===="
+    printf '%s\n' "Restarting" > "$state/step.new" && mv -f "$state/step.new" "$state/step"
     sync
     systemctl --no-block reboot
+    exit 0
 fi
+finish finished "$name"
 exit 0

@@ -73,9 +73,13 @@ else
 
     if [ "$ID" = ubuntu ]; then
         echo "==> Installing Firefox"
-        # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
-        # still a desktop.
-        apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+        # Ubuntu's Firefox comes from its store, which may not answer, or crawl so that the setup would
+        # take hours. A desktop without a browser is still a desktop: after ten minutes it goes without,
+        # and the store's download is called off.
+        if ! timeout 600 snap install firefox; then
+            snap abort --last=install > /dev/null 2>&1 || true
+            echo "Firefox couldn't be installed. Install it later with: sudo snap install firefox"
+        fi
     fi
 fi
 
@@ -101,6 +105,32 @@ if [ -e /usr/lib/netplan/00-network-manager-all.yaml ]; then
     printf 'network:\n  version: 2\n  renderer: networkd\n' > /etc/netplan/00-network-manager-all.yaml
     chmod 600 /etc/netplan/00-network-manager-all.yaml
 fi
+# The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up, and
+# its screen doesn't lock while nobody types: whoever drives the desktop from the Mac (swiftvm
+# desktop) finds it there after every start. The password still unlocks a locked screen, sudo and SSH.
+if [ -n "${SWIFTVM_USER:-}" ]; then
+    gdm=/etc/gdm3/custom.conf
+    [ -d /etc/gdm3 ] || gdm=/etc/gdm/custom.conf
+    mkdir -p "${gdm%/*}"
+    touch "$gdm"
+    sed -i '/^AutomaticLogin/d' "$gdm"
+    if grep -q '^\[daemon\]' "$gdm"; then
+        sed -i "/^\[daemon\]/a AutomaticLoginEnable=true\nAutomaticLogin=$SWIFTVM_USER" "$gdm"
+    else
+        printf '[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=%s\n' "$SWIFTVM_USER" >> "$gdm"
+    fi
+fi
+mkdir -p /etc/dconf/profile /etc/dconf/db/local.d
+[ -e /etc/dconf/profile/user ] || printf 'user-db:user\n' > /etc/dconf/profile/user
+grep -qx 'system-db:local' /etc/dconf/profile/user || echo 'system-db:local' >> /etc/dconf/profile/user
+cat > /etc/dconf/db/local.d/90-swiftvm << 'END'
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+
+[org/gnome/desktop/screensaver]
+lock-enabled=false
+END
+dconf update
 # The Mac suspends the virtual machine. A system that goes to sleep by itself may not wake up.
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 systemctl set-default graphical.target

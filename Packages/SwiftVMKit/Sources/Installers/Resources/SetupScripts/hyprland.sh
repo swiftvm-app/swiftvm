@@ -131,4 +131,11 @@ fi
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 # One login screen at a time: a desktop installed before this one keeps its own.
 [ -e /etc/systemd/system/display-manager.service ] || systemctl enable sddm
+# The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up:
+# whoever drives the desktop from the Mac (swiftvm desktop) finds it there after every start. The
+# password still unlocks a locked screen, sudo and SSH.
+if [ -n "${SWIFTVM_USER:-}" ]; then
+    mkdir -p /etc/sddm.conf.d
+    printf '[Autologin]\nUser=%s\nSession=hyprland.desktop\n' "$SWIFTVM_USER" > /etc/sddm.conf.d/80-swiftvm-autologin.conf
+fi
 systemctl set-default graphical.target

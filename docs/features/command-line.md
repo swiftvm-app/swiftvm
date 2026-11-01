@@ -38,8 +38,9 @@ swiftvm info web-server      # one machine in detail
 `ubuntu-24.04`, `debian-13`, or `arch`.
 
 `create` waits for the machine to be created and started, not for setup inside
-the guest to finish. Use `swiftvm wait <machine>` for the guest tools and
-`swiftvm info <machine>` to check installation or setup-script progress.
+the guest to finish. `swiftvm wait <machine>` waits for that: until the machine is
+ready for `exec`, `cp` and `desktop`. It also waits for a machine that is still being
+created, so it can follow a `create` that was interrupted or run in the background.
 
 `swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
 SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
@@ -117,7 +118,7 @@ see [Automation](automation.md#what-works-where).
 
 | Command | What it does |
 | --- | --- |
-| `wait <machine>` | Wait until the guest tools answer, and for a new macOS machine until its setup, which lets automation work its desktop, is done. A setup that failed is reported. `--timeout <seconds>` |
+| `wait <machine>` | Wait until the machine is [ready](automation.md#getting-ready): created, its guest tools answering, its setup done, restarts included, and a desktop that logs in by itself logged in. A setup that failed is reported. `--timeout <seconds>`, 300 by default |
 | `exec <machine> [--] <command>` | [Run a command](automation.md#commands) in the guest, and end with its exit status. `--root`, `--user <name>`, `--cwd <folder>`, `--env <name>=<value>`, `--timeout <seconds>` |
 | `cp <from> <to>` | [Copy a file or a folder](automation.md#files) into the guest or out of it. The guest's side is `<machine>:<path>`. `--root`, `--user <name>` |
 | `screenshot <machine> [file]` | Save [what is on the guest's screen](automation.md#the-screen) as a PNG |

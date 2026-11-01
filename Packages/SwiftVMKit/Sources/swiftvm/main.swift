@@ -8,7 +8,7 @@ Usage: swiftvm <command> [arguments]
 
   list                              List virtual machines
   info <machine>                    Show one machine in detail
-  create <system> [options]         Create a machine and wait until it is ready
+  create <system> [options]         Create a machine and start it. Then `swiftvm wait` until it is ready
       <system> is macos, windows, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
       --user <name>  --password <password>  --no-start
@@ -98,9 +98,11 @@ Usage: swiftvm <command> [arguments]
   console <machine> [--wait <seconds>]
                                     Connect this terminal to the machine's serial console
   wait <machine> [--timeout <seconds>]
-                                    Wait until the machine's guest tools answer, which is when the
-                                    commands below work. A new macOS machine is also waited for until
-                                    its setup is done, and a setup that failed is said why
+                                    Wait until the machine is ready for the commands below: created,
+                                    its guest tools answering, the setup it was created with done,
+                                    restarts included, and a desktop logged in for agent-desktop. A
+                                    setup that failed is said why. 300 seconds by default; on a time-out
+                                    it says what it is still waiting for, and waiting again carries on
   exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>]
        [--timeout <seconds>] [--] <command> [arguments]
                                     Run a command in the machine, as its own account or another. No
@@ -440,6 +442,11 @@ case "create":
     printTable(created.machines)
     if let note = created.note {
         print("\n" + note)
+    }
+    // The system sets itself up from here on, which takes from seconds to half an hour.
+    if parameters.start, let machine = created.machines.first {
+        let name = machine.sshAlias ?? machine.id.uuidString
+        print("\nNext: `swiftvm wait \(name)` waits until it is set up and ready for exec, cp and desktop.")
     }
 
 case "scripts":

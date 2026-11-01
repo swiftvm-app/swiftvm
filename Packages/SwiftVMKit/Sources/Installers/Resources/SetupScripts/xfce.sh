@@ -71,9 +71,13 @@ else
 
     if [ "$ID" = ubuntu ]; then
         echo "==> Installing Firefox"
-        # Ubuntu's Firefox comes from its store, which may not answer. A desktop without a browser is
-        # still a desktop.
-        apt_get install firefox || echo "Firefox couldn't be installed. Install it later with: sudo apt install firefox"
+        # Ubuntu's Firefox comes from its store, which may not answer, or crawl so that the setup would
+        # take hours. A desktop without a browser is still a desktop: after ten minutes it goes without,
+        # and the store's download is called off.
+        if ! timeout 600 snap install firefox; then
+            snap abort --last=install > /dev/null 2>&1 || true
+            echo "Firefox couldn't be installed. Install it later with: sudo snap install firefox"
+        fi
     fi
 fi
 
@@ -83,6 +87,15 @@ echo "==> Finishing"
 if [ ! -e /usr/share/xsessions/xubuntu.desktop ]; then
     mkdir -p /etc/lightdm/lightdm.conf.d
     printf '[Seat:*]\ngreeter-session=lightdm-gtk-greeter\nuser-session=xfce\ngreeter-hide-users=false\n' > /etc/lightdm/lightdm.conf.d/90-swiftvm.conf
+fi
+# The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up:
+# whoever drives the desktop from the Mac (swiftvm desktop) finds it there after every start. The
+# password still unlocks a locked screen, sudo and SSH. Arch Linux lets only the autologin group in.
+if [ -n "${SWIFTVM_USER:-}" ]; then
+    mkdir -p /etc/lightdm/lightdm.conf.d
+    printf '[Seat:*]\nautologin-user=%s\n' "$SWIFTVM_USER" > /etc/lightdm/lightdm.conf.d/91-swiftvm-autologin.conf
+    groupadd -rf autologin
+    gpasswd -a "$SWIFTVM_USER" autologin > /dev/null
 fi
 # The network card stays with the service that has it, which asks for an address by the card's
 # own: that is what the Mac keeps the machine's address by. The desktop's NetworkManager only

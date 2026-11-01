@@ -1154,11 +1154,12 @@ public final class VirtualMachine: Identifiable {
                 }
             }
         case .stoppedWithError(let message):
-            let restart = restartsAfterStop
+            // A new Windows machine that has said its setup is finished restarts itself next.
+            let restart = restartsAfterStop || finishesWindowsSetupAtStop
             finishStop()
             if restart {
                 // QEMU on Apple silicon can end abruptly while a guest shuts down. The guest was going
-                // down to start again anyway: it does, as it was asked to.
+                // down to start again anyway: it does, as it was asked to, or as it set out to.
                 isAboutToRestart = true
                 Task {
                     isAboutToRestart = false
