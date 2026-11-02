@@ -112,6 +112,14 @@ Usage: swiftvm <command> [arguments]
   cp [--root | --user <name>] <from> <to>
                                     Copy a file or a folder into the machine or out of it. The side in
                                     the machine is <machine>:<path>. Works as cp -R does
+  desktop <machine> [--timeout <seconds>] [--] <agent-desktop arguments>
+                                    See and work the machine's desktop: run agent-desktop in its logged-in
+                                    session, never on this Mac. The way to drive a desktop: snapshots,
+                                    actions, keyboard and pointer, screenshots, windows, clipboard. Start
+                                    with status, skills get desktop, and skills get platform. Arguments,
+                                    input, output and exit status pass through unchanged, but for what a
+                                    Linux guest's tools do in agent-desktop's place where it refuses.
+                                    Requires current Guest Tools; times out after 120 seconds by default
   screenshot <machine> [<file> | -] Save what is on the machine's screen as a PNG, and print where
   ui <machine> click <x> <y> [--button left|right|middle] [--count <n>]
   ui <machine> double-click <x> <y> | right-click <x> <y> | move <x> <y>
@@ -134,19 +142,17 @@ Usage: swiftvm <command> [arguments]
                                     Settings and gives the account's password, with the machine's own
                                     mouse and keyboard. Quick Create and install-tools --password do it
                                     by themselves
-  desktop <machine> [--timeout <seconds>] [--] <agent-desktop arguments>
-                                    Run agent-desktop in the guest's logged-in desktop, never on this Mac.
-                                    Start with status, skills get desktop, and skills get platform.
-                                    Arguments, input, output and exit status pass through unchanged.
-                                    Requires current Guest Tools; times out after 120 seconds by default
-  automation <machine> on|off       Let exec, cp, screenshot, ui and desktop work in the machine, or not
+  automation <machine> on|off       Let exec, cp, desktop, screenshot and ui work in the machine, or not
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
 <machine> is a name, SSH alias or UUID. <template> is a name or UUID.
 
-exec and cp need the guest tools in the machine: swiftvm install-tools. So do screenshot and ui in a
-Linux machine. A macOS machine's screen, mouse and keyboard need nothing in it. Its tree needs the
+To drive a desktop, use desktop. screenshot and ui work from outside the desktop, for where agent-desktop
+can't reach: the login and lock screens, and a machine nobody is logged in to.
+
+exec, cp and desktop need the guest tools in the machine: swiftvm install-tools. So do screenshot and ui
+in a Linux machine. A macOS machine's screen, mouse and keyboard need nothing in it. Its tree needs the
 guest tools, and macOS to let them: swiftvm allow-accessibility, which Quick Create has done already.
 """
 
