@@ -65,6 +65,10 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Plug the machine's network cable in, or pull it.
         case plug
         case unplug
+        /// List the host interfaces available for bridged networking.
+        case networkInterfaces = "network-interfaces"
+        /// Select `shared` or `bridged` networking for a stopped machine.
+        case network
         /// Install the guest tools in a running guest: over SSH, or with ``ControlRequest/usesDisc`` by
         /// plugging in the guest tools disc for someone to install from inside the guest.
         case installTools = "install-tools"
@@ -238,12 +242,16 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     /// For `move`: absolute path of the folder the machine is to be kept in.
     public var location: String?
 
+    public var networkMode: String?
+    public var bridgedInterfaceIdentifier: String?
+
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
-        timeout: Double? = nil, location: String? = nil, template: String? = nil
+        timeout: Double? = nil, location: String? = nil, template: String? = nil,
+        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -265,6 +273,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.timeout = timeout
         self.location = location
         self.template = template
+        self.networkMode = networkMode
+        self.bridgedInterfaceIdentifier = bridgedInterfaceIdentifier
     }
 }
 
@@ -389,6 +399,8 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     /// Where the machine's bundle is on the host.
     public var location: String
     public var macAddress: String?
+    public var networkMode: String?
+    public var bridgedInterfaceIdentifier: String?
     public var drives: [Drive]
     public var sharedFolders: [Folder]
     public var forwards: [Forward]?
@@ -451,7 +463,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
         snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil,
         usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil, setup: Setup? = nil,
-        automation: Automation? = nil
+        automation: Automation? = nil, networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -465,6 +477,8 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.usbAutoConnect = usbAutoConnect
         self.setup = setup
         self.automation = automation
+        self.networkMode = networkMode
+        self.bridgedInterfaceIdentifier = bridgedInterfaceIdentifier
     }
 }
 
@@ -563,6 +577,16 @@ public struct TemplateSummary: Codable, Sendable, Equatable {
 }
 
 public struct ControlResponse: Codable, Sendable, Equatable {
+    public struct NetworkInterface: Codable, Sendable, Equatable {
+        public var identifier: String
+        public var name: String
+
+        public init(identifier: String, name: String) {
+            self.identifier = identifier
+            self.name = name
+        }
+    }
+
     public var ok: Bool
     public var error: String?
     /// The machines the command touched, or all of them for `list`.
@@ -581,11 +605,12 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     /// The machines still being created, or that failed to be, for `list`. Missing from an app older
     /// than this.
     public var creations: [CreationSummary]?
+    public var networkInterfaces: [NetworkInterface]?
 
     public init(
         ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil,
         usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil, templates: [TemplateSummary]? = nil,
-        creations: [CreationSummary]? = nil
+        creations: [CreationSummary]? = nil, networkInterfaces: [NetworkInterface]? = nil
     ) {
         self.ok = ok
         self.error = error
@@ -596,6 +621,7 @@ public struct ControlResponse: Codable, Sendable, Equatable {
         self.setupScripts = setupScripts
         self.templates = templates
         self.creations = creations
+        self.networkInterfaces = networkInterfaces
     }
 
     public static func failure(_ message: String) -> ControlResponse {

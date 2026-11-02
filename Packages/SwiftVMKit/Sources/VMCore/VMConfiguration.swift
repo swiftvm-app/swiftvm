@@ -185,7 +185,10 @@ public struct VMConfiguration: Codable, Sendable, Hashable, Identifiable {
         copy.usb.autoConnect = []
         copy.removableImages = removableImages.filter(\.readOnly).map { RemovableImage(path: $0.path, readOnly: true) }
         copy.networkInterfaces = networkInterfaces.map { interface in
-            NetworkInterfaceConfiguration(networkID: interface.networkID, isConnected: interface.isConnected)
+            NetworkInterfaceConfiguration(
+                networkID: interface.networkID, isConnected: interface.isConnected,
+                bridgedInterfaceIdentifier: interface.bridgedInterfaceIdentifier
+            )
         }
         return copy
     }
@@ -346,9 +349,11 @@ public struct NetworkInterfaceConfiguration: Codable, Sendable, Hashable, Identi
     public var id: UUID
     /// Identifier of the app-managed network this interface attaches to.
     public var networkID: String
+    /// BSD name of the host interface to bridge to, e.g. `en0`. `nil` uses the shared network.
+    public var bridgedInterfaceIdentifier: String?
     /// Colon-separated MAC address, e.g. `02:1a:2b:3c:4d:5e`.
     public var macAddress: String
-    /// IPv4 address reserved for this interface on its network, if any.
+    /// IPv4 address reserved on SwiftVM's shared network. Bridged addresses belong to the LAN.
     public var ipv4Address: String?
     public var portForwards: [PortForward]
     /// Whether the virtual cable is plugged in when the machine starts.
@@ -360,10 +365,12 @@ public struct NetworkInterfaceConfiguration: Codable, Sendable, Hashable, Identi
         macAddress: String = MACAddress.random().description,
         ipv4Address: String? = nil,
         portForwards: [PortForward] = [],
-        isConnected: Bool = true
+        isConnected: Bool = true,
+        bridgedInterfaceIdentifier: String? = nil
     ) {
         self.id = id
         self.networkID = networkID
+        self.bridgedInterfaceIdentifier = bridgedInterfaceIdentifier
         self.macAddress = macAddress
         self.ipv4Address = ipv4Address
         self.portForwards = portForwards
@@ -371,6 +378,8 @@ public struct NetworkInterfaceConfiguration: Codable, Sendable, Hashable, Identi
     }
 
     public static let defaultNetworkID = "default"
+
+    public var usesSharedNetwork: Bool { bridgedInterfaceIdentifier == nil }
 }
 
 public struct PortForward: Codable, Sendable, Hashable, Identifiable {

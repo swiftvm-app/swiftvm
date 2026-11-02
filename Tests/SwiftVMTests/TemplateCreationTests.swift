@@ -74,6 +74,38 @@ import VMCore
         #expect(model.library.machines.first { $0.name == "Retry" }?.configuration.ssh.alias == "retry")
 
         try await theCommandLineSeesAndFreesTheNamesThatCreationsHold(model: model, template: template)
+        try await bridgedMachinesKeepLANAddressesSeparateFromSharedReservations(model: model)
+    }
+
+    private func bridgedMachinesKeepLANAddressesSeparateFromSharedReservations(model: AppModel) async throws {
+        let configuration = VMConfiguration(
+            name: "Bridged", os: GuestOS(family: .linux), cpuCount: 2, memorySize: 1 << 30, disks: [],
+            networkInterfaces: [NetworkInterfaceConfiguration(bridgedInterfaceIdentifier: "en7")],
+            ssh: SSHConfiguration(alias: "bridged", user: "username")
+        )
+        let staged = try VMBundle.create(at: model.library.makeStagingBundleURL(), configuration: configuration)
+        let machine = try model.addToLibrary(staged: staged)
+        defer { try? model.library.remove(machine, movingToTrash: false) }
+        // Cloning a bridged template must not allocate an address from the shared subnet.
+        #expect(machine.configuration.networkInterfaces[0].ipv4Address == nil)
+        try machine.updateConfiguration { $0.networkInterfaces[0].ipv4Address = "10.23.0.99" }
+        #expect(model.address(for: machine) == nil)
+
+        let info = await model.handle(ControlRequest(command: .info, machine: machine.id.uuidString))
+        #expect(info.machines.first?.details?.bridgedInterfaceIdentifier == "en7")
+        #expect(info.machines.first?.address == nil)
+        let missing = await model.handle(ControlRequest(command: .network, machine: machine.id.uuidString, networkMode: "bridged"))
+        #expect(!missing.ok)
+        let invalid = await model.handle(ControlRequest(command: .network, machine: machine.id.uuidString, networkMode: "unknown"))
+        #expect(!invalid.ok)
+        #expect(machine.configuration.networkInterfaces[0].bridgedInterfaceIdentifier == "en7")
+
+        let shared = await model.handle(ControlRequest(command: .network, machine: machine.id.uuidString, networkMode: "shared"))
+        #expect(shared.ok)
+        #expect(shared.machines.first?.details?.networkMode == "shared")
+        #expect(machine.configuration.networkInterfaces[0].usesSharedNetwork)
+        #expect(model.address(for: machine) != nil)
+        #expect(model.address(for: machine) != "10.23.0.99")
     }
 
     /// A creation holds its name before there is a machine: `list` shows it, and `delete` lets it go,

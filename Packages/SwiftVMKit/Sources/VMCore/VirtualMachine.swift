@@ -258,6 +258,14 @@ public final class VirtualMachine: Identifiable {
         var updated = configuration
         body(&updated)
         guard updated != configuration else { return }
+        // A running or suspended guest still has its old attachment. Keep address discovery and
+        // forwarded ports on that network until it has shut down and can change networks together.
+        if state != .stopped, updated.networkInterfaces.contains(where: { interface in
+            configuration.networkInterfaces.first(where: { $0.id == interface.id })?.bridgedInterfaceIdentifier
+                != interface.bridgedInterfaceIdentifier
+        }) {
+            throw VMError.invalidConfiguration("Shut down the virtual machine before changing its network.")
+        }
         try bundle.save(updated)
         let previous = configuration
         configuration = updated
@@ -273,10 +281,19 @@ public final class VirtualMachine: Identifiable {
                     )
                 }
             }
-            for interface in updated.networkInterfaces {
+            for (index, interface) in updated.networkInterfaces.enumerated() {
                 let before = previous.networkInterfaces.first { $0.id == interface.id }
                 if let before, before.isConnected != interface.isConnected {
-                    try backend.setNetworkInterface(interface.id, connected: interface.isConnected)
+                    do {
+                        try backend.setNetworkInterface(interface.id, connected: interface.isConnected)
+                    } catch {
+                        // A bridge adapter may have disappeared. Leave the cable as it was so that
+                        // plugging it in again retries the attachment instead of becoming a no-op.
+                        configuration.networkInterfaces[index].isConnected = before.isConnected
+                        try bundle.save(configuration)
+                        onConfigurationChange?(self)
+                        throw error
+                    }
                 }
             }
             if previous.keyboard != updated.keyboard {

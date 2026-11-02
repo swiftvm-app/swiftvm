@@ -1,6 +1,6 @@
 # Networking
 
-Every machine is on one shared network that SwiftVM manages. Guests reach the
+By default, machines use a shared network that SwiftVM manages. Guests reach the
 internet through your Mac, and your Mac and the guests reach each other
 directly.
 
@@ -16,7 +16,7 @@ flowchart LR
     HOST -->|"NAT"| INTERNET["Internet"]
 ```
 
-## Addresses
+## Shared network addresses
 
 - Each machine has a reserved address that normally stays the same between
   starts. If SwiftVM moves to another address range to avoid a conflict, the
@@ -28,6 +28,44 @@ flowchart LR
 
 Find a machine's address in the panel, with **Copy IP Address** in its menu,
 or with `swiftvm ip <machine>`.
+
+## Bridged networking
+
+Bridged networking connects a guest directly to your LAN through a host
+interface, such as Ethernet. Your router assigns the guest its own address,
+and other LAN devices can reach it directly. This supports local discovery
+and multicast traffic for guests such as Home Assistant, subject to your
+network's filtering rules. Ethernet is recommended for this use.
+
+Shut down the machine, open its **Settings → Network**, and choose
+**Bridged: Ethernet** (or another available interface) in **Network**.
+**Refresh Interfaces** updates the list after connecting an adapter.
+From the command line:
+
+```bash
+swiftvm network-interfaces
+swiftvm network home-assistant bridged en0  # use an identifier from the list
+swiftvm start home-assistant
+swiftvm network home-assistant shared      # switch back after shutting down
+```
+
+- Both the Virtualization and QEMU engines support bridging.
+- Windows shared folders require Shared (NAT) networking. Their server isn't
+  exposed on the LAN. Linux and macOS folder sharing doesn't depend on this.
+- The selected host interface is saved with the machine. If it is missing,
+  reconnect it or choose another; SwiftVM doesn't silently switch networks.
+- The guest uses DHCP from your LAN. For a stable address, reserve its MAC
+  address on your router. SwiftVM's shared-network reservations don't apply.
+- With guest tools installed, SwiftVM displays the address reported for the
+  guest's network card. Without tools, find it in the guest's console or your
+  router's DHCP clients. This includes Home Assistant installations without
+  SwiftVM guest tools. Port forwarding and SSH shortcuts need a known address;
+  direct connections to the guest's LAN address don't need port forwarding.
+- Shut down a running or suspended guest before changing its network.
+
+Bridging requires a copy of SwiftVM signed with Apple's `com.apple.vm.networking`
+entitlement. Builds without it still support shared networking; bridged choices
+are unavailable. See [building with bridged networking](../tech/building.md#bridged-networking).
 
 ## The cable
 
@@ -61,5 +99,5 @@ swiftvm unforward web-server 8080
 
 ## Limitations
 
-Bridged, host-only, and isolated networks, and multiple network cards per
+Host-only and isolated networks, and multiple network cards per
 machine are unavailable.

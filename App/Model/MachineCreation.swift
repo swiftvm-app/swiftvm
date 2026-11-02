@@ -512,7 +512,7 @@ extension AppModel {
     /// them must not end up with the same one.
     func addToLibrary(staged bundle: VMBundle) throws -> VirtualMachine {
         var configuration = try bundle.loadConfiguration()
-        if let index = configuration.networkInterfaces.firstIndex(where: { $0.ipv4Address == nil }) {
+        if let index = configuration.networkInterfaces.firstIndex(where: { $0.usesSharedNetwork && $0.ipv4Address == nil }) {
             configuration.networkInterfaces[index].ipv4Address = allocateAddress()?.description
             try bundle.save(configuration)
         }

@@ -105,8 +105,8 @@ is enough to run virtual machines.
 
 ## USB devices
 
-Handing [USB devices](../features/usb-devices.md) to guests is the one thing
-that takes more than a certificate. macOS only allows it in an app that carries
+Handing [USB devices](../features/usb-devices.md) to guests takes more than a
+certificate. macOS only allows it in an app that carries
 a provisioning profile:
 
 - Made in a paid Apple Developer account, for the app's identifier, with the
@@ -117,7 +117,22 @@ a provisioning profile:
 
 The build looks for such a profile where Xcode keeps profiles and puts it into
 the app. When there is none, it says so and builds without: everything works
-but USB devices, and the USB button isn't shown.
+except capabilities that need a profile, and the USB button isn't shown.
+
+## Bridged networking
+
+[Bridged networking](../features/networking.md#bridged-networking) requires
+Apple's restricted `com.apple.vm.networking` entitlement. Request it from Apple
+for the app's identifier, then create a provisioning profile granting it for
+the signing certificate (and, for development, this Mac). A profile granting
+both networking and **Claim USB Accessory** enables both features.
+
+The build looks where Xcode keeps profiles, preferring one granting both
+capabilities, then networking, then USB. Within each group it chooses the
+latest expiry. `SWIFTVM_PROVISIONING_PROFILE` selects a specific profile.
+Only entitlements granted by that profile are added to the app's signature.
+Without a networking profile the app builds and runs with shared NAT networking.
+Adding the entitlement to `Config/SwiftVM.entitlements` alone isn't sufficient.
 
 ## Building only the tool
 

@@ -3,6 +3,32 @@ import Testing
 import VMCore
 @testable import VMNetworking
 
+@Suite struct BridgedNetworkingTests {
+    @Test func bridgedGuestsNeverReserveAddressesOnTheSharedNetwork() throws {
+        let shared = NetworkInterfaceConfiguration(macAddress: "02:00:00:00:00:01", ipv4Address: "192.168.230.10")
+        // A bundle edited elsewhere may still contain an old NAT reservation after switching.
+        let bridged = NetworkInterfaceConfiguration(
+            macAddress: "02:00:00:00:00:02", ipv4Address: "192.168.230.11", bridgedInterfaceIdentifier: "en0"
+        )
+        let plan = NetworkPlan(interfaces: [shared, bridged])
+        #expect(plan.reservations == [.init(
+            macAddress: try #require(MACAddress(shared.macAddress)), address: try #require(IPv4Address("192.168.230.10"))
+        )])
+    }
+
+    @Test func aRejectedBridgeClosesTheSocketHandedToIt() async throws {
+        let pair = try VmnetPort.makeSocketPair()
+        defer { close(pair.engine) }
+        do {
+            _ = try await VmnetPort.open(bridgedTo: "swiftvm-missing-interface", peer: pair.port)
+            Issue.record("A missing host interface must not fall back to the shared network.")
+        } catch is BridgedNetworking.Failure {
+            #expect(fcntl(pair.port, F_GETFD) == -1)
+            #expect(errno == EBADF)
+        }
+    }
+}
+
 @Suite struct IPv4Tests {
     @Test func parsesAddresses() {
         #expect(IPv4Address("192.168.230.10")?.rawValue == 0xC0A8_E60A)

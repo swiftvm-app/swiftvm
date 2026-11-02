@@ -42,6 +42,14 @@ public struct NetworkPlan: Sendable, Hashable {
     public init(reservations: [Reservation] = []) {
         self.reservations = reservations
     }
+
+    public init(interfaces: [NetworkInterfaceConfiguration]) {
+        reservations = interfaces.filter(\.usesSharedNetwork).compactMap { interface in
+            guard let mac = MACAddress(interface.macAddress),
+                  let address = interface.ipv4Address.flatMap(IPv4Address.init) else { return nil }
+            return Reservation(macAddress: mac, address: address)
+        }
+    }
 }
 
 public enum NetworkError: Error, LocalizedError {
