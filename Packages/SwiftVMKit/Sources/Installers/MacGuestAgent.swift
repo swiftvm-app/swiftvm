@@ -29,6 +29,12 @@ public enum MacGuestAgent {
     /// What a person runs in the guest to install from the guest tools disc, which macOS mounts by itself.
     public static let toolsInstallCommand = "sudo sh /Volumes/\(LinuxGuestAgent.toolsVolumeName)/install.sh"
 
+    /// Dismisses the system's setup notices in the logged-in guest session, after desktop access has
+    /// been allowed. This is a one-time cleanup, not a change to the account's notification settings.
+    public static let dismissSetupNotifications = GuestJob.exec(.init(
+        arguments: ["\(directory)/swiftvm-agent", "dismiss-setup-notifications"]
+    ))
+
     /// A shell script that installs the agent, or replaces an older one, with everything it needs inside.
     ///
     /// - Parameter program: The agent, as it was built with this copy of the app.

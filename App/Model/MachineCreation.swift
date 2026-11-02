@@ -587,6 +587,11 @@ extension AppModel {
                 message: "\(error.localizedDescription)\n\n`swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
             )
         }
+        // Installing the tools and discovering bundled extensions can leave persistent banners over
+        // the desktop. Clear those once, while setup still owns the screen. A cleanup failure must
+        // not undo successful setup or replace a more useful permission error.
+        guard machine.state == .running else { return }
+        _ = try? await machine.collect(MacGuestAgent.dismissSetupNotifications, patience: 20)
     }
 
     /// Sets the time zone of a macOS guest whose guest tools couldn't be installed, and says why they weren't.

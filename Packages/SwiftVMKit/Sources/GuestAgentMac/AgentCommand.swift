@@ -14,6 +14,8 @@ public enum AgentCommand {
                                          exit with 0 if macOS lets the guest tools record the screen
                swiftvm-agent request-screen-recording
                                          ask macOS to let the guest tools record the screen
+               swiftvm-agent dismiss-setup-notifications
+                                         dismiss background-activity and extension notices after setup
                swiftvm-agent --version
         """
 
@@ -23,6 +25,8 @@ public enum AgentCommand {
         case ["--version"]:
             print(GuestProtocol.macAgentVersion)
             return 0
+        case [SetupNotifications.mode]:
+            return SetupNotifications.run()
         case ["daemon"]:
             // A line that the other side has dropped must not end this process.
             signal(SIGPIPE, SIG_IGN)

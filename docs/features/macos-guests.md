@@ -42,6 +42,10 @@ A macOS 27 or newer guest sets itself up on its first start:
   SwiftVM installs your SSH key and the [guest tools](guest-tools.md).
 - With SSH setup enabled, SwiftVM sets the guest's time zone to your Mac's
   once. Later changes you make in the guest are preserved.
+- After automatic setup grants desktop access, SwiftVM dismisses recognized
+  background-activity and extension-added notices left on the desktop. This
+  currently recognizes English notices. Notification settings stay as they
+  were; future notifications still appear.
 
 Versions before macOS 27 can't be set up automatically. Create the account in
 the setup assistant when the machine first starts.
