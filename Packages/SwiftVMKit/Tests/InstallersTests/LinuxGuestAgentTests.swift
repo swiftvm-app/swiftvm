@@ -45,6 +45,71 @@ import VMCore
         }
     }
 
+    /// agent-desktop refuses a full-screen picture under GNOME on X11 and the pointer on Wayland. The
+    /// agent stands in for it on exactly those refusals, which come before anything was done, and never
+    /// for a ref, an option it doesn't know, or a refusal after which the action may have happened.
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/python3")))
+    func standsInForAgentDesktopOnlyWhereItRefusedBeforeDoingAnything() throws {
+        let agent = try #require(LinuxGuestAgent.resourceURL("swiftvm-agent.py"))
+        let checks = #"""
+        import importlib.util, json, sys
+        spec = importlib.util.spec_from_file_location("agent", sys.argv[1])
+        agent = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(agent)
+        command = agent.desktop_command
+
+        def refusal(name, code, details, delivery="not_delivered"):
+            return json.dumps({"version": "2.5", "ok": False, "command": name, "error": {
+                "code": code, "message": "-", "details": details, "disposition": {"delivery": delivery, "retry": "safe"}}}).encode()
+
+        click = command(["--headed", "mouse-click", "--xy=10,20.5", "--button", "right", "--count", "2", "--modifiers", "cmd"])
+        assert click == {"command": "mouse-click", "point": (10.0, 20.5), "button": "right", "count": 2, "modifiers": ["super"]}, click
+        assert command(["--session", "s", "screenshot", "shot.png"]) == {"command": "screenshot", "path": "shot.png"}
+        assert command(["mouse-click", "--xy", "1,1", "--modifiers", "command"])["modifiers"] == ["super"]
+        # agent-desktop's wheel turns 3 lines down unless told a way to turn.
+        assert command(["mouse-wheel", "--x", "5", "--y", "6"])["dy"] == -3.0
+        assert command(["mouse-wheel", "--x", "5", "--y", "6", "--dx", "0"])["dy"] == -3.0
+        assert command(["mouse-wheel", "--x", "5", "--y", "6", "--dx", "2"])["dy"] == 0.0
+        drag = command(["drag", "--from-xy", "1,2", "--to-xy", "3,4"])
+        assert (drag["to"], drag["drop_delay"]) == ((3.0, 4.0), 150), drag
+        for refused in (
+            ["click", "@s1:e1"], ["hover", "@s1:e1"], ["drag", "--from", "@s1:e1", "--to-xy", "3,4"],
+            ["screenshot", "--app", "Muxy"], ["screenshot", "--window-id", "7"], ["--trace", "t", "mouse-click", "--xy", "1,1"],
+            ["mouse-click", "--xy", "1,1", "--wait-for", "button:OK"], ["mouse-click", "--xy", "nan,1"], ["mouse-click"],
+            # What the agent's own pointer can't do as asked keeps agent-desktop's refusal.
+            ["mouse-click", "--xy", "1,1", "--count", "²"], ["mouse-click", "--xy", "1,1", "--count", "4"],
+            ["mouse-wheel", "--x", "5", "--y", "6", "--dy", "0.4"],
+        ):
+            assert command(refused) is None, refused
+        assert agent.desktop_subcommand(["--trace", "t.jsonl", "screenshot"]) == "screenshot"
+
+        screenshot = command(["screenshot"])
+        assert agent.refused_for_the_agent(screenshot, refusal("screenshot", "PLATFORM_NOT_SUPPORTED", {"reason": "compositing"}))
+        assert not agent.refused_for_the_agent(screenshot, refusal("screenshot", "TIMEOUT", {"kind": "portal_consent_timeout"}, "delivery_uncertain"))
+        assert not agent.refused_for_the_agent(screenshot, refusal("screenshot", "PERM_DENIED", {}))
+        wayland = {"cause": "wayland_session", "physical_delivery_started": False}
+        assert agent.refused_for_the_agent(click, refusal("mouse-click", "ACTION_NOT_SUPPORTED", wayland))
+        assert not agent.refused_for_the_agent(click, refusal("mouse-click", "ACTION_NOT_SUPPORTED", wayland, "delivery_uncertain"))
+        assert not agent.refused_for_the_agent(click, refusal("mouse-click", "POLICY_DENIED", {}))
+        assert not agent.refused_for_the_agent(click, refusal("drag", "ACTION_NOT_SUPPORTED", wayland))
+        assert not agent.refused_for_the_agent(click, b'{"ok": true, "command": "mouse-click"}')
+
+        # agent-desktop's places are in the display's points; the screen may have two pixels to one.
+        listed = b'{"ok": true, "data": [{"bounds": {"x": 0, "y": 0, "width": 1920, "height": 1200}, "scale": 2.0}]}'
+        display = agent.the_one_display(listed)
+        assert display == (0.0, 0.0, 1920.0, 1200.0)
+        assert agent.on_screen((960, 600), display, (3840, 2400)) == (1920, 1200)
+        assert agent.on_screen((1920, 10), display, (3840, 2400)) is None
+        assert agent.same_shape(display, (3840, 2400)) and not agent.same_shape(display, (1024, 768))
+        assert agent.the_one_display(listed.replace(b"}]}", b"}, {\"bounds\": {}}]}")) is None
+        request = agent.pointer_request(command(["mouse-wheel", "--x", "5", "--y", "6", "--dy", "2"]), display, (1920, 1200))
+        assert (request["action"], request["deltaY"]) == ("scroll", -2), request
+        print("ok")
+        """#
+        let result = try ProcessRunner.run("/usr/bin/python3", ["-I", "-c", checks, agent.path])
+        #expect(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "ok")
+    }
+
     @Test func makesTheGuestToolsDiscOnce() throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-tools-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }

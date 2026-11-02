@@ -123,16 +123,17 @@ see [Automation](automation.md#what-works-where).
 | Command | What it does |
 | --- | --- |
 | `wait <machine>` | Wait until the machine is [ready](automation.md#getting-ready): created, its guest tools answering, its setup done, restarts included, and a desktop that logs in by itself logged in. A setup that failed is reported. `--timeout <seconds>`, 300 by default |
+| `desktop <machine> <agent-desktop arguments>` | See and work the guest's desktop with [agent-desktop](automation.md#agent-desktop), run in its logged-in session: snapshots, actions, keyboard and pointer, screenshots, windows, clipboard. The way to drive a desktop. `--timeout <seconds>`, 120 by default |
 | `exec <machine> [--] <command>` | [Run a command](automation.md#commands) in the guest, and end with its exit status. `--root`, `--user <name>`, `--cwd <folder>`, `--env <name>=<value>`, `--timeout <seconds>` |
 | `cp <from> <to>` | [Copy a file or a folder](automation.md#files) into the guest or out of it. The guest's side is `<machine>:<path>`. `--root`, `--user <name>` |
-| `screenshot <machine> [file]` | Save [what is on the guest's screen](automation.md#the-screen) as a PNG |
+| `screenshot <machine> [file]` | Save [what is on the guest's screen](automation.md#the-screen) as a PNG. With `ui`, for [where agent-desktop can't reach](automation.md#when-agent-desktop-cant-reach), such as the login screen |
 | `ui <machine> click <x> <y>` | Click. Also `double-click`, `right-click`, `move`, `drag <x> <y> <to x> <to y>`, and `scroll <x> <y> up\|down\|left\|right` |
 | `ui <machine> type <text>` | Type text |
 | `ui <machine> key <key>…` | Press keys: `Return`, `ctrl+c` |
 | `ui <machine> tree` | Print [what is on the screen](automation.md#what-is-on-the-screen) as a tree, in JSON. `--app <name>`, `--depth <levels>`, `--all` |
 | `ui <machine> press <element>` | Press a part of the tree, by its `id`. Also `focus <element>` and `set <element> <text>` |
 | `allow-accessibility <machine> --password <password>` | Have a macOS guest [let the guest tools and agent-desktop work its desktop](automation.md#macos-guests), once. Quick Create does it by itself |
-| `automation <machine> on\|off` | Enable or disable `exec`, `cp`, `screenshot`, and `ui`. See [Automation](automation.md#turning-it-off) |
+| `automation <machine> on\|off` | Enable or disable `exec`, `cp`, `desktop`, `screenshot`, and `ui`. See [Automation](automation.md#turning-it-off) |
 
 ## Snapshots
 

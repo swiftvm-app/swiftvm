@@ -493,10 +493,10 @@ struct MachineSettingsView: View {
         Section {
             Toggle("Allow Automation", isOn: binding(\.automation.isAllowed))
         } footer: {
+            Text("AI agents and scripts drive the virtual machine's desktop with swiftvm desktop <machine>, which runs agent-desktop in its logged-in session: snapshots, clicks, typing, screenshots, windows. Guest Tools installs it; swiftvm desktop <machine> status checks readiness.")
             Text(configuration.os.family == .macOS || configuration.engine == .qemu
-                ? "The swiftvm command can see the virtual machine's screen and use its mouse and keyboard. With the guest tools in the virtual machine it can also run commands there and copy files."
-                : "The swiftvm command can run commands in the virtual machine, copy files, see its screen, and use its mouse and keyboard. This needs the guest tools in the virtual machine.")
-            Text("For AI agents, swiftvm desktop <machine> runs agent-desktop in the guest's logged-in desktop. Guest Tools installs it; the guest may need accessibility permissions. swiftvm desktop <machine> status checks readiness.")
+                ? "The swiftvm command can also see the virtual machine's screen and use its mouse and keyboard from outside the desktop, at its login screen too. With the guest tools in the virtual machine it can also run commands there and copy files."
+                : "The swiftvm command can also run commands in the virtual machine, copy files, and use its screen, mouse, and keyboard from outside the desktop, at its login screen too. This needs the guest tools in the virtual machine.")
         }
     }
 

@@ -21,6 +21,7 @@ brings it.
 """
 
 import array
+import base64
 import fcntl
 import glob
 import json
@@ -40,7 +41,7 @@ import threading
 import time
 import zlib
 
-AGENT_VERSION = "1.5"
+AGENT_VERSION = "1.6"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
@@ -482,6 +483,35 @@ class System:
 
     def keys(self, request):
         INPUT.keys(request)
+
+    def allow_screenshots(self, account, environment):
+        """Lets programs of `account`'s Wayland desktop take screenshots without its asking a person.
+
+        GNOME asks whoever is at the screen the first time a program wants one, and agent-desktop has
+        nobody there to answer: its screenshot waits, gives up, and leaves the question on the screen.
+        This gives the answer that someone at the screen would, once, through the same store the
+        desktop keeps it in. An answer that is there already, yes or no, is left as it is."""
+        call = [
+            "gdbus", "call", "--session", "--dest", "org.freedesktop.impl.portal.PermissionStore",
+            "--object-path", "/org/freedesktop/impl/portal/PermissionStore", "--method",
+        ]
+
+        def ask(*arguments):
+            return subprocess.run(
+                call + list(arguments), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, timeout=5, **self.identity(account),
+            )
+        try:
+            stored = ask("org.freedesktop.impl.portal.PermissionStore.Lookup", "screenshot", "screenshot")
+            # Programs outside a sandbox are known to the store by an empty name.
+            if stored.returncode == 0 and b"'': [" in stored.stdout:
+                return
+            if stored.returncode != 0 and b"NotFound" not in stored.stderr:
+                return
+            ask("org.freedesktop.impl.portal.PermissionStore.SetPermission", "screenshot", "true", "screenshot", "", "['yes']")
+        except (OSError, subprocess.SubprocessError):
+            # A desktop without the store, or without gdbus, asks nobody or can't be told.
+            pass
 
     def accessibility(self, request):
         """Has the desktop of whoever is logged in at the screen say what is on it, or do something
@@ -965,38 +995,337 @@ class InputDevices:
         delta_x, delta_y = number("deltaX", 0), number("deltaY", 0)
         if abs(delta_x) > 100 or abs(delta_y) > 100:
             raise AgentError("That is further than the wheel is turned in one go.")
+        # How long a drag takes on its way, and lingers over where it ends before letting go.
+        duration, linger = number("durationMs", 0), number("holdMs", round(CLICK_PAUSE * 1000))
+        if not (0 <= duration <= 60000 and 0 <= linger <= 60000):
+            raise AgentError("A drag takes a minute at most.")
+        held = request.get("modifiers") or []
+        if not isinstance(held, list) or not all(isinstance(name, str) and name.lower() in MODIFIER_KEYS for name in held):
+            raise AgentError("The keys to hold are ctrl, shift, alt and super.")
+        held = list(dict.fromkeys(MODIFIER_KEYS[name.lower()] for name in held))
         with self.lock:
             device = self.mouse_device()
-            self.emit(device, *start)
-            time.sleep(CLICK_PAUSE)
-            if action == "click":
-                for _ in range(count):
-                    self.emit(device, (EV_KEY, button, 1))
-                    time.sleep(CLICK_PAUSE)
-                    self.emit(device, (EV_KEY, button, 0))
-                    time.sleep(CLICK_PAUSE)
-            elif action == "drag":
+            keyboard = self.keyboard_device() if held else None
+            for code in held:
+                self.emit(keyboard, (EV_KEY, code, 1))
+            try:
+                self.use_pointer(device, action, button, start, end, count, delta_x, delta_y, duration / 1000, linger / 1000)
+            finally:
+                for code in reversed(held):
+                    self.emit(keyboard, (EV_KEY, code, 0))
+
+    def use_pointer(self, device, action, button, start, end, count, delta_x, delta_y, duration=0, linger=CLICK_PAUSE):
+        """Moves the pointer to `start` and does `action` there. Called with the lock held."""
+        self.emit(device, *start)
+        time.sleep(CLICK_PAUSE)
+        if action == "click":
+            for _ in range(count):
                 self.emit(device, (EV_KEY, button, 1))
                 time.sleep(CLICK_PAUSE)
-                # Whatever is dragged follows a pointer that moves, not one that jumps.
-                steps = 12
-                for step in range(1, steps + 1):
-                    self.emit(device, *(
-                        (kind, code, round(before + (after - before) * step / steps))
-                        for (kind, code, before), (_, _, after) in zip(start, end)
-                    ))
-                    time.sleep(0.02)
-                time.sleep(CLICK_PAUSE)
                 self.emit(device, (EV_KEY, button, 0))
-            elif action == "scroll":
-                # The wheel counts up for away from the hand, which scrolls up. Down is positive here.
-                for code, notches in ((REL_WHEEL, -delta_y), (REL_HWHEEL, delta_x)):
-                    for _ in range(abs(notches)):
-                        self.emit(device, (EV_REL, code, 1 if notches > 0 else -1))
-                        time.sleep(0.015)
+                time.sleep(CLICK_PAUSE)
+        elif action == "drag":
+            self.emit(device, (EV_KEY, button, 1))
+            time.sleep(CLICK_PAUSE)
+            # Whatever is dragged follows a pointer that moves, not one that jumps.
+            steps = 12
+            for step in range(1, steps + 1):
+                self.emit(device, *(
+                    (kind, code, round(before + (after - before) * step / steps))
+                    for (kind, code, before), (_, _, after) in zip(start, end)
+                ))
+                time.sleep(max(0.02, duration / steps))
+            time.sleep(max(CLICK_PAUSE, linger))
+            self.emit(device, (EV_KEY, button, 0))
+        elif action == "scroll":
+            # The wheel counts up for away from the hand, which scrolls up. Down is positive here.
+            for code, notches in ((REL_WHEEL, -delta_y), (REL_HWHEEL, delta_x)):
+                for _ in range(abs(notches)):
+                    self.emit(device, (EV_REL, code, 1 if notches > 0 else -1))
+                    time.sleep(0.015)
 
 
 INPUT = InputDevices()
+
+
+# What agent-desktop leaves to the agent
+#
+# agent-desktop refuses two things on Linux that the display and the input devices above do on
+# any desktop: a picture of the whole screen under an X11 window manager that composites, such as
+# GNOME's, and the pointer on Wayland. It refuses both before it has done anything. The desktop job
+# runs agent-desktop first and, on exactly those refusals, does the command itself and answers as
+# agent-desktop would, so that whoever drives the desktop needs nothing else. Anything else that
+# agent-desktop says, and every command that names a ref, goes to them as it was.
+
+# Options that change nothing about what the agent does in agent-desktop's place.
+DESKTOP_PLAIN_FLAGS = ("--headed", "-v", "--verbose")
+DESKTOP_PLAIN_OPTIONS = ("--session", "--agent-id", "--timeout-ms")
+# The commands the agent can do in agent-desktop's place, with the options it understands for each.
+DESKTOP_FILLABLE = {
+    "screenshot": ("--screen",),
+    "mouse-click": ("--xy", "--button", "--count", "--modifiers"),
+    "mouse-move": ("--xy",),
+    "hover": ("--xy",),
+    "mouse-wheel": ("--x", "--y", "--dx", "--dy", "--modifiers"),
+    "drag": ("--from-xy", "--to-xy", "--duration", "--drop-delay"),
+}
+DESKTOP_MODIFIERS = {
+    "shift": "shift", "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "option": "alt",
+    "meta": "super", "cmd": "super", "command": "super", "super": "super", "win": "super",
+}
+# Options of agent-desktop's that take a value, wherever they are, so that a value isn't taken for
+# the command's name.
+DESKTOP_VALUE_OPTIONS = DESKTOP_PLAIN_OPTIONS + ("--trace", "--screenshot", "--wait-for", "-w", "--wait-for-gone", "--wait-timeout")
+# How long agent-desktop's drags on Linux linger over where they end, unless told otherwise.
+DESKTOP_DROP_DELAY = 150
+# What the agent writes a screenshot with, as the desktop's user: in full or not at all, as
+# agent-desktop does, into folders it makes when they are missing.
+SCREENSHOT_WRITER = r"""
+import os, sys, tempfile
+path = sys.argv[1]
+folder = os.path.dirname(os.path.abspath(path))
+os.makedirs(folder, exist_ok=True)
+handle, temporary = tempfile.mkstemp(dir=folder, prefix=".swiftvm-screenshot-")
+try:
+    with os.fdopen(handle, "wb") as file:
+        file.write(sys.stdin.buffer.read())
+    os.replace(temporary, path)
+except BaseException:
+    os.unlink(temporary)
+    raise
+"""
+
+
+def desktop_command(arguments):
+    """The agent-desktop command that `arguments` give, as the agent would do it in agent-desktop's
+    place, or None for one it wouldn't: any other command, one that names a ref, and one with an
+    option the agent doesn't know, such as a trace or a wait."""
+    command = None
+    options = {}
+    rest = []
+    position = 0
+    while position < len(arguments):
+        argument = arguments[position]
+        position += 1
+        if not argument.startswith("-") or argument == "-":
+            if command is None:
+                if argument not in DESKTOP_FILLABLE:
+                    return None
+                command = argument
+            else:
+                rest.append(argument)
+            continue
+        name, equals, value = argument.partition("=")
+        if name in DESKTOP_PLAIN_FLAGS and not equals:
+            continue
+        if name not in DESKTOP_PLAIN_OPTIONS + DESKTOP_FILLABLE.get(command, ()):
+            return None
+        if not equals:
+            if position == len(arguments):
+                return None
+            value = arguments[position]
+            position += 1
+        if name not in DESKTOP_PLAIN_OPTIONS:
+            options.setdefault(name, []).append(value)
+    if command is None or any(len(values) > 1 for name, values in options.items() if name != "--modifiers"):
+        return None
+    given = {name: values[0] for name, values in options.items()}
+
+    def number(text):
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+        return value if value == value and abs(value) != float("inf") else None
+
+    def whole(text, lowest, highest):
+        # Only ASCII digits: Python takes other digits for numbers, and agent-desktop doesn't.
+        value = int(text) if text and text.isascii() and text.isdigit() else None
+        return value if value is not None and lowest <= value <= highest else None
+
+    def point(text):
+        parts = (text or "").split(",")
+        values = [number(part) for part in parts] if len(parts) == 2 else [None]
+        return None if None in values else tuple(values)
+
+    found = {"command": command}
+    if command == "screenshot":
+        if len(rest) > 1:
+            return None
+        found["path"] = rest[0] if rest else None
+        if "--screen" in given:
+            found["screen"] = whole(given["--screen"], 0, 64)
+            if found["screen"] is None:
+                return None
+        return found
+    if rest:
+        return None
+    if command == "drag":
+        found["from"], found["to"] = point(given.get("--from-xy")), point(given.get("--to-xy"))
+        found["duration"] = whole(given.get("--duration", "0"), 0, 60000)
+        found["drop_delay"] = whole(given.get("--drop-delay", str(DESKTOP_DROP_DELAY)), 0, 60000)
+        return found if found["from"] and found["to"] and None not in (found["duration"], found["drop_delay"]) else None
+    if command == "mouse-wheel":
+        found["point"] = (number(given.get("--x", "")), number(given.get("--y", "")))
+        found["dx"] = number(given.get("--dx", "0"))
+        found["dy"] = number(given["--dy"]) if "--dy" in given else (-3.0 if found["dx"] == 0 else 0.0)
+        # The agent's wheel turns in whole notches, as many as it does in one go.
+        if None in found["point"] or any(
+            value is None or not value.is_integer() or abs(value) > 100 for value in (found["dx"], found["dy"])
+        ):
+            return None
+    else:
+        found["point"] = point(given.get("--xy"))
+        if found["point"] is None:
+            return None
+    if command == "mouse-click":
+        found["button"] = given.get("--button", "left")
+        # The agent's pointer clicks up to three times in a row.
+        found["count"] = whole(given.get("--count", "1"), 1, 3)
+        if found["button"] not in BUTTONS or found["count"] is None:
+            return None
+    modifiers = [name.lower() for name in options.get("--modifiers", [])]
+    if not all(name in DESKTOP_MODIFIERS for name in modifiers):
+        return None
+    found["modifiers"] = [DESKTOP_MODIFIERS[name] for name in modifiers]
+    return found
+
+
+def desktop_subcommand(arguments):
+    """The name of the agent-desktop command that `arguments` give, as far as the agent can tell."""
+    position = 0
+    while position < len(arguments):
+        argument = arguments[position]
+        position += 1
+        if argument in DESKTOP_VALUE_OPTIONS:
+            position += 1
+        elif not argument.startswith("-"):
+            return argument
+    return None
+
+
+def refused_for_the_agent(command, output):
+    """Whether what agent-desktop printed is one of the refusals that the agent answers in its place.
+
+    Those come before anything was done: a screenshot of the screen under a compositing X11 window
+    manager, and the pointer on Wayland."""
+    try:
+        answer = json.loads(output.decode("utf-8"))
+    except ValueError:
+        return False
+    if not isinstance(answer, dict) or answer.get("ok") is not False or answer.get("command") != command["command"]:
+        return False
+    error = answer.get("error")
+    if not isinstance(error, dict):
+        return False
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    disposition = error.get("disposition") if isinstance(error.get("disposition"), dict) else {}
+    if disposition.get("delivery") != "not_delivered":
+        return False
+    if command["command"] == "screenshot":
+        return error.get("code") == "PLATFORM_NOT_SUPPORTED" and details.get("reason") == "compositing"
+    return (
+        error.get("code") == "ACTION_NOT_SUPPORTED" and details.get("cause") == "wayland_session"
+        and details.get("physical_delivery_started") is False
+    )
+
+
+def the_one_display(answer):
+    """The bounds of the only display in what `agent-desktop list-displays` printed, or None.
+
+    The agent sees one display, and stands in for agent-desktop only where that is all there is."""
+    try:
+        answer = json.loads(answer.decode("utf-8"))
+        displays = answer["data"] if answer.get("ok") is True else None
+        bounds = displays[0]["bounds"] if isinstance(displays, list) and len(displays) == 1 else None
+        x, y, width, height = (float(bounds[key]) for key in ("x", "y", "width", "height"))
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return None
+    return (x, y, width, height) if width > 0 and height > 0 else None
+
+
+def on_screen(where, display, screen):
+    """Where a place in agent-desktop's coordinates, on `display`, is on the screen of `screen`
+    pixels, which shows that display, possibly at a scale of its own. None when it isn't on it."""
+    x, y = where[0] - display[0], where[1] - display[1]
+    if not (0 <= x < display[2] and 0 <= y < display[3]):
+        return None
+    return (
+        min(int(x * screen[0] / display[2]), screen[0] - 1),
+        min(int(y * screen[1] / display[3]), screen[1] - 1),
+    )
+
+
+def same_shape(display, screen):
+    """Whether a screen of `screen` pixels can show `display`, at one scale both ways."""
+    scale = screen[0] / display[2]
+    return abs(display[3] * scale - screen[1]) <= max(1.0, scale)
+
+
+def desktop_answer(command, data, version):
+    return {"version": version, "ok": True, "command": command, "data": data}
+
+
+def desktop_failure(command, code, message, version, delivered):
+    disposition = {"delivery": "delivery_uncertain", "retry": "unsafe"} if delivered else {"delivery": "not_delivered", "retry": "safe"}
+    return {"version": version, "ok": False, "command": command, "error": {
+        "code": code, "message": message, "details": {"filled_by": "swiftvm"}, "disposition": disposition,
+    }}
+
+
+def pointer_answer(command, version):
+    """What agent-desktop says once it has used the pointer as `command` asks."""
+    name = command["command"]
+    data = {
+        "details": {"filled_by": "swiftvm"},
+        "disposition": {"delivery": "delivered_unverified", "retry": "unsafe"},
+    }
+    if name == "drag":
+        start, end = ({"x": place[0], "y": place[1]} for place in (command["from"], command["to"]))
+        data.update({
+            "action": "drag", "from": start, "to": end, "target": {"kind": "drag", "from": start, "to": end},
+            "drop_delay_ms": command["drop_delay"],
+            "steps": [{"label": "pointer_drag", "mechanism": "physical_synthetic", "outcome": "succeeded"}],
+        })
+        return desktop_answer(name, data, version)
+    where = {"x": command["point"][0], "y": command["point"][1]}
+    data["target"] = {"kind": "pointer", "point": where}
+    if name == "mouse-wheel":
+        data.update({"action": "mouse-wheel", "dx": command["dx"], "dy": command["dy"]})
+        label = "pointer_wheel"
+    elif name == "mouse-click":
+        data.update({"action": "mouse-click", "count": command["count"]}, **where)
+        label = "pointer_click"
+    else:
+        data.update({"action": "mouse-move"}, **where)
+        label = "pointer_move"
+    data["steps"] = [{"label": label, "mechanism": "physical_synthetic", "outcome": "succeeded"}]
+    return desktop_answer(name, data, version)
+
+
+def pointer_request(command, display, screen):
+    """What the agent's own pointer is asked for to do `command`, or a reason it can't."""
+    name = command["command"]
+    if name == "drag":
+        start, end = (on_screen(place, display, screen) for place in (command["from"], command["to"]))
+        if start is None or end is None:
+            return "The drag starts or ends off the display."
+        return {
+            "action": "drag", "x": start[0], "y": start[1], "toX": end[0], "toY": end[1],
+            "durationMs": command["duration"], "holdMs": command["drop_delay"],
+        }
+    where = on_screen(command["point"], display, screen)
+    if where is None:
+        return "(%g, %g) isn't on the display." % command["point"]
+    request = {"x": where[0], "y": where[1], "modifiers": command["modifiers"]}
+    if name == "mouse-click":
+        request.update(action="click", button=command["button"], count=command["count"])
+    elif name == "mouse-wheel":
+        # agent-desktop counts lines up and to the right; the agent's wheel counts notches down.
+        request.update(action="scroll", deltaX=round(command["dx"]), deltaY=-round(command["dy"]))
+    else:
+        request["action"] = "move"
+    return request
 
 
 # What is on the screen, as a tree
@@ -1911,6 +2240,14 @@ class Job:
             self.answer(str(problem))
             return
         self.answer()
+        # What agent-desktop says to a command the agent may have to do in its place is held back
+        # until it is known whether it does.
+        fillable = desktop_command(arguments[1:]) if desktop else None
+        held = {FRAME_OUTPUT: bytearray(), FRAME_ERROR: bytearray()} if fillable else None
+        if desktop and environment.get("WAYLAND_DISPLAY") and (
+            desktop_subcommand(arguments[1:]) == "screenshot" or any(argument.startswith("--screenshot") for argument in arguments)
+        ):
+            self.system.allow_screenshots(account, environment)
         try:
             process = subprocess.Popen(
                 arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=directory,
@@ -1926,8 +2263,8 @@ class Job:
         finished = threading.Event()
         stopped = threading.Event()
         printers = [
-            threading.Thread(target=self.pass_on, args=(process.stdout, FRAME_OUTPUT, finished), daemon=True),
-            threading.Thread(target=self.pass_on, args=(process.stderr, FRAME_ERROR, finished), daemon=True),
+            threading.Thread(target=self.pass_on, args=(process.stdout, FRAME_OUTPUT, finished, held), daemon=True),
+            threading.Thread(target=self.pass_on, args=(process.stderr, FRAME_ERROR, finished, held), daemon=True),
         ]
         for thread in printers:
             thread.start()
@@ -1942,12 +2279,96 @@ class Job:
             thread.join()
         stopped.set()
         watcher.join()
+        if held is not None:
+            output = bytes(held[FRAME_OUTPUT])
+            if status == 1 and refused_for_the_agent(fillable, output):
+                filled = self.fill_in(fillable, output, account, environment, directory)
+                if filled is not None:
+                    output, status = filled
+            if output:
+                self.send_frame(FRAME_OUTPUT, output)
+            if held[FRAME_ERROR]:
+                self.send_frame(FRAME_ERROR, bytes(held[FRAME_ERROR]))
         if status < 0:
             self.end(signal=-status)
         else:
             self.end(status=status)
 
-    def pass_on(self, stream, kind, finished):
+    def fill_in(self, command, refusal, account, environment, directory):
+        """Does what agent-desktop refused to, and returns what agent-desktop would have printed and
+        its status. Returns None where the agent can't either, and the refusal stands."""
+        version = json.loads(refusal.decode("utf-8")).get("version", "2.5")
+        name = command["command"]
+        try:
+            listed = subprocess.run(
+                [DESKTOP_PROGRAM, "list-displays"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, cwd=directory, env=environment, timeout=30, **self.system.identity(account),
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        display = the_one_display(listed)
+        if display is None:
+            return None
+        if name == "screenshot":
+            if command.get("screen", 0) != 0:
+                return None
+            try:
+                width, height, pitch, layout, pixels = take_picture()
+            except AgentError:
+                return None
+            if not same_shape(display, (width, height)):
+                return None
+            picture = png(width, height, pitch, layout, pixels)
+            data = {"format": "png", "width": width, "height": height, "scale_factor": width / display[2], "filled_by": "swiftvm"}
+            if command["path"] is None:
+                data["data"] = base64.b64encode(picture).decode("ascii")
+            else:
+                try:
+                    written = subprocess.run(
+                        [sys.executable or "/usr/bin/python3", "-I", "-c", SCREENSHOT_WRITER, command["path"]],
+                        input=picture, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, cwd=directory, env=environment,
+                        timeout=60, **self.system.identity(account),
+                    )
+                    failed, said = written.returncode != 0, written.stderr.decode("utf-8", "replace").strip().splitlines()
+                except (OSError, subprocess.SubprocessError) as problem:
+                    failed, said = True, [str(problem)]
+                if failed:
+                    answer = desktop_failure(
+                        name, "INVALID_ARGS", "Cannot write the screenshot to '%s': %s" % (command["path"], said[-1] if said else "it failed"),
+                        version, delivered=False,
+                    )
+                    return json.dumps(answer, separators=(",", ":")).encode("utf-8") + b"\n", 1
+                data["path"] = command["path"]
+            return json.dumps(desktop_answer(name, data, version), separators=(",", ":")).encode("utf-8") + b"\n", 0
+        try:
+            request = pointer_request(command, display, screen_size())
+            if isinstance(request, str):
+                answer = desktop_failure(name, "INVALID_ARGS", request, version, delivered=False)
+                return json.dumps(answer, separators=(",", ":")).encode("utf-8") + b"\n", 1
+            # Whoever asked may have given up while this was being worked out: then nothing is done.
+            if self.hung_up():
+                return None
+            self.system.pointer(request)
+        except AgentError as problem:
+            # Said before the pointer moved: what the agent's own pointer doesn't do.
+            answer = desktop_failure(name, "ACTION_FAILED", str(problem), version, delivered=False)
+            return json.dumps(answer, separators=(",", ":")).encode("utf-8") + b"\n", 1
+        except OSError as problem:
+            answer = desktop_failure(name, "ACTION_FAILED", problem.strerror or str(problem), version, delivered=True)
+            return json.dumps(answer, separators=(",", ":")).encode("utf-8") + b"\n", 1
+        return json.dumps(pointer_answer(command, version), separators=(",", ":")).encode("utf-8") + b"\n", 0
+
+    def hung_up(self):
+        """Whether the app has hung up on this job, which calls it off."""
+        watcher = select.poll()
+        try:
+            watcher.register(self.connection, getattr(select, "POLLRDHUP", 0))
+            return any(events & (getattr(select, "POLLRDHUP", 0) | select.POLLHUP | select.POLLERR) for _, events in watcher.poll(0))
+        except (OSError, ValueError):
+            return True
+
+    def pass_on(self, stream, kind, finished, held=None):
+        """Sends what a command prints to the app as it comes, or adds it to `held`."""
         try:
             waiting = select.poll()
             waiting.register(stream, select.POLLIN)
@@ -1964,7 +2385,10 @@ class Job:
                 data = stream.read1(MAX_FRAME)
                 if not data:
                     break
-                self.send_frame(kind, data)
+                if held is not None:
+                    held[kind] += data
+                else:
+                    self.send_frame(kind, data)
                 idle_since = None
         except (OSError, ValueError):
             pass
