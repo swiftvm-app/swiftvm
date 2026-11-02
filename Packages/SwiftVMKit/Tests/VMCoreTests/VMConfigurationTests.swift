@@ -108,6 +108,19 @@ private final class StubProvider: VMBackendProvider {
         }
     }
 
+    @Test func copiesAndSnapshotsKeepTheHostBridgeButGiveCopiesTheirOwnMAC() throws {
+        var configuration = sample()
+        let old = VMSnapshot(name: "Before bridging", includesMemory: false, configuration: configuration)
+        configuration.networkInterfaces[0].bridgedInterfaceIdentifier = "en7"
+        configuration.networkInterfaces[0].ipv4Address = nil
+        let saved = try JSONDecoder().decode(VMConfiguration.self, from: JSONEncoder().encode(configuration))
+        let copy = saved.duplicated(name: "Copy", sshAlias: "copy")
+        #expect(copy.networkInterfaces[0].bridgedInterfaceIdentifier == "en7")
+        #expect(copy.networkInterfaces[0].macAddress != configuration.networkInterfaces[0].macAddress)
+        #expect(copy.networkInterfaces[0].ipv4Address == nil)
+        #expect(saved.reverted(to: old).networkInterfaces == saved.networkInterfaces)
+    }
+
     @Test func knowsWhichGuestsMountSharedFoldersThemselves() {
         var linux = sample()
         #expect(!linux.mountsSharedFoldersAutomatically)

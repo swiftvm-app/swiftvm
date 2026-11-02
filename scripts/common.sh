@@ -75,6 +75,7 @@ replace_app() {
 # carries a provisioning profile which grants it to that app; an app that claims it without one is
 # ended the moment it starts.
 usb_entitlement=com.apple.developer.accessory-access.usb
+network_entitlement=com.apple.vm.networking
 
 # Where provisioning profiles are kept on a Mac: the ones Xcode makes and the ones that were opened.
 profile_folders=(
@@ -94,7 +95,8 @@ decode_profile() {
 }
 
 # Prints why the decoded profile at $1 doesn't let the app with the bundle identifier $2, signed with the
-# certificate whose SHA-1 is $3, take USB devices on this Mac. Prints nothing when it does.
+# certificate whose SHA-1 is $3, use USB devices or bridged networking on this Mac.
+# Prints nothing when it does.
 profile_problem() {
     local decoded=$1 identifier=$2 certificate=${3:u}
     local name application expiry count index devices
@@ -107,8 +109,9 @@ profile_problem() {
         print -r -- "$name is for another app"
         return 0
     fi
-    if [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$usb_entitlement" "$decoded" 2> /dev/null || true) != true ]]; then
-        print -r -- "$name doesn't grant $usb_entitlement"
+    if [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$usb_entitlement" "$decoded" 2> /dev/null || true) != true
+        && $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$network_entitlement" "$decoded" 2> /dev/null || true) != true ]]; then
+        print -r -- "$name grants neither USB passthrough nor bridged networking"
         return 0
     fi
     # Both are written the same way, so that the later one sorts last.
@@ -138,13 +141,14 @@ profile_problem() {
 }
 
 # Sets `reply` to the provisioning profile that lets the app with the bundle identifier $1, signed with
-# the certificate whose SHA-1 is $2, take USB devices: among the profiles in the folders that follow,
-# the one that lasts longest. Leaves `reply` empty when none does, and then `REPLY` says what is wrong
+# the certificate whose SHA-1 is $2, use USB devices or bridged networking. Prefer a profile granting
+# both, then networking, then USB; among those, the one that lasts longest.
+# Leaves `reply` empty when none does, and then `REPLY` says what is wrong
 # with a profile that was made for this app, if there is one.
-find_usb_profile() {
+find_capability_profile() {
     local identifier=$1 certificate=$2
     shift 2
-    local scratch folder candidate problem expiry best="" best_expiry=""
+    local scratch folder candidate problem expiry score best="" best_expiry="" best_score=0
     reply=()
     REPLY=""
     scratch=$(mktemp -d)
@@ -162,9 +166,17 @@ find_usb_profile() {
                     continue
                 fi
                 expiry=$(plutil -extract ExpirationDate raw -o - "$scratch/profile.plist" 2> /dev/null || true)
-                if [[ $expiry > $best_expiry ]]; then
+                score=0
+                if [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$usb_entitlement" "$scratch/profile.plist" 2> /dev/null || true) == true ]]; then
+                    (( score += 1 ))
+                fi
+                if [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$network_entitlement" "$scratch/profile.plist" 2> /dev/null || true) == true ]]; then
+                    (( score += 2 ))
+                fi
+                if (( score > best_score )) || { (( score == best_score )) && [[ $expiry > $best_expiry ]]; }; then
                     best=$candidate
                     best_expiry=$expiry
+                    best_score=$score
                 fi
             done
         done

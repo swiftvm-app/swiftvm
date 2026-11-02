@@ -11,6 +11,17 @@ extension AppModel {
     func sharedFoldersPlace(for machine: VirtualMachine) -> SharedFoldersPlace? {
         // Linux on QEMU has a device for each folder instead.
         guard machine.configuration.engine == .qemu, machine.configuration.os.family == .windows, let networkManager else { return nil }
+        // The WebDAV server is private to the shared subnet. Bridging must never publish the Mac's
+        // shared folders to the LAN or hand the guest an address on a network it hasn't joined.
+        guard machine.configuration.networkInterfaces.first?.usesSharedNetwork == true else {
+            if !machine.configuration.sharedFolders.isEmpty {
+                machine.notice = VMErrorInfo(
+                    title: "Shared folders need shared networking",
+                    message: "Windows shared folders aren't available with bridged networking. Switch this machine to Shared (NAT) to use them."
+                )
+            }
+            return nil
+        }
         let subnet = networkManager.defaultSubnet
         do {
             try sharedFolderServer.start(on: subnet.hostAddress.description) { peer in
@@ -29,7 +40,10 @@ extension AppModel {
     /// change at once: the folders are listed afresh every time it looks. A machine that was deleted
     /// shares nothing any more.
     func syncSharedFolderServer() {
-        let machines = library.machines.filter { $0.configuration.engine == .qemu && $0.configuration.os.family == .windows }
+        let machines = library.machines.filter {
+            $0.configuration.engine == .qemu && $0.configuration.os.family == .windows
+                && $0.configuration.networkInterfaces.first?.usesSharedNetwork == true
+        }
         sharedFolderServer.unshare(allBut: Set(machines.map(\.id.uuidString)))
         for machine in machines {
             guard sharedFolderServer.location(for: machine.id.uuidString) != nil else { continue }

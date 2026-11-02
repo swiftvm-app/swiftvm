@@ -1,6 +1,7 @@
 import SwiftUI
 import VMControl
 import VMCore
+import VMNetworking
 
 /// The panes of a machine's settings.
 nonisolated enum MachineSettingsPane: String, SettingsPane {
@@ -100,6 +101,7 @@ struct MachineSettingsView: View {
     @State private var sshProblem: String?
     @State private var isResizingDisk = false
     @State private var isChangingCompression = false
+    @State private var bridgeInterfaces: [BridgedNetworking.Interface] = []
 
     private var configuration: VMConfiguration { machine.configuration }
     private var isActive: Bool { machine.state != .stopped }
@@ -398,7 +400,11 @@ struct MachineSettingsView: View {
         } header: {
             Text("Shared Folders")
         } footer: {
-            SharedFoldersGuestHint(configuration: configuration, isMountedByAgent: machine.hasAgentMountedSharedFolders)
+            if configuration.os.family == .windows, configuration.networkInterfaces.first?.usesSharedNetwork == false {
+                Text("Windows shared folders require Shared (NAT) networking.")
+            } else {
+                SharedFoldersGuestHint(configuration: configuration, isMountedByAgent: machine.hasAgentMountedSharedFolders)
+            }
         }
     }
 
@@ -421,17 +427,52 @@ struct MachineSettingsView: View {
     // MARK: Network
 
     private var networkSection: some View {
-        Section("Connection") {
+        Section {
             if let interface = configuration.networkInterfaces.first {
+                Picker("Network", selection: networkBinding) {
+                    Text("Shared (NAT)").tag("")
+                    ForEach(bridgeInterfaces) { host in
+                        Text("Bridged: \(host.name) (\(host.id))").tag(host.id)
+                            .disabled(!BridgedNetworking.isEntitled)
+                    }
+                    if let selected = interface.bridgedInterfaceIdentifier,
+                       !bridgeInterfaces.contains(where: { $0.id == selected }) {
+                        Text("Bridged: \(selected) (unavailable)").tag(selected)
+                    }
+                }
+                .disabled(isActive || machine.activity != nil)
+                Button("Refresh Interfaces") { bridgeInterfaces = BridgedNetworking.interfaces }
                 Toggle("Connected", isOn: binding(\.networkInterfaces[0].isConnected))
-                LabeledContent("IP Address", value: model.address(for: machine) ?? "Assigned when the machine starts")
+                LabeledContent("IP Address", value: model.address(for: machine)
+                    ?? (interface.usesSharedNetwork ? "Assigned when the machine starts" : "Assigned by your LAN"))
                 LabeledContent("MAC Address", value: interface.macAddress)
                     .textSelection(.enabled)
             } else {
                 Text("This virtual machine has no network interface.")
                     .foregroundStyle(.secondary)
             }
+        } header: {
+            Text("Connection")
+        } footer: {
+            if !BridgedNetworking.isEntitled {
+                Text("Bridged networking isn't available in this copy of SwiftVM.")
+            }
+            Text("Bridged networking gives the guest its own address on your LAN. Choose Ethernet for local device discovery. Shut down the machine before changing networks.")
         }
+        .onAppear { bridgeInterfaces = BridgedNetworking.interfaces }
+    }
+
+    private var networkBinding: Binding<String> {
+        Binding(
+            get: { configuration.networkInterfaces.first?.bridgedInterfaceIdentifier ?? "" },
+            set: { identifier in
+                do {
+                    try model.setNetwork(of: machine, bridgedTo: identifier.isEmpty ? nil : identifier)
+                } catch {
+                    machine.lastError = VMErrorInfo(title: "Couldn't change the network", message: error.localizedDescription)
+                }
+            }
+        )
     }
 
     private var portForwardingSection: some View {

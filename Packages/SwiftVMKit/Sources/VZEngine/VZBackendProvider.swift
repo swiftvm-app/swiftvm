@@ -41,11 +41,12 @@ public final class VZBackendProvider: VMBackendProvider {
 
         let machineID = machine.id
         do {
-            // Every interface attaches to the default network for now, so the machine registers once.
-            let network = try await networkManager.acquireDefaultNetwork(for: machineID)
+            // Keep the shared network alive even with its cable out, so it can be plugged back in.
+            let network = configuration.networkInterfaces.contains(where: \.usesSharedNetwork)
+                ? try await networkManager.acquireDefaultNetwork(for: machineID) : nil
             var attachments: [UUID: VZNetworkDeviceAttachment] = [:]
             for interface in configuration.networkInterfaces where interface.isConnected {
-                attachments[interface.id] = VZVmnetNetworkDeviceAttachment(network: network.reference)
+                attachments[interface.id] = try Self.attachment(for: interface, sharedNetwork: network)
             }
             var diskExports: [CompressedDiskExport] = []
             let vzConfiguration = try VZConfigurationBuilder(
@@ -58,12 +59,8 @@ public final class VZBackendProvider: VMBackendProvider {
                 vzConfiguration: vzConfiguration,
                 machineConfiguration: configuration,
                 diskExports: diskExports,
-                attachmentProvider: { [weak self] _ in
-                    // Plugging the cable back in: the machine is still registered, so the network is live.
-                    guard let network = self?.networkManager.liveDefaultNetwork else {
-                        throw ProviderError.networkUnavailable
-                    }
-                    return VZVmnetNetworkDeviceAttachment(network: network.reference)
+                attachmentProvider: { [weak self] interface in
+                    try Self.attachment(for: interface, sharedNetwork: self?.networkManager.liveDefaultNetwork)
                 },
                 usbAccessory: { [weak usbAccessories] id in usbAccessories?.accessory(for: id) }
             )
@@ -75,5 +72,13 @@ public final class VZBackendProvider: VMBackendProvider {
 
     public func backendDidStop(for machine: VirtualMachine) {
         networkManager.release(user: machine.id)
+    }
+
+    static func attachment(for interface: NetworkInterfaceConfiguration, sharedNetwork: VmnetNetwork?) throws -> VZNetworkDeviceAttachment {
+        if let identifier = interface.bridgedInterfaceIdentifier {
+            return try VZBridgedNetworkDeviceAttachment(interface: BridgedNetworking.interface(named: identifier))
+        }
+        guard let sharedNetwork else { throw ProviderError.networkUnavailable }
+        return VZVmnetNetworkDeviceAttachment(network: sharedNetwork.reference)
     }
 }

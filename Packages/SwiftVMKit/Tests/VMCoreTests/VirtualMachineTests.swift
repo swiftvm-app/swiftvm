@@ -31,7 +31,12 @@ private final class FakeBackend: VMBackend {
         saveCount += 1
         try Data("state".utf8).write(to: url)
     }
-    func setNetworkInterface(_ id: UUID, connected: Bool) throws {}
+    var networkError: (any Error)?
+    var connectionChanges: [Bool] = []
+    func setNetworkInterface(_ id: UUID, connected: Bool) throws {
+        if let networkError { throw networkError }
+        connectionChanges.append(connected)
+    }
     func setSharedFolders(_ folders: [SharedFolder]) throws {}
     func invalidate() {}
 
@@ -125,6 +130,39 @@ private final class FakeProvider: VMBackendProvider {
         #expect(machine.state == .suspended)
         #expect(machine.bundle.hasSavedState)
         #expect(provider.backend.starts.count == 1)
+    }
+
+    @Test func changingTheBridgeRequiresAShutDownGuestButTheCableCanChangeLive() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        try machine.updateConfiguration { $0.networkInterfaces = [NetworkInterfaceConfiguration()] }
+        await machine.start()
+        try #require(machine.state == .running)
+        #expect(throws: VMError.self) {
+            try machine.updateConfiguration { $0.networkInterfaces[0].bridgedInterfaceIdentifier = "en0" }
+        }
+        #expect(try machine.bundle.loadConfiguration().networkInterfaces[0].usesSharedNetwork)
+        try machine.updateConfiguration { $0.networkInterfaces[0].isConnected = false }
+        #expect(!machine.configuration.networkInterfaces[0].isConnected)
+        provider.backend.networkError = VMError.invalidConfiguration("The bridge adapter was removed.")
+        #expect(throws: VMError.self) {
+            try machine.updateConfiguration { $0.networkInterfaces[0].isConnected = true }
+        }
+        #expect(!machine.configuration.networkInterfaces[0].isConnected)
+        #expect(try !machine.bundle.loadConfiguration().networkInterfaces[0].isConnected)
+        provider.backend.networkError = nil
+        try machine.updateConfiguration { $0.networkInterfaces[0].isConnected = true }
+        #expect(provider.backend.connectionChanges == [false, true])
+        #expect(try machine.bundle.loadConfiguration().networkInterfaces[0].isConnected)
+        await machine.suspend()
+        try #require(machine.state == .suspended)
+        #expect(throws: VMError.self) {
+            try machine.updateConfiguration { $0.networkInterfaces[0].bridgedInterfaceIdentifier = "en0" }
+        }
+        machine.discardSavedState()
+        try #require(machine.state == .stopped)
+        try machine.updateConfiguration { $0.networkInterfaces[0].bridgedInterfaceIdentifier = "en0" }
+        #expect(try machine.bundle.loadConfiguration().networkInterfaces[0].bridgedInterfaceIdentifier == "en0")
     }
 
     @Test func keepsTheAccountWhenTheFirstStartFails() async throws {

@@ -27,12 +27,10 @@
 # Mac, which is enough to run virtual machines. SWIFTVM_SIGN_IDENTITY picks a certificate by name or
 # SHA-1; "-" signs to run on this Mac.
 #
-# Handing USB devices to guests takes more: an entitlement that macOS only honours together with a
-# provisioning profile, made in an Apple Developer account for this app's identifier with the capability
-# "Claim USB Accessory", and for the certificate the app is signed with. When there is such a profile
-# where Xcode keeps profiles, it goes into the app with the entitlement. When there is none the app is
-# built without both and does everything but USB. SWIFTVM_PROVISIONING_PROFILE names a profile to use
-# instead of looking for one; "-" builds without.
+# USB passthrough and bridged networking each require an entitlement granted by a provisioning profile
+# for this app and signing certificate. Only capabilities granted by the selected profile are signed
+# into the app. SWIFTVM_PROVISIONING_PROFILE names a profile instead of looking where Xcode keeps them;
+# "-" builds without. Shared networking needs no profile.
 set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
@@ -190,7 +188,7 @@ elif [[ $identity != - ]]; then
     certificate=$(security find-identity -v -p codesigning 2> /dev/null | awk -v name="$identity" 'index($0, name) { print $2; exit }' || true)
 fi
 
-# The entitlement for USB devices and the profile that grants it go in together or not at all: an app
+# Restricted entitlements and the profile that grants them go in together or not at all: an app
 # with the entitlement and no profile to go with it is ended by macOS the moment it starts.
 profile=${SWIFTVM_PROVISIONING_PROFILE:-}
 if [[ $profile == - ]]; then
@@ -202,15 +200,15 @@ elif [[ -n $profile ]]; then
     problem=$(profile_problem "$stage/profile.plist" "$identifier" "$certificate")
     [[ -z $problem ]] || fail "SWIFTVM_PROVISIONING_PROFILE: the profile $problem."
 elif [[ -n $certificate ]]; then
-    find_usb_profile "$identifier" "$certificate" $profile_folders
+    find_capability_profile "$identifier" "$certificate" $profile_folders
     profile=${reply[1]:-}
     if [[ -z $profile ]]; then
-        print -u2 -r -- "No provisioning profile for $identifier that goes with this certificate${REPLY:+ (the profile $REPLY)}: building $name without USB passthrough."
+        print -u2 -r -- "No provisioning profile for $identifier that goes with this certificate${REPLY:+ (the profile $REPLY)}: building $name without USB passthrough or bridged networking."
     fi
 elif [[ $identity != - ]]; then
-    print -u2 -r -- "Couldn't tell which certificate “$identity” is, so no provisioning profile goes with it: building $name without USB passthrough."
+    print -u2 -r -- "Couldn't tell which certificate “$identity” is, so no provisioning profile goes with it: building $name without USB passthrough or bridged networking."
 else
-    print -u2 -r -- "A provisioning profile goes with a signing certificate, and $name is signed to run on this Mac: building it without USB passthrough."
+    print -u2 -r -- "A provisioning profile goes with a signing certificate, and $name is signed to run on this Mac: building it without USB passthrough or bridged networking."
 fi
 if [[ -n $profile ]]; then
     decode_profile "$profile" "$stage/profile.plist" || fail "$profile isn't a provisioning profile."
@@ -221,7 +219,13 @@ if [[ -n $profile ]]; then
             || fail "The provisioning profile $profile doesn't say $key, which the app's signature has to repeat."
         /usr/libexec/PlistBuddy -c "Add :$key string $value" "$stage/entitlements.plist"
     done
-    /usr/libexec/PlistBuddy -c "Add :$usb_entitlement bool true" "$stage/entitlements.plist"
+    for key in "$usb_entitlement" "$network_entitlement"; do
+        if [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:$key" "$stage/profile.plist" 2> /dev/null || true) == true ]]; then
+            /usr/libexec/PlistBuddy -c "Add :$key bool true" "$stage/entitlements.plist"
+        else
+            print -u2 -r -- "The provisioning profile doesn't grant $key; that capability isn't enabled in $name."
+        fi
+    done
 fi
 
 sign() {

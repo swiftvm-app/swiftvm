@@ -5,6 +5,7 @@ import QEMUEngine
 import SSHIntegration
 import VMControl
 import VMCore
+import VMNetworking
 import VZEngine
 import Virtualization
 
@@ -26,6 +27,12 @@ extension AppModel {
             guard let identifier = request.machine else { return .failure("Missing machine name.") }
             guard let machine = findMachine(identifier) else { return notFound(identifier) }
             return details(machine)
+        case .networkInterfaces:
+            return ControlResponse(
+                ok: true,
+                note: BridgedNetworking.isEntitled ? nil : BridgedNetworking.Failure.notEntitled.localizedDescription,
+                networkInterfaces: BridgedNetworking.interfaces.map { .init(identifier: $0.id, name: $0.name) }
+            )
         case .create:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
             return await createMachine(parameters)
@@ -274,6 +281,26 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return details(machine)
+        case .network:
+            do {
+                switch request.networkMode {
+                case "shared":
+                    guard request.bridgedInterfaceIdentifier == nil else {
+                        return .failure("Shared networking doesn't take a host interface.")
+                    }
+                    try setNetwork(of: machine, bridgedTo: nil)
+                case "bridged":
+                    guard let host = request.bridgedInterfaceIdentifier, !host.isEmpty else {
+                        return .failure("Choose a host interface from swiftvm network-interfaces.")
+                    }
+                    try setNetwork(of: machine, bridgedTo: host)
+                default:
+                    return .failure("Choose shared or bridged networking.")
+                }
+                return details(machine)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
         case .plug, .unplug:
             guard !machine.configuration.networkInterfaces.isEmpty else {
                 return .failure("“\(machine.name)” has no network interface.")
@@ -502,7 +529,7 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return templatesResponse()
-        case .list, .info, .console, .vsock, .job, .create, .quit, .usbList, .scripts, .templates, .deleteTemplate, .renameTemplate:
+        case .list, .info, .console, .vsock, .job, .create, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
             break
         }
 
@@ -1322,7 +1349,9 @@ extension AppModel {
             automation: MachineDetails.Automation(
                 isAllowed: configuration.automation.isAllowed,
                 features: GuestFeature.jobs.filter(machine.does)
-            )
+            ),
+            networkMode: configuration.networkInterfaces.first.map { $0.usesSharedNetwork ? "shared" : "bridged" },
+            bridgedInterfaceIdentifier: configuration.networkInterfaces.first?.bridgedInterfaceIdentifier
         )
         return ControlResponse(ok: true, machines: [summary])
     }

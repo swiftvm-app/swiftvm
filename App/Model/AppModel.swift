@@ -268,16 +268,27 @@ final class AppModel {
 
     /// The address reserved for every machine, applied when the default network is created.
     private func networkPlan() -> NetworkPlan {
-        var plan = NetworkPlan()
-        for machine in library.machines {
-            for interface in machine.configuration.networkInterfaces {
-                guard let macAddress = MACAddress(interface.macAddress),
-                      let address = interface.ipv4Address.flatMap(IPv4Address.init)
-                else { continue }
-                plan.reservations.append(.init(macAddress: macAddress, address: address))
-            }
+        NetworkPlan(interfaces: library.machines.flatMap(\.configuration.networkInterfaces))
+    }
+
+    func setNetwork(of machine: VirtualMachine, bridgedTo identifier: String?) throws {
+        guard machine.state == .stopped, machine.activity == nil else {
+            throw VMError.invalidConfiguration("Shut down the virtual machine before changing its network.")
         }
-        return plan
+        guard let interface = machine.configuration.networkInterfaces.first else {
+            throw VMError.invalidConfiguration("“\(machine.name)” has no network interface.")
+        }
+        if let identifier { _ = try BridgedNetworking.interface(named: identifier) }
+        guard interface.bridgedInterfaceIdentifier != identifier else { return }
+        let address = identifier == nil ? allocateAddress()?.description : nil
+        try machine.updateConfiguration {
+            $0.networkInterfaces[0].bridgedInterfaceIdentifier = identifier
+            $0.networkInterfaces[0].ipv4Address = address
+        }
+        observedAddresses[machine.id] = nil
+        lastSeenAddresses[machine.id] = nil
+        syncSSHConfiguration()
+        syncPortForwards()
     }
 
     /// Forwards a port on this Mac to a port in `machine`. Takes effect at once if the machine is running.
@@ -338,7 +349,8 @@ final class AppModel {
         for machine in library.machines {
             try? machine.updateConfiguration { configuration in
                 for index in configuration.networkInterfaces.indices {
-                    guard let address = configuration.networkInterfaces[index].ipv4Address.flatMap(IPv4Address.init),
+                    guard configuration.networkInterfaces[index].usesSharedNetwork,
+                          let address = configuration.networkInterfaces[index].ipv4Address.flatMap(IPv4Address.init),
                           previous.contains(address)
                     else { continue }
                     configuration.networkInterfaces[index].ipv4Address =
@@ -353,7 +365,7 @@ final class AppModel {
     func allocateAddress() -> IPv4Address? {
         guard let networkManager else { return nil }
         let used = Set(library.machines.flatMap { machine in
-            machine.configuration.networkInterfaces.compactMap { $0.ipv4Address.flatMap(IPv4Address.init) }
+            machine.configuration.networkInterfaces.filter(\.usesSharedNetwork).compactMap { $0.ipv4Address.flatMap(IPv4Address.init) }
         })
         // A machine whose disk isn't connected comes back with the address it had.
         let away = library.unavailableMachines.flatMap { $0.ipv4Addresses.compactMap(IPv4Address.init) }
@@ -367,7 +379,8 @@ final class AppModel {
         if machine.state.isActive, let observed = observedAddresses[machine.id] {
             return observed
         }
-        return machine.configuration.networkInterfaces.first?.ipv4Address
+        guard let interface = machine.configuration.networkInterfaces.first, interface.usesSharedNetwork else { return nil }
+        return interface.ipv4Address
     }
 
     /// Works out the address each active machine currently holds and updates the SSH hosts if any changed.
@@ -383,6 +396,15 @@ final class AppModel {
             guard let interface = machine.configuration.networkInterfaces.first,
                   let macAddress = MACAddress(interface.macAddress)
             else { continue }
+            // The LAN's DHCP server owns bridged addresses; the host's lease file and SwiftVM's
+            // reservations say nothing about them. Without guest tools the address stays unknown.
+            if !interface.usesSharedNetwork {
+                if interface.isConnected, machine.agent.isConnected,
+                   let address = machine.agent.addresses(ofInterface: interface.macAddress).compactMap(IPv4Address.init).first {
+                    updated[machine.id] = address.description
+                }
+                continue
+            }
             if machine.agent.isConnected {
                 // A guest with the agent says which address it holds, and nothing has to be worked out.
                 // That is the address of the machine's network card, or, where the card is part of a

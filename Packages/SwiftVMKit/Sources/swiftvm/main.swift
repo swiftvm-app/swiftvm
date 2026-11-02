@@ -74,6 +74,10 @@ Usage: swiftvm <command> [arguments]
   rename-template <template> <new name>
   delete-template <template>        Move a template to the Trash. Machines made from it stay as they are
   plug <machine> | unplug <machine> Plug the machine's network cable in, or pull it
+  network-interfaces               List host interfaces available for bridging
+  network <machine> shared         Use SwiftVM's shared NAT network (machine must be shut down)
+  network <machine> bridged <interface>
+                                    Bridge to a host interface, such as en0 (machine must be shut down)
   install-tools <machine> [--disc] [--password <password>]
                                     Install or reinstall the guest tools in a running machine. Connected
                                     tools replace themselves; otherwise use SSH (macOS needs --password).
@@ -326,6 +330,9 @@ func printDetails(of machine: MachineSummary) {
     ]
     if let details = machine.details {
         lines.append(("MAC address", details.macAddress ?? "-"))
+        if let mode = details.networkMode {
+            lines.append(("Network", mode + (details.bridgedInterfaceIdentifier.map { " (\($0))" } ?? "")))
+        }
         for (index, drive) in details.drives.enumerated() {
             lines.append((index == 0 ? "Drives" : "", drive.path + (drive.readOnly ? " (read-only)" : "")))
         }
@@ -544,6 +551,28 @@ case "attach", "eject":
     if let machine = send(ControlRequest(command: command, machine: machine, drive: parameters)).machines.first {
         printDetails(of: machine)
     }
+
+case "network-interfaces":
+    guard arguments.isEmpty else { fail("Usage: swiftvm network-interfaces") }
+    let response = send(ControlRequest(command: .networkInterfaces))
+    for interface in response.networkInterfaces ?? [] {
+        print("\(interface.identifier)  \(interface.name)")
+    }
+    if response.networkInterfaces?.isEmpty == true { print("No host interfaces are available for bridging.") }
+    if let note = response.note { print(note) }
+
+case "network":
+    let machine = requireMachine()
+    guard arguments.count >= 2 else { fail("Usage: swiftvm network <machine> shared|bridged [interface]") }
+    let mode = arguments[1]
+    guard (mode == "shared" && arguments.count == 2) || (mode == "bridged" && arguments.count == 3) else {
+        fail("Usage: swiftvm network <machine> shared | swiftvm network <machine> bridged <interface>")
+    }
+    let response = send(ControlRequest(
+        command: .network, machine: machine, networkMode: mode,
+        bridgedInterfaceIdentifier: mode == "bridged" ? arguments[2] : nil
+    ))
+    if let machine = response.machines.first { printDetails(of: machine) }
 
 case "forward", "unforward":
     let machine = requireMachine()

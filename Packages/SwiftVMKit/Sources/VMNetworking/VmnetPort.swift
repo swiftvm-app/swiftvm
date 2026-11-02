@@ -52,14 +52,39 @@ public final class VmnetPort: @unchecked Sendable {
     public static func open(on network: VmnetNetwork, peer: Int32) async throws -> VmnetPort {
         let description = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_bool(description, vmnet_allocate_mac_address_key, false)
+        return try await open(network: network, description: description, peer: peer)
+    }
+
+    /// Bridged networks use vmnet's interface API; its network-object API only supports shared and
+    /// host-only networks. As with the shared path, this takes ownership of `peer`, even on failure.
+    public static func open(bridgedTo identifier: String, peer: Int32) async throws -> VmnetPort {
+        do {
+            _ = try BridgedNetworking.interface(named: identifier)
+        } catch {
+            Darwin.close(peer)
+            throw error
+        }
+        let description = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_uint64(description, vmnet_operation_mode_key, UInt64(vmnet_mode_t.VMNET_BRIDGED_MODE.rawValue))
+        xpc_dictionary_set_string(description, vmnet_shared_interface_name_key, identifier)
+        xpc_dictionary_set_bool(description, vmnet_allocate_mac_address_key, false)
+        return try await open(network: nil, description: description, peer: peer)
+    }
+
+    private static func open(network: VmnetNetwork?, description: xpc_object_t, peer: Int32) async throws -> VmnetPort {
         let queue = DispatchQueue(label: "app.swiftvm.vmnet-port.start")
         let outcome = StartOutcome()
         var started: interface_ref?
         let (status, packetSize): (vmnet_return_t, Int) = await withCheckedContinuation { continuation in
             outcome.continuation = continuation
-            started = vmnet_interface_start_with_network(network.reference, description, queue) { status, parameters in
+            let completion: vmnet_start_interface_completion_handler_t = { status, parameters in
                 let size = parameters.map { Int(xpc_dictionary_get_uint64($0, vmnet_max_packet_size_key)) } ?? 0
                 outcome.finish(status, size > 0 ? size : 1514)
+            }
+            if let network {
+                started = vmnet_interface_start_with_network(network.reference, description, queue, completion)
+            } else {
+                started = vmnet_start_interface(description, queue, completion)
             }
             if started == nil {
                 outcome.finish(.VMNET_FAILURE, 0)

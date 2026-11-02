@@ -55,7 +55,8 @@ public final class QEMUBackendProvider: VMBackendProvider {
         }
 
         let configuration = machine.configuration
-        let network = try await networkManager.acquireDefaultNetwork(for: machine.id)
+        let network = configuration.networkInterfaces.contains(where: \.usesSharedNetwork)
+            ? try await networkManager.acquireDefaultNetwork(for: machine.id) : nil
         do {
             return try QEMUBackend(
                 configuration: configuration, bundle: machine.bundle, installation: installation, adapter: adapter,

@@ -320,12 +320,15 @@ public final class QEMUBackend: VMBackend {
         // Every card is on the network, also one whose cable is out: QEMU drops what goes over a
         // link that is down, and plugging the cable in is a word to QEMU.
         for (index, pair) in networkPairs.enumerated() {
-            guard let network else {
-                close(pair.port)
-                continue
-            }
             do {
-                ports.append(try await VmnetPort.open(on: network, peer: pair.port))
+                if let identifier = configuration.networkInterfaces[index].bridgedInterfaceIdentifier {
+                    ports.append(try await VmnetPort.open(bridgedTo: identifier, peer: pair.port))
+                } else if let network {
+                    ports.append(try await VmnetPort.open(on: network, peer: pair.port))
+                } else {
+                    close(pair.port)
+                    throw QEMUError.didNotStart("The shared network isn't available.")
+                }
             } catch {
                 // The port has let go of its end. The others, and the monitor's line, are nobody's yet.
                 networkPairs[(index + 1)...].forEach { close($0.port) }
