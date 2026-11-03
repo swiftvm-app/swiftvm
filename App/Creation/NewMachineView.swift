@@ -316,7 +316,7 @@ private struct LinuxMachineForm: View {
     @State private var password = ""
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
-    @State private var acceleratesGraphics: Bool?
+    @State private var acceleratesGraphics = false
     @State private var compressesDisk = false
     @State private var startsWhenReady = true
     /// The folder to keep the machine in, if one was chosen.
@@ -440,7 +440,7 @@ private struct LinuxMachineForm: View {
     private var chosenInstallsSSHKey: Bool { installsSSHKey }
     private var chosenLocation: URL? { location }
     private var chosenAcceleratesGraphics: Bool {
-        (acceleratesGraphics ?? (selectedScripts.recommendsGraphicsAcceleration && !usesRosetta)) && canAccelerateGraphics
+        acceleratesGraphics && canAccelerateGraphics
     }
 
     /// Whether this copy of the app can give a Linux machine the Mac's GPU to draw with.

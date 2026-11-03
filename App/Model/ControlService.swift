@@ -887,8 +887,7 @@ extension AppModel {
         if isMac, parameters.acceleratesGraphics != nil {
             return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.")
         }
-        let acceleratesGraphics = parameters.acceleratesGraphics
-            ?? (setupScripts.recommendsGraphicsAcceleration && !usesRosetta && qemuProvider?.canAccelerateGraphics == true)
+        let acceleratesGraphics = parameters.acceleratesGraphics ?? false
         if acceleratesGraphics {
             guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Use --no-gpu to use Rosetta, or leave out --rosetta to use the GPU.") }
             guard qemuProvider?.canAccelerateGraphics == true else {
@@ -1035,7 +1034,7 @@ extension AppModel {
             password: password,
             installsSSHKey: parameters.installsSSHKey ?? true,
             compressesDisk: parameters.compressed ?? false,
-            acceleratesGraphics: parameters.acceleratesGraphics ?? canAccelerateGraphics,
+            acceleratesGraphics: parameters.acceleratesGraphics ?? false,
             location: location
         )
         return await finishCreating(named: name, starting: parameters.start) { self.create(request) }

@@ -44,7 +44,7 @@ See [Networking](../features/networking.md) for addresses and port forwarding.
 ## Guest features
 
 - Linux and Windows guests with graphics acceleration cannot suspend or take
-  live snapshots. Windows acceleration is experimental and enabled by default
+  live snapshots. Windows acceleration is experimental and off by default
   for new guests; graphics load can cause rendering failures or Windows crashes.
   Shut accelerated guests down before taking a snapshot or quitting SwiftVM.
   See [Linux graphics](../features/linux-guests.md#graphics-acceleration)

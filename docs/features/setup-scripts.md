@@ -84,9 +84,9 @@ Desktop scripts install the desktop, a browser, and `spice-vdagent` for
 SSH configuration, and turn off guest sleep. Use SwiftVM's power controls
 instead; machines with graphics acceleration can pause, but not suspend to disk.
 
-**Graphics acceleration** draws with the Mac's GPU. It is enabled by default
-for new Omarchy machines when available, and recommended for Hyprland. Turn it
-on before creating the machine, or pass `--gpu`. Use `--no-gpu` or `--rosetta`
+**Graphics acceleration** draws with the Mac's GPU. It is off by default for
+all new Linux machines, including Omarchy. Turn it on before creating the
+machine, or pass `--gpu`. Leave it off, or use `--no-gpu` or `--rosetta`,
 to keep Apple's backend, with suspend support.
 Without it, the processors draw every pixel, so a large Retina window can be
 slow; Xfce is the lightest choice.
@@ -210,7 +210,7 @@ line. All keys are optional; unknown keys are ignored.
 | `category` | Group in the list, such as `development`; `desktop` requires an account password |
 | `systems` | Supported families or releases, such as `ubuntu debian` or `ubuntu-26.04`; omitted means any |
 | `memory`, `disk` | Minimum sizes in GB |
-| `graphics` | `recommended` to prefer GPU acceleration when available; `optional` leaves the default off. An explicit user choice takes precedence |
+| `graphics` | `recommended` or `optional` records the script's recommendation. Neither enables GPU acceleration automatically; the user must opt in |
 | `restart` | `yes` to restart after all scripts succeed |
 
 ### How it runs

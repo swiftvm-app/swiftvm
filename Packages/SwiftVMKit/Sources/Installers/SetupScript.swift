@@ -85,7 +85,7 @@ public struct SetupScript: Sendable, Hashable, Identifiable {
     public var minimumDiskGigabytes: Int?
     /// Restart the guest once the script has run to its end without an error.
     public var restartsWhenDone: Bool
-    /// Prefer the Mac's GPU for a new machine unless the user chose a backend themselves.
+    /// Whether the script recommends graphics acceleration; it does not enable it automatically.
     public var recommendsGraphicsAcceleration = false
     /// The whole file, as it runs in the guest.
     public var source: String

@@ -24,7 +24,7 @@ public struct WindowsSetup: Sendable, Hashable {
 
     public init(
         computerName: String, userName: String, fullName: String? = nil, password: String, language: String,
-        authorizedKeys: [String] = [], acceleratesGraphics: Bool = true
+        authorizedKeys: [String] = [], acceleratesGraphics: Bool = false
     ) {
         self.computerName = computerName
         self.userName = userName

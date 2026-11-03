@@ -13,8 +13,8 @@ Mac and internet connection. You can keep using your Mac while it runs.
 To use your own installer, choose **Choose ISO…**. The ISO must be Windows 11
 for **Arm64**; installers for Intel and AMD processors are not supported.
 
-**Graphics acceleration (experimental)** is on by default. Turn it off for a
-display-only driver that stays sharp at any window size but draws more slowly;
+**Graphics acceleration (experimental)** is off by default. The display-only
+driver stays sharp at any window size but draws more slowly;
 see [Graphics acceleration](#graphics-acceleration).
 
 Under **Advanced**, you can change the account name, processors, memory, disk
@@ -50,9 +50,9 @@ finishes, and SwiftVM removes the installation discs.
 
 ## Graphics acceleration
 
-GPU acceleration is **experimental and enabled by default for new Windows
-machines**; turn it off when creating the machine to use the display-only driver
-instead. Setup installs the signed Direct3D driver automatically. Once the
+GPU acceleration is **experimental and off by default for new Windows
+machines**. Turn it on when creating the machine, or pass `--gpu` to
+`swiftvm create windows`, to install the signed Direct3D driver. Once the
 guest tools report that it is installed, the next cold boot uses your Mac's
 GPU through DXMT and Metal. Windows Setup uses the firmware framebuffer before
 the driver is available.

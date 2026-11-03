@@ -119,7 +119,7 @@ struct WindowsInstallRequest {
     var compressesDisk = false
     /// Draw with this Mac's GPU, through the 3D display driver. Without it, Windows has a driver for a
     /// display only, which takes any size of window as it changes.
-    var acceleratesGraphics = true
+    var acceleratesGraphics = false
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
