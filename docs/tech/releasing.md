@@ -62,8 +62,8 @@ SDK.
 ## What a release build does
 
 1. `scripts/build-release.sh` builds the app, including QEMU with Linux graphics
-   acceleration and experimental Windows Direct3D enabled by default, sets its
-   version and update feed, and signs it with the Developer ID certificate and
+   acceleration and experimental Windows Direct3D support included by default,
+   sets its version and update feed, and signs it with the Developer ID certificate and
    the USB provisioning profile. It then creates the disk image. The workflow
    hands it the QEMU that Build QEMU kept for the commit, and the script builds
    QEMU itself only when there is none, which takes far longer.

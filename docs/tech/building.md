@@ -28,9 +28,9 @@ build takes several minutes; later ones reuse `.build/qemu`. Set
 Windows' Direct3D support is **experimental and included by default**, including
 in release builds. It adds DXMT and the signed Windows 3D driver and compiles
 LLVM 15, making the first build much longer. New Windows guests install the
-driver automatically and use acceleration on the next cold boot after the
-guest tools report it installed. Existing guests are not upgraded unless you
-update their guest tools.
+driver only when graphics acceleration is selected at creation, and use it on
+the next cold boot after the guest tools report it installed. Existing guests
+are not upgraded unless you update their guest tools.
 
 Set `SWIFTVM_QEMU_DIRECT3D=0` to leave Direct3D out while keeping Linux
 acceleration. A Windows machine that already has the 3D driver falls back to

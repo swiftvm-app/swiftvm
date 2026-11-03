@@ -13,7 +13,7 @@ struct WindowsMachineSettings {
     var password = ""
     var installsSSHKey = true
     var compressesDisk = false
-    var acceleratesGraphics = true
+    var acceleratesGraphics = false
     var location: URL?
 
     init(hostUserName: String = NSUserName(), hostFullName: String = NSFullUserName()) {

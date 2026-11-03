@@ -93,11 +93,10 @@ SwiftVM doesn't set these guests up, so afterwards you may want to:
 
 ## Graphics acceleration
 
-**Graphics acceleration** is enabled by default for new Omarchy machines when
-available, in both the creation window and `swiftvm create`. Other Linux setups
-leave it off unless their script recommends it. An explicit choice, including
-`--no-gpu` or `--rosetta`, takes precedence over the recommendation. When enabled,
-the guest draws with your Mac's GPU instead of drawing everything on its processors.
+**Graphics acceleration** is off by default for all new Linux machines, including
+Omarchy, in both the creation window and `swiftvm create`. Setup scripts do not
+enable it automatically. When enabled, the guest draws with your Mac's GPU instead
+of drawing everything on its processors.
 Existing machines and machines made from templates keep their graphics settings.
 
 Turn it on before creating the machine, or pass `--gpu`, to use acceleration.
