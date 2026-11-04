@@ -132,6 +132,34 @@ private final class FakeProvider: VMBackendProvider {
         #expect(provider.backend.starts.count == 1)
     }
 
+    @Test func aRunningMachineWhoseBundleIsDeletedIsKeptUntilItStops() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = VMLibrary(rootDirectory: directory.appending(path: "library"))
+        library.backendProvider = provider
+        let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
+        let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration))
+        machine.isHostLocked = { false }
+        await machine.start()
+        try #require(machine.state == .running)
+        var changes = 0
+        library.onChange = { changes += 1 }
+
+        try FileManager.default.removeItem(at: machine.bundle.url)
+        for _ in 0..<300 where changes == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(changes > 0)
+        #expect(library.machine(id: machine.id) === machine)
+        #expect(machine.state == .running)
+
+        await machine.forceStop()
+        for _ in 0..<300 where !library.machines.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(library.machines.isEmpty)
+        #expect(library.unavailableMachines.isEmpty)
+    }
+
     @Test func changingTheBridgeRequiresAShutDownGuestButTheCableCanChangeLive() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try makeMachine()
