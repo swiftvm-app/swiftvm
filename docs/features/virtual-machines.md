@@ -143,6 +143,11 @@ Moving needs the machine shut down.
 **Delete…** moves a machine that is shut down, with its disks and snapshots, to
 the Trash.
 
+Deleting or trashing a machine's `.swiftvm` package in the Finder also removes
+it from SwiftVM automatically, without restarting the app. A machine that is
+running or busy stays listed until it stops or finishes its work. Disconnecting
+an external disk does not delete its machines from the list.
+
 **Delete All Virtual Machines…**, in the **…** at the top of the menu bar
 panel, deletes every machine that is shut down at once, after asking. Machines
 that are running or busy stay as they are.

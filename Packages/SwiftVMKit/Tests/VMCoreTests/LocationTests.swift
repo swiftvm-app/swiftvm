@@ -233,7 +233,90 @@ private func exists(_ url: URL) -> Bool {
         #expect(relaunched.machines.map(\.id) == [machine.id])
     }
 
-    @Test func aMachineThatWasDeletedIsForgottenAndOneThatWasMovedIsFound() throws {
+    @Test(arguments: [false, true], [false, true])
+    func aDeletedMachineDisappearsWithoutReloading(elsewhere: Bool, fromIndex: Bool) async throws {
+        let scratch = Scratch()
+        defer { scratch.remove() }
+        var library = scratch.makeLibrary()
+        let folder = elsewhere ? scratch.elsewhere : library.machinesDirectory
+        let deleted = try scratch.addMachine(named: "Deleted", to: library, in: folder)
+        let added = try scratch.addMachine(named: "Kept", to: library, in: folder)
+        if fromIndex { library = scratch.makeLibrary() }
+        let kept = try #require(library.machine(id: added.id))
+        let monitored = library
+        var reportedIDs: [UUID] = []
+        library.onChange = { reportedIDs = monitored.machines.map(\.id) }
+        defer { library.onChange = nil }
+
+        try FileManager.default.removeItem(at: deleted.bundle.url)
+        for _ in 0..<300 where library.machine(id: deleted.id) != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(library.machines.map(\.id) == [kept.id])
+        #expect(library.machine(id: kept.id) === kept)
+        #expect(reportedIDs == [kept.id])
+        #expect(library.unavailableMachines.isEmpty)
+        #expect(scratch.makeLibrary().machines.map(\.id) == [kept.id])
+    }
+
+    @Test func aTrashedMachineIsNotFollowedIntoTheTrash() async throws {
+        let scratch = Scratch()
+        defer { scratch.remove() }
+        let library = scratch.makeLibrary()
+        let machine = try scratch.addMachine(to: library, in: scratch.elsewhere)
+        // A Trash on the same disk, without putting test files in the user's Trash.
+        let trash = scratch.directory.appending(path: ".Trash", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        let destination = trash.appending(path: machine.bundle.url.lastPathComponent)
+        try FileManager.default.moveItem(at: machine.bundle.url, to: destination)
+
+        for _ in 0..<300 where !library.machines.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(library.machines.isEmpty)
+        #expect(library.unavailableMachines.isEmpty)
+        #expect(exists(destination))
+        #expect(scratch.makeLibrary().machines.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func deletingAnAlreadyMissingBundleStillRemovesItsEntry(movingToTrash: Bool) throws {
+        let scratch = Scratch()
+        defer { scratch.remove() }
+        let library = scratch.makeLibrary()
+        let machine = try scratch.addMachine(to: library, in: scratch.elsewhere)
+        try FileManager.default.removeItem(at: machine.bundle.url)
+
+        // The user can ask to delete before a filesystem notification has been delivered.
+        try library.remove(machine, movingToTrash: movingToTrash)
+        #expect(library.machines.isEmpty)
+        #expect(scratch.makeLibrary().machines.isEmpty)
+    }
+
+    @Test func aDeletedMachineIsKeptUntilWorkOnItsFilesFinishes() async throws {
+        let scratch = Scratch()
+        defer { scratch.remove() }
+        let library = scratch.makeLibrary()
+        let machine = try scratch.addMachine(to: library, in: scratch.elsewhere)
+        var changes = 0
+        library.onChange = { changes += 1 }
+
+        try await machine.whileStopped(.resizingDisk) {
+            try FileManager.default.removeItem(at: machine.bundle.url)
+            for _ in 0..<300 where changes == 0 {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(changes > 0)
+            #expect(library.machine(id: machine.id) === machine)
+        }
+        for _ in 0..<300 where !library.machines.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(library.machines.isEmpty)
+        #expect(library.unavailableMachines.isEmpty)
+    }
+
+    @Test func aMachineThatWasDeletedIsForgottenAndOneThatWasMovedIsFound() async throws {
         let scratch = Scratch()
         defer { scratch.remove() }
         let library = scratch.makeLibrary()
@@ -245,10 +328,21 @@ private func exists(_ url: URL) -> Bool {
         let destination = scratch.directory.appending(path: "Renamed.swiftvm")
         try FileManager.default.moveItem(at: moved.bundle.url, to: destination)
 
-        let relaunched = scratch.makeLibrary()
-        #expect(relaunched.machines.map(\.name) == ["Moved"])
-        #expect(relaunched.machines.first?.bundle.url.path == destination.path)
-        #expect(relaunched.unavailableMachines.isEmpty)
+        for _ in 0..<300 where moved.bundle.url.path != destination.path || library.machine(id: deleted.id) != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(library.machines.map(\.name) == ["Moved"])
+        #expect(library.machine(id: moved.id) === moved)
+        #expect(moved.bundle.url.path == destination.path)
+        #expect(library.unavailableMachines.isEmpty)
+
+        // Watching follows the machine to the folder it was moved into.
+        try FileManager.default.removeItem(at: destination)
+        for _ in 0..<300 where !library.machines.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(library.machines.isEmpty)
+        #expect(scratch.makeLibrary().machines.isEmpty)
     }
 }
 

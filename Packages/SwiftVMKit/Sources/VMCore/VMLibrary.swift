@@ -80,6 +80,8 @@ public final class VMLibrary {
     /// Machines whose bundle went from under them while they were in use, which are looked at again
     /// once they are done.
     @ObservationIgnored private var machinesToLookAtAgain: Set<UUID> = []
+    /// The folders holding machines, including ones imported from outside the machines directory.
+    @ObservationIgnored private var folderMonitors: [URL: MachineFolderMonitor] = [:]
 
     public init(rootDirectory: URL) {
         self.rootDirectory = rootDirectory
@@ -127,10 +129,11 @@ public final class VMLibrary {
     // MARK: Loading
 
     /// Reads the machines of the index and picks up any bundle found in the machines directory. Called
-    /// when the app starts, and again whenever a disk is connected or taken away.
+    /// when the app starts, and again whenever a machine's folder or the connected disks change.
     public func load() {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(at: machinesDirectory, withIntermediateDirectories: true)
+        watchMachineFolders()
         let mountedVolumes = mountedVolumeIdentifiers()
 
         var loaded: [VirtualMachine] = []
@@ -210,6 +213,7 @@ public final class VMLibrary {
         entries = kept
         unavailableMachines = unavailable
         unreadableBundles = failures
+        watchMachineFolders()
         saveIndex()
         onChange?()
     }
@@ -350,6 +354,7 @@ public final class VMLibrary {
         var entry = Entry(url: bundle.url)
         entry.refresh(from: machine)
         entries.append(entry)
+        watchMachineFolders()
         saveIndex()
         onChange?()
         return machine
@@ -371,13 +376,18 @@ public final class VMLibrary {
         if let activity = machine.activity {
             throw VMError.busy(name: machine.name, activity)
         }
-        if movingToTrash {
-            try FileManager.default.trashItem(at: machine.bundle.url, resultingItemURL: nil)
-        } else {
-            try FileManager.default.removeItem(at: machine.bundle.url)
+        do {
+            if movingToTrash {
+                try FileManager.default.trashItem(at: machine.bundle.url, resultingItemURL: nil)
+            } else {
+                try FileManager.default.removeItem(at: machine.bundle.url)
+            }
+        } catch where Self.presence(of: machine.bundle.url) == .missing {
+            // Deleted outside the app before its folder's notification reached us.
         }
         machines.removeAll { $0.id == machine.id }
         entries.removeAll { $0.details?.id == machine.id || $0.url.path == machine.bundle.url.path }
+        watchMachineFolders()
         saveIndex()
         onChange?()
     }
@@ -386,6 +396,7 @@ public final class VMLibrary {
     public func forget(_ machine: UnavailableMachine) {
         entries.removeAll { $0.url.path == machine.url.path }
         unavailableMachines.removeAll { $0.url.path == machine.url.path }
+        watchMachineFolders()
         saveIndex()
         onChange?()
     }
@@ -440,6 +451,7 @@ public final class VMLibrary {
                 )
             }
             machine.relocate(to: destination)
+            watchMachineFolders()
             onChange?()
 
             guard isCopied else { return }
@@ -493,6 +505,24 @@ public final class VMLibrary {
     }
 
     // MARK: Private
+
+    /// Watches the containing folders rather than the files inside a bundle: disk writes and settings
+    /// saves aren't library changes, but deleting, trashing or moving a bundle is.
+    private func watchMachineFolders() {
+        let folders = Set(entries.map { $0.url.deletingLastPathComponent() }).union([machinesDirectory])
+        folderMonitors = folderMonitors.filter { folders.contains($0.key) }
+        for folder in folders where folderMonitors[folder] == nil {
+            folderMonitors[folder] = MachineFolderMonitor(url: folder) { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    // The folder itself may have moved or been replaced. Watch its current location
+                    // before reading it again, so changes during that read aren't missed.
+                    self.folderMonitors[folder] = nil
+                    self.load()
+                }
+            }
+        }
+    }
 
     private func adopt(_ machine: VirtualMachine) {
         machine.backendProvider = backendProvider
@@ -690,6 +720,24 @@ public final class VMLibrary {
         /// Bundles that are being put together in folders other than the library's own.
         var stagedBundles: [String]?
     }
+}
+
+/// Owns a folder's notification source and closes its descriptor once the source has stopped using it.
+private final class MachineFolderMonitor {
+    private let source: any DispatchSourceFileSystemObject
+
+    init?(url: URL, onChange: @escaping @Sendable () -> Void) {
+        let descriptor = open(url.path, O_EVTONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor, eventMask: [.write, .delete, .rename, .revoke], queue: .main
+        )
+        source.setEventHandler(handler: onChange)
+        source.setCancelHandler { close(descriptor) }
+        source.resume()
+    }
+
+    deinit { source.cancel() }
 }
 
 /// Says across threads that a copy is to stop.
