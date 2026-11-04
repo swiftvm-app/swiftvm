@@ -45,6 +45,7 @@ public final class QEMUBackend: VMBackend {
     private var afterUpdate: [@MainActor () -> Void] = []
     private var process: QEMUProcess?
     private var monitor: QMPConnection?
+    private var battery: QEMUBattery?
     private var agentChannel: AgentChannel?
     private var ports: [VmnetPort] = []
     private var diskExports: [CompressedDiskExport] = []
@@ -375,6 +376,9 @@ public final class QEMUBackend: VMBackend {
             try await waitForMigration()
             await plugInAudio()
         }
+        let battery = QEMUBattery { try await monitor.execute($0, $1) }
+        self.battery = battery
+        await battery.start()
         try await monitor.execute("cont")
         isRunning = true
         if pressesKeyToBootInstaller, savedState == nil {
@@ -424,6 +428,7 @@ public final class QEMUBackend: VMBackend {
 
     public func resume() async throws {
         guard let monitor else { throw VMError.notRunning(name: configuration.name) }
+        await battery?.refresh()
         try await monitor.execute("cont")
         isRunning = true
     }
@@ -500,6 +505,7 @@ public final class QEMUBackend: VMBackend {
     }
 
     private func processDidExit(_ status: Int32) {
+        battery?.stop()
         isRunning = false
         hasExited = true
         if isMonitorClosed { reportExit() }
@@ -543,6 +549,8 @@ public final class QEMUBackend: VMBackend {
     /// Lets go of everything the machine had: QEMU itself if it is still there, its lines, the network
     /// ports and the disks the app served it.
     private func tearDown() async {
+        battery?.stop()
+        battery = nil
         isRunning = false
         expectsExit = true
         if let process, !process.hasExited {
