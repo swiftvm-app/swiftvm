@@ -1,5 +1,4 @@
 import CoreGraphics
-import CoreText
 import Foundation
 import GuestChannel
 import Testing
@@ -61,25 +60,6 @@ private final class FakeMachine: ControlledMachine {
         ran.append(arguments)
         return Data()
     }
-}
-
-/// What a screen shows when `text` is written on it, for what only the pixels know.
-private func screen(saying text: String) -> ScreenFrame {
-    let (width, height) = (1200, 300)
-    var pixels = Data(repeating: 255, count: width * height * 4)
-    pixels.withUnsafeMutableBytes { buffer in
-        let context = CGContext(
-            data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        )!
-        let attributes: [NSAttributedString.Key: Any] = [
-            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 64, nil),
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
-        ]
-        context.textPosition = CGPoint(x: 40, y: 120)
-        CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes)), context)
-    }
-    return ScreenFrame(width: width, height: height, bytesPerRow: width * 4, pixels: pixels)
 }
 
 /// Three rows of a list that each say the same, as a list of files with a Delete button in each.
@@ -332,16 +312,54 @@ private let editor = #"""
         #expect(text.split(separator: "\n").filter { $0.hasPrefix("[1]") }.count == 1)
     }
 
+    /// What reads pixels here, which doesn't depend on what this Mac can do: a machine without a neural
+    /// engine, such as a virtual one, may read nothing at all.
+    private func reader(_ said: @escaping @Sendable () throws -> String) -> @Sendable (CGImage) async throws -> [ScreenText.Line] {
+        { _ in [ScreenText.Line(text: try said(), frame: CGRect(x: 10, y: 10, width: 200, height: 40))] }
+    }
+
+    private final class Words: @unchecked Sendable {
+        var text = ""
+    }
+
+    private struct CantRead: Error {}
+
     @Test func goneIsOnlySaidOfWhatThePixelsNoLongerShow() async throws {
         let machine = FakeMachine()
+        machine.width = 64
+        machine.height = 64
         machine.tree = #"{"applications":[]}"#
-        machine.picture = screen(saying: "Loading")
-        let outcome = await MachineController(machine: machine).perform(ControlCall(steps: [ControlStep(.wait, gone: "Loading", timeout: 1.5)]))
+        let words = Words()
+        words.text = "Loading"
+        let controller = MachineController(machine: machine, readText: reader { words.text })
+        let outcome = await controller.perform(ControlCall(steps: [ControlStep(.wait, gone: "Loading", timeout: 1)]))
         #expect(outcome.failure?.timedOut == true)
         // And when they have stopped showing it, it is said.
-        machine.picture = screen(saying: "Finished")
-        let later = await MachineController(machine: machine).perform(ControlCall(steps: [ControlStep(.wait, gone: "Loading", timeout: 3)]))
+        words.text = "Finished"
+        let later = await controller.perform(ControlCall(steps: [ControlStep(.wait, gone: "Loading", timeout: 3)]))
         #expect(later.failure == nil)
+    }
+
+    @Test func pixelsThatCantBeReadAreNoProofThatSomethingHasGone() async throws {
+        let machine = FakeMachine()
+        machine.width = 64
+        machine.height = 64
+        let controller = MachineController(machine: machine, readText: reader { throw CantRead() })
+        // No guest tools either: nothing can be told.
+        let outcome = await controller.perform(ControlCall(steps: [ControlStep(.wait, gone: "Loading", timeout: 1)]))
+        #expect(outcome.failure?.timedOut == true)
+        // The guest tools alone can tell.
+        machine.tree = #"{"applications":[]}"#
+        let told = await controller.perform(ControlCall(steps: [ControlStep(.wait, gone: "Loading", timeout: 3)]))
+        #expect(told.failure == nil)
+    }
+
+    @Test func aLookSaysSoWhenThePixelsCantBeRead() async throws {
+        let machine = FakeMachine()
+        machine.width = 64
+        machine.height = 64
+        let found = try await look(MachineController(machine: machine, readText: reader { throw CantRead() }))
+        #expect(found.notes?.contains { $0.contains("couldn't be read on this Mac") } == true)
     }
 
     @Test func goneIsOnlySaidOfWhatTheGuestToolsNoLongerTell() async throws {

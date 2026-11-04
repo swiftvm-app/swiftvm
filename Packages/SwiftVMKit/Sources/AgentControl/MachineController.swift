@@ -59,6 +59,8 @@ struct ControlFailure: Error {
 @MainActor
 public final class MachineController {
     private let machine: any ControlledMachine
+    /// What reads text off a picture.
+    private let readText: @Sendable (CGImage) async throws -> [ScreenText.Line]
     private var numbering = DeskNumbering()
     /// What the last look showed, by number.
     private var table: [Int: DeskEntry] = [:]
@@ -81,8 +83,12 @@ public final class MachineController {
     /// As many of the pixels compared as may change on a screen that is at rest: a caret, a clock.
     private static let restlessPixels = 40
 
-    public init(machine: any ControlledMachine) {
+    public init(
+        machine: any ControlledMachine,
+        readText: @escaping @Sendable (CGImage) async throws -> [ScreenText.Line] = { try await ScreenText.lines(in: $0) }
+    ) {
         self.machine = machine
+        self.readText = readText
     }
 
     /// Does the steps in order, and stops at the first that fails. Calling it off, as when whoever asked
@@ -254,9 +260,11 @@ public final class MachineController {
         }
     }
 
-    private func ocrLines(of frame: ScreenFrame) async -> [ScreenText.Line] {
-        guard let image = frame.image else { return [] }
-        return (try? await ScreenText.lines(in: image)) ?? []
+    /// What is written on the screen, or `nil` if that couldn't be read: which isn't the same as nothing
+    /// being written there.
+    private func ocrLines(of frame: ScreenFrame) async -> [ScreenText.Line]? {
+        guard let image = frame.image else { return nil }
+        return try? await readText(image)
     }
 
     private func look(_ step: ControlStep) async throws -> ControlStepResult {
@@ -273,7 +281,11 @@ public final class MachineController {
         // Too little to go by: a login screen, or an application that draws itself.
         let readable = entries.filter { $0.name != nil || $0.value != nil }.count
         if step.ocr == true || readable < 3 {
-            entries = DeskOCR.merged(await ocrLines(of: frame), into: entries)
+            if let lines = await ocrLines(of: frame) {
+                entries = DeskOCR.merged(lines, into: entries)
+            } else {
+                notes.append("the screen's pixels couldn't be read on this Mac")
+            }
         }
         let numbered = numbering.number(entries)
         var shown = numbered
@@ -447,8 +459,10 @@ public final class MachineController {
         if let found = try choose(text, among: reading.tree?.entries(screen: screen) ?? []) { return found }
         let everything = try await read(frame: frame).tree?.entries(screen: screen, all: true) ?? []
         if let found = try choose(text, among: everything) { return found }
-        let merged = DeskOCR.merged(await ocrLines(of: frame), into: everything)
-        if let found = try choose(text, among: merged) { return found }
+        guard let lines = await ocrLines(of: frame) else {
+            throw ControlFailure("Nothing the guest tools tell says “\(text)”, and the screen's pixels couldn't be read on this Mac.")
+        }
+        if let found = try choose(text, among: DeskOCR.merged(lines, into: everything)) { return found }
         throw ControlFailure("Nothing on the screen says “\(text)”.")
     }
 
@@ -588,6 +602,10 @@ public final class MachineController {
         var lastPixels: ContinuousClock.Instant?
         var treeEntries: [DeskEntry] = []
         var pixelEntries: [DeskEntry] = []
+        // Whether the guest tools and the pixels could be read at all. Not being able to read something
+        // says nothing about whether it is there.
+        var treeIsKnown = false
+        var pixelsAreKnown = false
         var hasTriedWaking = false
         func took() -> String {
             String(format: "%.1f s", locale: Locale(identifier: "en_US_POSIX"), Double((clock.now - start) / .milliseconds(1)) / 1000)
@@ -630,20 +648,24 @@ public final class MachineController {
                     treeIsOld = false
                     lastTree = clock.now
                     let screen = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-                    treeEntries = try await read(frame: frame).tree?.entries(screen: screen, all: true) ?? []
+                    let tree = try await read(frame: frame).tree
+                    treeIsKnown = tree != nil
+                    treeEntries = tree?.entries(screen: screen, all: true) ?? []
                 }
                 if readsPixels {
                     pixelsAreOld = false
                     lastPixels = clock.now
-                    pixelEntries = DeskOCR.merged(await ocrLines(of: frame), into: [])
+                    let lines = await ocrLines(of: frame)
+                    pixelsAreKnown = lines != nil
+                    pixelEntries = DeskOCR.merged(lines ?? [], into: [])
                 }
                 if readsTree || readsPixels {
                     let isSaid = { (text: String) in (treeEntries + pixelEntries).contains { $0.says(text, exactly: false) } }
                     if let text = step.text, isSaid(text) {
                         return "“\(text)” is on the screen after \(took())"
                     }
-                    // Gone is only gone when the pixels and the guest tools both say so, of this screen.
-                    if let gone = step.gone, isQuiet, !treeIsOld, !pixelsAreOld, !isSaid(gone) {
+                    // Gone is only gone when what can be read of this screen says so, and something can be.
+                    if let gone = step.gone, isQuiet, !treeIsOld, !pixelsAreOld, treeIsKnown || pixelsAreKnown, !isSaid(gone) {
                         return "“\(gone)” has gone after \(took())"
                     }
                 }
