@@ -16,10 +16,9 @@ connection.
 | [Shared clipboard](sharing.md#clipboard) | Wayland with graphics acceleration; otherwise `spice-vdagent` | Yes | Yes |
 | The time zone follows your Mac's, once | No | Yes | Yes |
 | [SSH without a network](ssh.md#without-a-network) on older systems | Yes | No | No |
-| `swiftvm desktop` [drives the desktop](automation.md#agent-desktop) with agent-desktop | Logged-in desktop with AT-SPI | Logged-in desktop with permissions | Logged-in desktop |
 | `swiftvm` [runs commands and copies files](automation.md) in the guest | Yes | Yes | Yes |
-| `swiftvm` [sees the screen and uses the mouse and keyboard](automation.md#the-screen) | Yes | Works without the guest tools | Works without the guest tools |
-| `swiftvm` [reads the screen as a tree](automation.md#what-is-on-the-screen) | Yes | Yes, once [macOS allows it](automation.md#macos-guests), which Quick Create sees to | No |
+| `swiftvm control` [sees the screen and uses the mouse and keyboard](automation.md#the-desktop) | Works without the guest tools | Works without the guest tools | Works without the guest tools |
+| `swiftvm control` [knows what is on the screen by its parts](automation.md#the-desktop) | Logged-in desktop | Logged-in desktop, once [macOS allows it](automation.md#macos-guests), which Quick Create sees to | Logged-in desktop |
 | The display follows the window | Works without the guest tools | Works without the guest tools | Yes, with the driver they bring |
 | [Seamless Mode](windows-guests.md#seamless-mode) shows each app in its own window | No | No | Yes, from version 1.4 |
 
@@ -76,7 +75,7 @@ swiftvm install-tools web-server --disc   # from a disc, inside the guest
   The app's menu falls back to the disc automatically if SSH installation fails.
 - The guest needs systemd and Python 3 at `/usr/bin/python3`, as provided by
   the supported Ubuntu and Debian images.
-- Reading the screen [as a tree](automation.md#what-is-on-the-screen) also
+- Knowing [what is on the screen by its parts](automation.md#the-desktop) also
   takes `python3-gi` and `gir1.2-atspi-2.0`, which a desktop brings.
 
 ### macOS

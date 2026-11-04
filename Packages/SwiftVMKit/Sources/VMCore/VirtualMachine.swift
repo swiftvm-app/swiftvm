@@ -241,7 +241,7 @@ public final class VirtualMachine: Identifiable {
     }
 
     /// Presses keys of the machine's own keyboard, for someone at this Mac: the Windows key that opens
-    /// the Start menu. Unlike a ``GuestJob``, not something the command line asks for.
+    /// the Start menu. Not something the command line asks for: it goes by no setting for automation.
     public func pressKeys(_ keys: GuestJob.Keys) async throws {
         guard state == .running, let backend else { throw VMError.notRunning(name: name) }
         try await backend.keys(keys)
@@ -664,55 +664,38 @@ public final class VirtualMachine: Identifiable {
 
     // MARK: The machine's own display, mouse and keyboard
 
-    /// Whether this Mac does `job` itself, with the machine's own display, mouse and keyboard, rather
-    /// than have the guest's agent do it.
-    ///
-    /// It does for macOS guests, where an agent would need the say-so of someone at the guest's screen
-    /// first, and for guests on QEMU, whose display the app reads anyway to show it. Text that the
-    /// machine's keyboard has no keys for is left to an agent that types.
-    public func doesItself(_ job: GuestJob) -> Bool {
-        guard hasOwnDesk else { return false }
-        switch job {
-        case .screenshot, .pointer:
-            return true
-        case .keys(let keys):
-            return (keys.text ?? "").allSatisfy { MacKeys.press(typing: $0) != nil } || !agent.offers(GuestFeature.input)
-        case .exec, .desktop, .tree, .element, .permission, .unknown:
-            return false
+    /// What the machine's display shows right now. Like a job, only for a machine that is to be driven
+    /// from the command line.
+    public func frame() async throws -> ScreenFrame {
+        try await drivableBackend().frame()
+    }
+
+    /// Uses the machine's own mouse, on any guest, at a login screen too, with nothing in it to allow it.
+    public func pointer(_ request: GuestPointer) async throws {
+        let backend = try drivableBackend()
+        let turnsWheel = request.action == .scroll ? await guestTurnsWheel() : false
+        try await backend.pointer(request, guestTurnsWheel: turnsWheel)
+    }
+
+    /// Presses keys of the machine's own keyboard, or has the guest's agent type text that keyboard
+    /// has no keys for.
+    public func press(_ keys: GuestJob.Keys) async throws {
+        let backend = try drivableBackend()
+        let needsAgent = (keys.text ?? "").contains { MacKeys.press(typing: $0) == nil }
+        if needsAgent, agent.offers(GuestFeature.input) {
+            _ = try await collect(.keys(.init(text: keys.text)), patience: 60)
+            if let presses = keys.keys {
+                try await backend.keys(.init(keys: presses))
+            }
+            return
         }
+        try await backend.keys(keys)
     }
 
-    /// Whether this Mac has the machine's display, mouse and keyboard for jobs of its own.
-    private var hasOwnDesk: Bool {
-        configuration.os.family == .macOS || configuration.engine == .qemu
-    }
-
-    /// Whether a kind of job, by its ``GuestFeature``, is done in this machine's guest right now: by
-    /// its agent, or by this Mac itself.
-    public func does(_ feature: String) -> Bool {
-        if agent.offers(feature) {
-            return true
-        }
-        return state == .running && hasOwnDesk && [GuestFeature.screen, GuestFeature.input].contains(feature)
-    }
-
-    /// Does a job this Mac does itself (``doesItself(_:)``), and returns what the job is for: the
-    /// picture of the screen. Like any job, only for a machine that is to be driven from the command line.
-    public func carryOut(_ job: GuestJob) async throws -> Data {
+    private func drivableBackend() throws -> any VMBackend {
         guard configuration.automation.isAllowed else { throw GuestJobError.notAllowed(name: name) }
         guard state == .running, let backend else { throw VMError.notRunning(name: name) }
-        switch job {
-        case .screenshot:
-            return try await backend.screenshot()
-        case .pointer(let request):
-            let turnsWheel = request.action == .scroll ? await guestTurnsWheel() : false
-            try await backend.pointer(request, guestTurnsWheel: turnsWheel)
-        case .keys(let request):
-            try await backend.keys(request)
-        case .exec, .desktop, .tree, .element, .permission, .unknown:
-            throw MachineDeskError.unavailable
-        }
-        return Data()
+        return backend
     }
 
     /// Whether the guest scrolls the other way round than its wheel is turned. macOS does, until
@@ -722,10 +705,16 @@ public final class VirtualMachine: Identifiable {
         // Only macOS turns its wheel around by default.
         guard configuration.os.family == .macOS else { return false }
         guard agent.isConnected, agent.offers(GuestFeature.exec) else { return true }
+        // Asked of the guest once per start: nobody changes it between two scrolls, and it takes a process.
+        if let known = knownWheelDirection, known.run == startCount { return known.turns }
         let setting = GuestJob.exec(.init(arguments: ["/usr/bin/defaults", "read", "-g", "com.apple.swipescrolldirection"]))
         guard let said = try? await collect(setting, patience: 5) else { return true }
-        return String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) != "0"
+        let turns = String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) != "0"
+        knownWheelDirection = (startCount, turns)
+        return turns
     }
+
+    @ObservationIgnored private var knownWheelDirection: (run: Int, turns: Bool)?
 
     public func refreshDiskUsage() {
         allocatedDiskSize = bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })

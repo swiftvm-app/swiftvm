@@ -89,13 +89,16 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Wait until the machine's guest tools answer, which is when it can be given jobs. For at most
         /// ``ControlRequest/timeout`` seconds.
         case wait
-        /// Have the guest tools do ``ControlRequest/job`` in the guest: run a command, show the screen,
-        /// use the mouse and the keyboard. After the answer, the connection carries the job's frames.
+        /// Have the guest tools do ``ControlRequest/job`` in the guest: run a command, or read and act on
+        /// what is on the screen. After the answer, the connection carries the job's frames.
         case job
-        /// Let the machine be given jobs or not, as ``ControlRequest/isOn`` says.
+        /// Do ``ControlRequest/control`` on the machine's desktop. After the answer, the connection carries
+        /// a ``ControlOutcome`` in frames.
+        case control
+        /// Let the machine be given jobs or be controlled or not, as ``ControlRequest/isOn`` says.
         case automation
-        /// Have a macOS guest let its guest tools read the screen as a tree, by answering its question
-        /// with ``ControlRequest/password``.
+        /// Have a macOS guest let its guest tools read the screen, by answering its question with
+        /// ``ControlRequest/password``.
         case allowAccessibility = "allow-accessibility"
     }
 
@@ -225,7 +228,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var port: UInt32?
     /// For `install-tools`: plug in the guest tools disc instead of installing over SSH.
     public var usesDisc: Bool?
-    /// For `install-tools` over SSH and for `allow-accessibility`: the guest account's password, which
+    /// For `install-tools` over SSH and for `control <machine> allow`: the guest account's password, which
     /// macOS wants before it lets anything be installed, or allowed.
     public var password: String?
     /// For `share-clipboard`, `usb-auto` and `automation`: whether it is to be on.
@@ -237,6 +240,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var system: String?
     /// For `job`: what the guest tools are to do.
     public var job: GuestJob?
+    /// For `control`: what to do on the machine's desktop.
+    public var control: ControlCall?
     /// For `wait`: how many seconds to wait at most.
     public var timeout: Double?
     /// For `move`: absolute path of the folder the machine is to be kept in.
@@ -250,7 +255,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         drive: DriveParameters? = nil, name: String? = nil, snapshot: String? = nil, diskGigabytes: Int? = nil,
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
-        timeout: Double? = nil, location: String? = nil, template: String? = nil,
+        control: ControlCall? = nil, timeout: Double? = nil, location: String? = nil, template: String? = nil,
         networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil
     ) {
         self.command = command
@@ -270,6 +275,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.usbDevice = usbDevice
         self.system = system
         self.job = job
+        self.control = control
         self.timeout = timeout
         self.location = location
         self.template = template
@@ -293,7 +299,7 @@ extension ControlRequest {
 extension ControlRequest.Command {
     /// Whether a successful answer is followed by a byte stream instead of further requests.
     public var opensStream: Bool {
-        self == .console || self == .vsock || self == .job
+        self == .console || self == .vsock || self == .job || self == .control
     }
 }
 

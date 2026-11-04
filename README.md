@@ -28,7 +28,7 @@
 - USB devices and disk images
 - Lives in the menu bar
 - `swiftvm` command-line tool
-- Automation for scripts and AI agents: drive a guest's desktop with [agent-desktop](docs/features/automation.md#agent-desktop), run commands in it, and copy files
+- Automation for scripts and AI agents: [see and work a guest's desktop](docs/features/automation.md#the-desktop), at login screens too, run commands in it, and copy files, from the `swiftvm` command or [its MCP server](docs/features/automation.md#mcp)
 
 ## Install
 

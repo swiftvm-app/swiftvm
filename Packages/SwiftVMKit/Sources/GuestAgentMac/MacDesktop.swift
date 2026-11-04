@@ -1,24 +1,20 @@
 import AppKit
 import ApplicationServices
 import GuestChannel
-import ImageIO
-import ScreenCaptureKit
-import UniformTypeIdentifiers
 
-/// The desktop of the session the agent runs in: its screen, its mouse and its keyboard.
+/// The desktop of the session the agent runs in: what other programs show there, and typing to them.
 ///
-/// macOS asks whoever sits at the screen before a program may record it, and before one may use the
-/// mouse and the keyboard or read what other programs show. Nothing in this system can say yes for
-/// them. The app on the Mac can: it has the machine's own mouse and keyboard, and gives the answer in
-/// System Settings as they would, while this half tells it where on the screen that is
-/// (``permission(_:)``). Until then a job that takes it is answered with what to do.
+/// macOS asks whoever sits at the screen before a program may read what others show or type to them.
+/// Nothing in this system can say yes for them. The app on the Mac can: it has the machine's own mouse
+/// and keyboard, and gives the answer in System Settings as they would, while this half tells it where
+/// on the screen that is (``permission(_:)``). Until then a job that takes it is answered with what to do.
 struct MacDesktop: AgentDesktop {
     init() {}
 
     // MARK: The screen
 
-    /// The main display: how many pixels a screenshot of it has, and how many of them make one of the
-    /// points that macOS itself counts places in.
+    /// The main display: how many pixels it has, and how many of them make one of the points that macOS
+    /// itself counts places in.
     struct Screen {
         var display: CGDirectDisplayID
         var width: Int
@@ -34,133 +30,13 @@ struct MacDesktop: AgentDesktop {
         return Screen(display: display, width: mode.pixelWidth, height: mode.pixelHeight, scale: Double(mode.pixelWidth) / Double(mode.width))
     }
 
-    func screenshot() throws -> Data {
-        let screen = try Self.screen()
-        do {
-            return try Self.waiting { try await Self.capture(screen) }
-        } catch let failure as AgentFailure {
-            throw failure
-        } catch {
-            guard CGPreflightScreenCaptureAccess() else {
-                // Puts the system's own question on the screen, the first time.
-                CGRequestScreenCaptureAccess()
-                // A program that was running when it was allowed may not be let record until it has
-                // started anew. launchd starts this half again at once.
-                DispatchQueue.global().asyncAfter(deadline: .now() + 1) { exit(0) }
-                throw AgentFailure("macOS hasn't let the guest tools record this Mac's screen yet. In the guest, turn on swiftvm-agent under System Settings › Privacy & Security › Screen & System Audio Recording, and try again in a moment.")
-            }
-            throw AgentFailure("The screen couldn't be recorded: \(error.localizedDescription)")
-        }
-    }
+    // MARK: The keyboard
 
-    private static func capture(_ screen: Screen) async throws -> Data {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == screen.display }) ?? content.displays.first else {
-            throw AgentFailure("This Mac has no display.")
-        }
-        let configuration = SCStreamConfiguration()
-        configuration.width = screen.width
-        configuration.height = screen.height
-        configuration.showsCursor = true
-        let image = try await SCScreenshotManager.captureImage(
-            contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: configuration
-        )
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            throw AgentFailure("The picture of the screen couldn't be written down.")
-        }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { throw AgentFailure("The picture of the screen couldn't be written down.") }
-        return data as Data
-    }
-
-    /// Runs what has to be waited for, from a thread that has the time.
-    private static func waiting<Value: Sendable>(_ work: @escaping @Sendable () async throws -> Value) throws -> Value {
-        let outcome = Outcome<Value>()
-        let done = DispatchSemaphore(value: 0)
-        Task.detached {
-            do {
-                outcome.result = .success(try await work())
-            } catch {
-                outcome.result = .failure(error)
-            }
-            done.signal()
-        }
-        done.wait()
-        guard let result = outcome.result else { throw AgentFailure("The screen didn't answer.") }
-        return try result.get()
-    }
-
-    // MARK: The mouse and the keyboard
-
-    /// Using the mouse and the keyboard, and reading what programs show, is one permission to macOS.
+    /// Typing, and reading what programs show, is one permission to macOS.
     private static func requireAccess() throws {
+        // Only asked for by `allow`: a question on the screen for every look would be in everyone's way.
         guard AXIsProcessTrusted() else {
-            // Puts the system's own question on the screen, the first time.
-            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-            throw AgentFailure("macOS hasn't let the guest tools read what is on this Mac's screen yet, or act on it. `swiftvm allow-accessibility <machine> --password <password>`, on the Mac that runs this virtual machine, has it allowed. Or turn on swiftvm-agent in the guest, under System Settings › Privacy & Security › Device Control and Data Access, which earlier versions of macOS call Accessibility.")
-        }
-    }
-
-    private static let pause: TimeInterval = 0.06
-
-    func pointer(_ request: GuestJob.Pointer) throws {
-        try Self.requireAccess()
-        let screen = try Self.screen()
-        func place(_ x: Int, _ y: Int) throws -> CGPoint {
-            guard (0..<screen.width).contains(x), (0..<screen.height).contains(y) else {
-                throw AgentFailure("(\(x), \(y)) isn't on the screen, which is \(screen.width) by \(screen.height).")
-            }
-            return CGPoint(x: Double(x) / screen.scale, y: Double(y) / screen.scale)
-        }
-        let start = try place(request.x, request.y)
-        let (down, up, dragged, button): (CGEventType, CGEventType, CGEventType, CGMouseButton) = switch request.button ?? .left {
-        case .left: (.leftMouseDown, .leftMouseUp, .leftMouseDragged, .left)
-        case .right: (.rightMouseDown, .rightMouseUp, .rightMouseDragged, .right)
-        case .middle: (.otherMouseDown, .otherMouseUp, .otherMouseDragged, .center)
-        }
-        func post(_ kind: CGEventType, at place: CGPoint, click: Int = 0) {
-            guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: place, mouseButton: button) else { return }
-            if click > 0 {
-                event.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-            }
-            event.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: Self.pause)
-        }
-
-        switch request.action {
-        case .move:
-            post(.mouseMoved, at: start)
-        case .click:
-            let count = request.count ?? 1
-            guard (1...3).contains(count) else { throw AgentFailure("A click is one, two or three clicks.") }
-            post(.mouseMoved, at: start)
-            // The second click of a double click says that it is the second.
-            for click in 1...count {
-                post(down, at: start, click: click)
-                post(up, at: start, click: click)
-            }
-        case .drag:
-            guard let toX = request.toX, let toY = request.toY else { throw AgentFailure("The request doesn't say where the drag ends.") }
-            let end = try place(toX, toY)
-            post(.mouseMoved, at: start)
-            post(down, at: start, click: 1)
-            // Whatever is dragged follows a pointer that moves, not one that jumps.
-            let steps = 12
-            for step in 1...steps {
-                let part = Double(step) / Double(steps)
-                post(dragged, at: CGPoint(x: start.x + (end.x - start.x) * part, y: start.y + (end.y - start.y) * part))
-            }
-            post(up, at: end, click: 1)
-        case .scroll:
-            let (deltaX, deltaY) = (request.deltaX ?? 0, request.deltaY ?? 0)
-            guard abs(deltaX) <= 100, abs(deltaY) <= 100 else { throw AgentFailure("That is further than the wheel is turned in one go.") }
-            post(.mouseMoved, at: start)
-            // A notch of a wheel is three lines. The wheel counts up for scrolling up, and to the left.
-            let wheel = CGEvent(
-                scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: Int32(-deltaY * 3), wheel2: Int32(-deltaX * 3), wheel3: 0
-            )
-            wheel?.post(tap: .cghidEventTap)
+            throw AgentFailure("macOS hasn't let the guest tools read what is on this Mac's screen yet, or act on it. `swiftvm control <machine> allow --password <password>`, on the Mac that runs this virtual machine, has it allowed. Or turn on swiftvm-agent in the guest, under System Settings › Privacy & Security › Device Control and Data Access, which earlier versions of macOS call Accessibility.")
         }
     }
 
@@ -188,9 +64,10 @@ struct MacDesktop: AgentDesktop {
         try Self.requireAccess()
         var reader = ScreenReader(scale: try Self.screen().scale, everything: request.all == true)
         var applications: [ScreenPart] = []
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         for (process, name) in Self.applications() {
             if let wanted = request.application, !name.localizedCaseInsensitiveContains(wanted) { continue }
-            applications += reader.describe(application: process, named: name, depth: max(request.depth ?? ScreenReader.defaultDepth, 1))
+            applications += reader.describe(application: process, named: name, isActive: process == front, depth: max(request.depth ?? ScreenReader.defaultDepth, 1))
         }
         return try JSONEncoder().encode(ScreenTree(applications: applications, truncated: reader.isTruncated))
     }
@@ -206,82 +83,32 @@ struct MacDesktop: AgentDesktop {
     private static let settingsIdentifier = "com.apple.systempreferences"
     /// The question the system puts on the screen by itself when it is asked.
     private static let questionIdentifier = "com.apple.accessibility.universalAccessAuthWarn"
-    /// The pages of the settings that list who may read the screen and use the mouse and the keyboard,
-    /// and who may record the screen.
-    private static func settingsPage(for kind: GuestJob.Permission.Kind) -> String {
-        switch kind {
-        case .accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        case .screenRecording: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
-    }
-    /// What puts the system's questions about other programs on the screen, such as agent-desktop's
-    /// for recording the screen without the window picker.
-    private static let alertIdentifier = "com.apple.UserNotificationCenter"
-    /// How the session half asks a new copy of itself whether it may record the screen, and has one
-    /// ask macOS for it.
-    static let screenRecordingMode = "may-record-screen"
-    static let screenRecordingRequestMode = "request-screen-recording"
+    /// The page of the settings that lists who may read the screen and type to it.
+    private static let settingsPage = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
     /// The settings were opened by this half, and are its to close again.
     private static let hasOpenedSettings = Flag()
 
     func permission(_ request: GuestJob.Permission) throws -> Data {
-        let kind = request.kind ?? .accessibility
         // The system's question leads to the settings and nowhere else, and lies over them.
         Self.dismissQuestion()
         switch request.action {
         case .check:
             break
         case .ask:
-            try Self.ask(kind)
+            try Self.ask()
         case .finish:
             Self.putAway()
         }
-        return try JSONEncoder().encode(Self.permissionState(kind))
+        return try JSONEncoder().encode(Self.permissionState())
     }
 
-    private static func isAllowed(_ kind: GuestJob.Permission.Kind) -> Bool {
-        switch kind {
-        case .accessibility: AXIsProcessTrusted()
-        case .screenRecording: mayRecordScreen()
-        }
-    }
-
-    /// Asked of a new copy of this program, which macOS answers as it is now.
-    private static func mayRecordScreen() -> Bool {
-        runCopy(screenRecordingMode) ?? CGPreflightScreenCaptureAccess()
-    }
-
-    /// Runs a new copy of this program in `mode`, and says whether it ended well. `nil` if it couldn't.
-    private static func runCopy(_ mode: String, patience: TimeInterval = 5) -> Bool? {
-        guard let program = Bundle.main.executableURL else { return nil }
-        let process = Process()
-        process.executableURL = program
-        process.arguments = [mode]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
-        guard (try? process.run()) != nil else { return nil }
-        guard finished.wait(timeout: .now() + patience) == .success else {
-            process.terminate()
-            return false
-        }
-        return process.terminationStatus == 0
-    }
-
-    private static func ask(_ kind: GuestJob.Permission.Kind) throws {
-        guard !isAllowed(kind) else { return }
+    private static func ask() throws {
+        guard !AXIsProcessTrusted() else { return }
         // Asking is what puts this program on the settings' list.
-        switch kind {
-        case .accessibility: _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-        case .screenRecording:
-            if runCopy(screenRecordingRequestMode, patience: 10) == nil {
-                _ = CGRequestScreenCaptureAccess()
-            }
-        }
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
         dismissQuestion(patience: 3)
         let wasOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier).isEmpty
-        guard let page = URL(string: settingsPage(for: kind)), NSWorkspace.shared.open(page) else {
+        guard let page = URL(string: settingsPage), NSWorkspace.shared.open(page) else {
             throw AgentFailure("System Settings couldn't be opened in the guest.")
         }
         if !wasOpen {
@@ -322,14 +149,13 @@ struct MacDesktop: AgentDesktop {
         }
     }
 
-    private static func permissionState(_ kind: GuestJob.Permission.Kind) -> GuestPermissionState {
+    private static func permissionState() -> GuestPermissionState {
         let scale = (try? screen().scale) ?? 1
-        var state = GuestPermissionState(isAllowed: isAllowed(kind), scale: scale)
+        var state = GuestPermissionState(isAllowed: AXIsProcessTrusted(), scale: scale)
         let windows = settingsWindows()
         func pixels(_ window: CGRect) -> [Int] {
             [window.minX, window.minY, window.width, window.height].map { Int(($0 * scale).rounded()) }
         }
-        state.alert = onScreenWindows(of: alertIdentifier, onLayer: nil).first.map(pixels)
         if let window = windows.max(by: { $0.width * $0.height < $1.width * $1.height }) {
             state.settings = pixels(window)
             // What the settings put in front of their window is smaller, and comes before it.
@@ -343,17 +169,11 @@ struct MacDesktop: AgentDesktop {
     /// The windows of the system's settings that are on the screen, from the front to the back. Where
     /// windows are is no secret to a program that isn't let see what is in them.
     private static func settingsWindows() -> [CGRect] {
-        onScreenWindows(of: settingsIdentifier, onLayer: 0)
-    }
-
-    /// The windows of the application with `identifier` that are on the screen, from the front to the
-    /// back, on `layer` or on any layer for `nil`.
-    private static func onScreenWindows(of identifier: String, onLayer layer: Int?) -> [CGRect] {
-        let processes = Set(NSRunningApplication.runningApplications(withBundleIdentifier: identifier).map(\.processIdentifier))
+        let processes = Set(NSRunningApplication.runningApplications(withBundleIdentifier: settingsIdentifier).map(\.processIdentifier))
         guard !processes.isEmpty else { return [] }
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.compactMap { window in
-            guard layer.map({ window[kCGWindowLayer as String] as? Int == $0 }) ?? true,
+            guard window[kCGWindowLayer as String] as? Int == 0,
                   let process = window[kCGWindowOwnerPID as String] as? pid_t,
                   processes.contains(process), let bounds = window[kCGWindowBounds as String] as? NSDictionary
             else { return nil }
@@ -361,25 +181,28 @@ struct MacDesktop: AgentDesktop {
         }
     }
 
+    /// What draws above applications all the time, and has nothing to say to anyone.
+    private static let backdrops: Set<String> = [
+        "Window Server", "Dock", "SystemUIServer", "Control Center", "Notification Center", "TextInputMenuAgent", "Wallpaper", "CursorUIViewService",
+    ]
+
     /// The applications that have a window on the screen, the one in front first, and the Dock.
     private static func applications() -> [(process: pid_t, name: String)] {
         var found: [(process: pid_t, name: String)] = []
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        // Layer zero is where applications' own windows are. The menu bar's extras and the like are above.
-        for window in windows where window[kCGWindowLayer as String] as? Int == 0 {
+        // Layer zero is where applications' own windows are. Above it are the menu bar's extras, which
+        // say nothing, and Spotlight and the system's questions, which do.
+        for window in windows {
             guard let process = window[kCGWindowOwnerPID as String] as? pid_t, !found.contains(where: { $0.process == process }) else { continue }
-            found.append((process, window[kCGWindowOwnerName as String] as? String ?? ""))
+            let name = window[kCGWindowOwnerName as String] as? String ?? ""
+            guard window[kCGWindowLayer as String] as? Int == 0 || !backdrops.contains(name) else { continue }
+            found.append((process, name))
         }
         if let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first {
             found.append((dock.processIdentifier, "Dock"))
         }
         return found
     }
-}
-
-/// What came of something that was waited for, handed from where it happened to where it is wanted.
-private final class Outcome<Value: Sendable>: @unchecked Sendable {
-    var result: Result<Value, any Error>?
 }
 
 /// Something that is so or isn't, for the jobs' threads to agree on.
@@ -492,7 +315,7 @@ struct ScreenPart: Encodable {
     var value: Value?
     var states: [String]?
     var actions: [String]?
-    /// Where it is on the screen, in the pixels of a screenshot: left, top, width, height.
+    /// Where it is on the screen, in the display's pixels: left, top, width, height.
     var bounds: [Int]?
     var children: [ScreenPart]?
 
@@ -544,7 +367,7 @@ struct ScreenReader {
         "AXSize", "AXChildren",
     ]
 
-    mutating func describe(application process: pid_t, named name: String, depth: Int) -> [ScreenPart] {
+    mutating func describe(application process: pid_t, named name: String, isActive: Bool = false, depth: Int) -> [ScreenPart] {
         let element = AXUIElementCreateApplication(process)
         AXUIElementSetMessagingTimeout(element, Self.patience)
         return describe(element, id: String(process), depth: depth, level: 0).compactMap { part in
@@ -552,6 +375,7 @@ struct ScreenReader {
             guard part.children != nil else { return nil }
             var part = part
             part.name = part.name ?? (name.isEmpty ? nil : name)
+            if isActive { part.states = (part.states ?? []) + ["active"] }
             return part
         }
     }
@@ -649,7 +473,7 @@ struct ScreenReader {
             guard let text = request.text else { throw AgentFailure("The request has no text.") }
             var isSettable = DarwinBoolean(false)
             guard AXUIElementIsAttributeSettable(element, "AXValue" as CFString, &isSettable) == .success, isSettable.boolValue else {
-                throw AgentFailure("\(what) doesn't take text this way. If it is a text field, give it the keyboard with `swiftvm ui <machine> focus`, and type.")
+                throw AgentFailure("\(what) doesn't take text this way. If it is a text field, give it the keyboard with `swiftvm control <machine> focus`, and type.")
             }
             guard AXUIElementSetAttributeValue(element, "AXValue" as CFString, text as CFString) == .success else {
                 throw AgentFailure("\(what) didn't take the text.")

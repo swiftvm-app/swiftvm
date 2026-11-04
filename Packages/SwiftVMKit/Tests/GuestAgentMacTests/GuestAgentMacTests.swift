@@ -70,20 +70,10 @@ private final class PretendDesktop: AgentDesktop, @unchecked Sendable {
 
     /// What the agent has done with the desktop, in order.
     var calls: [String] { lock.withLock { done } }
-    /// What the system says instead of letting the screen be recorded, as before someone allowed it.
+    /// What the system says instead of letting the screen be read, as before someone allowed it.
     var refusal: String? {
         get { lock.withLock { objection } }
         set { lock.withLock { objection = newValue } }
-    }
-
-    func screenshot() throws -> Data {
-        if let refusal { throw AgentFailure(refusal) }
-        lock.withLock { done.append("screenshot") }
-        return Data("a picture".utf8)
-    }
-
-    func pointer(_ request: GuestJob.Pointer) throws {
-        lock.withLock { done.append("\(request.action.rawValue) \(request.x),\(request.y)") }
     }
 
     func keys(_ request: GuestJob.Keys) throws {
@@ -91,7 +81,9 @@ private final class PretendDesktop: AgentDesktop, @unchecked Sendable {
     }
 
     func tree(_ request: GuestJob.Tree) throws -> Data {
-        Data(#"{"applications":[],"truncated":false}"#.utf8)
+        if let refusal { throw AgentFailure(refusal) }
+        lock.withLock { done.append("tree") }
+        return Data(#"{"applications":[],"truncated":false}"#.utf8)
     }
 
     func act(on request: GuestJob.Element) throws -> Data {
@@ -903,103 +895,9 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(await later.receive(GuestJobAnswer.self)?.error?.contains("record-screen") == true)
     }
 
-    @Test func desktopCommandsPreserveArgumentsStreamsAndExitStatus() async {
-        let (agent, mac) = FarEnd.makeLine()
-        defer { mac.hangUp() }
-        let literal = "quotes ' \" ; $HOME\nünïcödé"
-        let request = GuestJob.Desktop(arguments: ["-c", "printf '%s' \"$1\"; cat; printf '%s' \"$TMPDIR\" >&2; exit 7", "desktop-test", literal])
-        Thread.detachNewThread { [system] in
-            DesktopJob.run(request, on: agent, system: system, program: "/bin/sh")
-            GuestJobLine.hangUp(agent)
-        }
-        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
-        mac.send(JobFrame(.input, Data("input".utf8)).encoded)
-        mac.send(JobFrame(.input).encoded)
-        var output = Data()
-        var errors = Data()
-        var end: JobEnd?
-        while end == nil, let frame = await mac.frame() {
-            if frame.kind == .output { output.append(frame.payload) }
-            if frame.kind == .errorOutput { errors.append(frame.payload) }
-            end = frame.end
-        }
-        #expect(String(decoding: output, as: UTF8.self) == literal + "input")
-        #expect(String(decoding: errors, as: UTF8.self) == NSTemporaryDirectory())
-        #expect(end == JobEnd(status: 7))
-    }
-
-    @Test func desktopCommandsGetAClipboardHelperOfTheAccountsOwn() async throws {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "desktop-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let installed = folder.appending(path: "installed")
-        try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
-        let tool = installed.appending(path: "agent-desktop")
-        try Data("#!/bin/sh\nprintf '%s' \"$AGENT_DESKTOP_MACOS_HELPER_PATH\"\n".utf8).write(to: tool)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
-        try Data("helper".utf8).write(to: installed.appending(path: DesktopHelper.name))
-        let accounts = folder.appending(path: "account")
-
-        let (agent, mac) = FarEnd.makeLine()
-        defer { mac.hangUp() }
-        Thread.detachNewThread { [system] in
-            DesktopJob.run(.init(arguments: ["status"]), on: agent, system: system, program: tool.path, helperFolder: accounts)
-            GuestJobLine.hangUp(agent)
-        }
-        #expect(await mac.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
-        var output = Data()
-        while let frame = await mac.frame(), frame.end == nil {
-            if frame.kind == .output { output.append(frame.payload) }
-        }
-        let copy = accounts.appending(path: DesktopHelper.name)
-        #expect(String(decoding: output, as: UTF8.self) == copy.path)
-        #expect(try Data(contentsOf: copy) == Data("helper".utf8))
-        let attributes = try FileManager.default.attributesOfItem(atPath: copy.path)
-        #expect(attributes[.ownerAccountID] as? Int == Int(geteuid()))
-        #expect(attributes[.posixPermissions] as? Int == 0o755)
-    }
-
-    @Test func aStaleOrSharedHelperCopyIsReplaced() throws {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "helper-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: folder) }
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let installed = folder.appending(path: DesktopHelper.name)
-        try Data("new helper".utf8).write(to: installed)
-        let accounts = folder.appending(path: "account")
-
-        // From before the guest tools were updated.
-        let copy = try DesktopHelper.privateCopy(of: installed, in: accounts)
-        try Data("old helper".utf8).write(to: copy)
-        #expect(try Data(contentsOf: DesktopHelper.privateCopy(of: installed, in: accounts)) == Data("new helper".utf8))
-
-        // Another name for the same file lets whoever holds it change the helper.
-        let link = folder.appending(path: "link")
-        try FileManager.default.linkItem(at: copy, to: link)
-        _ = try DesktopHelper.privateCopy(of: installed, in: accounts)
-        try Data("changed through the link".utf8).write(to: link)
-        #expect(try Data(contentsOf: copy) == Data("new helper".utf8))
-
-        // Writable by others.
-        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: copy.path)
-        _ = try DesktopHelper.privateCopy(of: installed, in: accounts)
-        #expect(try FileManager.default.attributesOfItem(atPath: copy.path)[.posixPermissions] as? Int == 0o755)
-    }
-
-    @Test func aMissingDesktopToolDoesNotFallBackToAnotherExecutable() async {
-        let (agent, mac) = FarEnd.makeLine()
-        defer { mac.hangUp() }
-        Thread.detachNewThread { [system] in
-            DesktopJob.run(.init(arguments: ["status"]), on: agent, system: system, program: "/no-such-swiftvm-tool/agent-desktop")
-            GuestJobLine.hangUp(agent)
-        }
-        let answer = await mac.receive(GuestJobAnswer.self)
-        #expect(answer?.ok == false)
-        #expect(answer?.error?.contains("install-tools") == true)
-    }
-
-    @Test(arguments: [GuestJob.screenshot, .desktop(.init(arguments: ["status"]))])
-    func theScreenIsNobodysWhileNobodyIsLoggedIn(job: GuestJob) async {
+    @Test func theScreenIsNobodysWhileNobodyIsLoggedIn() async {
         let daemon = AgentDaemon(system: system, queue: queue)
-        let mac = send(job, to: daemon)
+        let mac = send(.tree(.init()), to: daemon)
         defer { mac.hangUp() }
         let answer = await mac.receive(GuestJobAnswer.self)
         #expect(answer?.ok == false)
@@ -1031,17 +929,17 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         // The session's half has to have reached the other one before there is anyone to hand a job to.
         queue.sync {}
 
-        let picture = send(.screenshot, to: daemon)
-        defer { picture.hangUp() }
-        #expect(await picture.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
-        #expect(await picture.frame() == JobFrame(.output, Data("a picture".utf8)))
-        #expect(await picture.frame()?.end == .success)
+        let tree = send(.tree(.init()), to: daemon)
+        defer { tree.hangUp() }
+        #expect(await tree.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        #expect(await tree.frame() == JobFrame(.output, Data(#"{"applications":[],"truncated":false}"#.utf8)))
+        #expect(await tree.frame()?.end == .success)
 
-        let click = send(.pointer(.init(action: .click, x: 40, y: 50)), to: daemon)
-        defer { click.hangUp() }
-        #expect(await click.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
-        #expect(await click.frame()?.end == .success)
-        #expect(desktop.calls == ["screenshot", "click 40,50"])
+        let typed = send(.keys(.init(text: "grüße")), to: daemon)
+        defer { typed.hangUp() }
+        #expect(await typed.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
+        #expect(await typed.frame()?.end == .success)
+        #expect(desktop.calls == ["tree", "keys grüße"])
 
         // Where its system asks to be allowed is this half's to say: it is the one that is let, or not.
         let asked = send(.permission(.init(action: .ask)), to: daemon)
@@ -1053,11 +951,11 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         #expect(desktop.calls.last == "permission ask")
 
         // What macOS hasn't allowed ends the job with what the desktop has to say about it.
-        desktop.refusal = "macOS hasn't let the guest tools record this Mac's screen yet."
-        let refused = send(.screenshot, to: daemon)
+        desktop.refusal = "macOS hasn't let the guest tools read this Mac's screen yet."
+        let refused = send(.tree(.init()), to: daemon)
         defer { refused.hangUp() }
         #expect(await refused.receive(GuestJobAnswer.self) == GuestJobAnswer(ok: true))
-        #expect(await refused.frame()?.end == .failure("macOS hasn't let the guest tools record this Mac's screen yet."))
+        #expect(await refused.frame()?.end == .failure("macOS hasn't let the guest tools read this Mac's screen yet."))
         withExtendedLifetime(session) {}
     }
 }

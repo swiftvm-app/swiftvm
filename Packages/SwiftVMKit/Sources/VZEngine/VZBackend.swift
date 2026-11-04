@@ -72,11 +72,11 @@ public final class VZBackend: NSObject, VMBackend {
         return desk
     }
 
-    public func screenshot() async throws -> Data {
-        try await ownDesk.screenshot()
+    public func frame() async throws -> ScreenFrame {
+        try await ownDesk.frame()
     }
 
-    public func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+    public func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws {
         try await ownDesk.pointer(request, guestTurnsWheel: guestTurnsWheel)
     }
 

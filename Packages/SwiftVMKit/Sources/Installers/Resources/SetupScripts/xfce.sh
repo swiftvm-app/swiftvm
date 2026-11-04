@@ -28,10 +28,10 @@ case $ID in
     *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
-# the Mac (swiftvm ui): the desktop's own accessibility, and what Python takes to ask it.
+# the Mac (swiftvm control): the desktop's own accessibility, and what Python takes to ask it.
 case $ID in
-    arch | archarm) packages="$packages at-spi2-core python-gobject" ;;
-    *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0" ;;
+    arch | archarm) packages="$packages at-spi2-core python-gobject wl-clipboard xclip" ;;
+    *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0 wl-clipboard xclip" ;;
 esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
@@ -89,7 +89,7 @@ if [ ! -e /usr/share/xsessions/xubuntu.desktop ]; then
     printf '[Seat:*]\ngreeter-session=lightdm-gtk-greeter\nuser-session=xfce\ngreeter-hide-users=false\n' > /etc/lightdm/lightdm.conf.d/90-swiftvm.conf
 fi
 # The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up:
-# whoever drives the desktop from the Mac (swiftvm desktop) finds it there after every start. The
+# whoever drives the desktop from the Mac (swiftvm control) finds it there after every start. The
 # password still unlocks a locked screen, sudo and SSH. Arch Linux lets only the autologin group in.
 if [ -n "${SWIFTVM_USER:-}" ]; then
     mkdir -p /etc/lightdm/lightdm.conf.d

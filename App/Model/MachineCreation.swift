@@ -575,16 +575,16 @@ extension AppModel {
             await setTimeZoneWithoutGuestTools(of: machine, password: password, after: error)
             return
         }
-        // Automation in the guest, the swiftvm tool's and agent-desktop's, needs macOS to let the
-        // guest tools work its desktop. Only now does the app still have the password for that.
+        // Knowing what is on the guest's screen needs macOS to let the guest tools read it. Only now
+        // does the app still have the password for that.
         do {
             try await allowAutomation(on: machine, password: password, sessionPatience: .seconds(120))
         } catch {
             guard machine.state.isActive else { return }
-            automationSetupProblems[machine.id] = "\(error.localizedDescription) `swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
+            automationSetupProblems[machine.id] = "\(error.localizedDescription) `swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
             machine.notice = VMErrorInfo(
-                title: "“\(machine.name)” doesn't let automation work its desktop yet",
-                message: "\(error.localizedDescription)\n\n`swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
+                title: "“\(machine.name)” doesn't let the guest tools read its desktop yet",
+                message: "\(error.localizedDescription)\n\n`swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
             )
         }
         // Installing the tools and discovering bundled extensions can leave persistent banners over

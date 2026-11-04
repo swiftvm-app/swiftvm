@@ -8,8 +8,8 @@
 // in frames that carry several connections at once (ChannelFrame in SwiftVM's sources): the agent's own
 // line on port 717, and a job each on port 718. As "--session", in the session of whoever is logged
 // in, it shares that person's clipboard, which belongs to their session, makes the display follow the
-// Mac's window, reports the windows on the screen for the Mac to show one by one, and talks to the
-// service over a named pipe.
+// Mac's window, reports the windows on the screen for the Mac to show one by one, says what is on the
+// screen as a tree of its parts, types text, and talks to the service over a named pipe.
 
 using System;
 using System.Collections.Generic;
@@ -27,6 +27,7 @@ using System.ServiceProcess;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
+using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
@@ -37,7 +38,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.5";
+        public const string Version = "1.6";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -116,6 +117,8 @@ namespace SwiftVM
         {
             var serializer = new JavaScriptSerializer();
             serializer.MaxJsonLength = int.MaxValue;
+            // The tree of what is on a screen goes deep.
+            serializer.RecursionLimit = 1024;
             return serializer;
         }
 
@@ -1060,7 +1063,7 @@ namespace SwiftVM
             string architecture = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
             if (architecture != null) system["architecture"] = architecture.ToLowerInvariant();
 
-            var features = new List<object> { "clipboard", "time-zone", "exec", "display-size", "seamless", "agent-desktop" };
+            var features = new List<object> { "clipboard", "time-zone", "exec", "input", "accessibility", "display-size", "seamless" };
             if (HasResizableDisplayDriver()) features.Add("resizable-display");
             if (HasDisplayDriver("viogpu3d.inf_*")) features.Add("accelerated-display");
 
@@ -1285,7 +1288,12 @@ namespace SwiftVM
         {
             var job = Json.Read(connection.ReadLine(256 * 1024));
             string type = Json.String(job, "type");
-            if (type != "exec" && type != "desktop")
+            if (type == "tree" || type == "element" || type == "keys")
+            {
+                RunInSession(job);
+                return;
+            }
+            if (type != "exec")
             {
                 Answer("The guest tools in Windows don't do “" + (type ?? "nothing") + "” jobs.");
                 return;
@@ -1293,7 +1301,7 @@ namespace SwiftVM
             Commands.Running command;
             try
             {
-                command = Commands.Start(job, type == "desktop");
+                command = Commands.Start(job);
             }
             catch (Exception error)
             {
@@ -1324,12 +1332,49 @@ namespace SwiftVM
                 watcher.IsBackground = true;
                 watcher.Start();
                 command.WaitForExit();
-                output.Join();
-                errors.Join();
+                // A program that it started, which has its pipes and goes on running, must not hold up
+                // the end of the command. Only an idle pipe counts, from here on, and never a thread that
+                // is waiting for the Mac to take a frame: the end comes after all of those.
+                lastOutput = Environment.TickCount;
+                while ((output.IsAlive || errors.IsAlive) && (framesBeingSent > 0 || Environment.TickCount - lastOutput < OutputGrace)) Thread.Sleep(10);
                 var end = new Dictionary<string, object>();
                 end["status"] = command.ExitCode;
                 SendFrame(EndFrame, Encoding.UTF8.GetBytes(Json.Write(end)));
             }
+            connection.EndWriting();
+            connection.WaitForHangUp(TimeSpan.FromSeconds(5));
+        }
+
+        /// How long after the last of its output a command that has ended is taken to have said all.
+        const int OutputGrace = 500;
+        volatile int lastOutput = Environment.TickCount;
+        int framesBeingSent;
+
+        /// Has the half in the session of whoever is logged in do a job: what is on the screen is theirs.
+        void RunInSession(Dictionary<string, object> job)
+        {
+            var link = SessionLink.Current;
+            if (link == null || !link.IsConnected)
+            {
+                Answer("Nobody is logged in at this system's screen, or the guest tools haven't started in their session yet.");
+                return;
+            }
+            // The yes comes at once: some of this takes its time.
+            Answer(null);
+            string error;
+            // Short of how long the Mac waits, or what it gave up on could still happen after that. Text
+            // is typed a key at a time, however long it is.
+            string output = link.AskForJob(job, TimeSpan.FromSeconds(Json.String(job, "type") == "keys" ? 55 : 15), out error);
+            var bytes = Encoding.UTF8.GetBytes(output ?? "");
+            for (int offset = 0; offset < bytes.Length; offset += 64 * 1024)
+            {
+                var piece = new byte[Math.Min(64 * 1024, bytes.Length - offset)];
+                Buffer.BlockCopy(bytes, offset, piece, 0, piece.Length);
+                SendFrame(Output, piece);
+            }
+            var end = new Dictionary<string, object>();
+            if (error != null) end["error"] = error; else end["status"] = 0;
+            SendFrame(EndFrame, Encoding.UTF8.GetBytes(Json.Write(end)));
             connection.EndWriting();
             connection.WaitForHangUp(TimeSpan.FromSeconds(5));
         }
@@ -1359,7 +1404,16 @@ namespace SwiftVM
                     {
                         var piece = new byte[read];
                         Buffer.BlockCopy(buffer, 0, piece, 0, read);
-                        SendFrame(kind, piece);
+                        Interlocked.Increment(ref framesBeingSent);
+                        try
+                        {
+                            SendFrame(kind, piece);
+                        }
+                        finally
+                        {
+                            lastOutput = Environment.TickCount;
+                            Interlocked.Decrement(ref framesBeingSent);
+                        }
                     }
                 }
                 catch (Exception)
@@ -1467,7 +1521,7 @@ namespace SwiftVM
 
         static readonly object LaunchGate = new object();
 
-        public static Running Start(Dictionary<string, object> job, bool desktop = false)
+        public static Running Start(Dictionary<string, object> job)
         {
             object value;
             var arguments = job.TryGetValue("arguments", out value) && value is object[]
@@ -1478,20 +1532,8 @@ namespace SwiftVM
             string directory = Json.String(job, "directory");
             var environment = job.TryGetValue("environment", out value) ? value as Dictionary<string, object> : null;
 
-            if (desktop)
-            {
-                if (arguments.Any(argument => argument.IndexOf('\0') >= 0))
-                    throw new ArgumentException("An agent-desktop argument contains a null byte.");
-                string program = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"SwiftVM\agent-desktop\agent-desktop.exe");
-                if (!File.Exists(program))
-                    throw new InvalidOperationException("agent-desktop isn't installed in this guest. Connect the guest to the internet and reinstall Guest Tools with `swiftvm install-tools <machine>`.");
-                arguments.Insert(0, program);
-                user = null;
-                directory = null;
-                environment = null;
-            }
             IntPtr token = IntPtr.Zero;
-            bool asSystem = !desktop && (string.IsNullOrEmpty(user) ? Sessions.ConsoleUser() == null : IsAdministrator(user));
+            bool asSystem = string.IsNullOrEmpty(user) ? Sessions.ConsoleUser() == null : IsAdministrator(user);
             if (!asSystem)
             {
                 string loggedIn = Sessions.ConsoleUser();
@@ -1750,6 +1792,7 @@ namespace SwiftVM
         Dictionary<string, object> displaySize;
         readonly Dictionary<long, ManualResetEvent> waiting = new Dictionary<long, ManualResetEvent>();
         readonly Dictionary<long, bool> answers = new Dictionary<long, bool>();
+        readonly Dictionary<long, Dictionary<string, object>> jobAnswers = new Dictionary<long, Dictionary<string, object>>();
         long nextRequest = 1;
 
         public SessionLink(Agent agent)
@@ -1873,6 +1916,7 @@ namespace SwiftVM
                         if (waiting.TryGetValue(id, out done))
                         {
                             answers[id] = message.ContainsKey("ok") && Equals(message["ok"], true);
+                            if (Json.String(message, "kind") == "job") jobAnswers[id] = message;
                             done.Set();
                         }
                     }
@@ -1956,6 +2000,46 @@ namespace SwiftVM
             message["width"] = width;
             message["height"] = height;
             return Ask(message, TimeSpan.FromSeconds(5));
+        }
+
+        /// Has the session half do a job from the Mac, and returns what it put out, or says what went wrong.
+        public string AskForJob(Dictionary<string, object> job, TimeSpan patience, out string error)
+        {
+            var message = new Dictionary<string, object>();
+            message["type"] = "job";
+            message["job"] = job;
+            long id;
+            Dictionary<string, object> answer = null;
+            using (var done = new ManualResetEvent(false))
+            {
+                lock (gate)
+                {
+                    id = nextRequest++;
+                    waiting[id] = done;
+                }
+                try
+                {
+                    message["id"] = id;
+                    if (Send(message)) done.WaitOne(patience);
+                    lock (gate) jobAnswers.TryGetValue(id, out answer);
+                }
+                finally
+                {
+                    lock (gate)
+                    {
+                        waiting.Remove(id);
+                        answers.Remove(id);
+                        jobAnswers.Remove(id);
+                    }
+                }
+            }
+            if (answer == null)
+            {
+                error = "The desktop didn't answer in " + (int)patience.TotalSeconds + " seconds.";
+                return null;
+            }
+            error = Json.String(answer, "error");
+            return Json.String(answer, "output");
         }
 
         bool Ask(Dictionary<string, object> message, TimeSpan patience)
@@ -2103,6 +2187,9 @@ namespace SwiftVM
                                         (int)(Json.Number(message, "x") ?? 0), (int)(Json.Number(message, "y") ?? 0),
                                         (int)(Json.Number(message, "width") ?? 0), (int)(Json.Number(message, "height") ?? 0));
                                     break;
+                                case "job":
+                                    ScreenJobs.Start(Json.Number(message, "id") ?? 0, message.ContainsKey("job") ? message["job"] as Dictionary<string, object> : null);
+                                    break;
                                 case "resize-display":
                                     var resized = new Dictionary<string, object>();
                                     resized["type"] = "result";
@@ -2203,6 +2290,373 @@ namespace SwiftVM
                     }
                 }
                 base.WndProc(ref message);
+            }
+        }
+    }
+
+    /// What the Mac asks of the session's desktop: what is on it as a tree of its parts, as Windows'
+    /// accessibility tells it, doing something to one of those parts, and typing. Each on a thread of its
+    /// own: a program that doesn't answer must not hold up the clipboard.
+    static class ScreenJobs
+    {
+        const int NodeLimit = 3000, ChildLimit = 500, DepthLimit = 32, TextLimit = 200;
+        /// How long a window gets to say what is in it, the one in front and any other, and all of them.
+        const int FrontPatience = 8000, WindowPatience = 1500, TreePatience = 12000;
+        /// What the last tree called each part. A part is acted on by what it was called there. No name is
+        /// used twice, so that one from an older tree can only be gone, and never another part.
+        static Dictionary<string, AutomationElement> parts = new Dictionary<string, AutomationElement>();
+        static long nextPart;
+        static readonly object gate = new object();
+
+        public static void Start(long id, Dictionary<string, object> job)
+        {
+            var thread = new Thread(delegate()
+            {
+                var answer = new Dictionary<string, object>();
+                answer["type"] = "result";
+                answer["kind"] = "job";
+                answer["id"] = id;
+                try
+                {
+                    string kind = job == null ? null : Json.String(job, "type");
+                    if (kind == "tree") answer["output"] = Tree(job);
+                    else if (kind == "element") answer["output"] = Act(job);
+                    else if (kind == "keys") Type(Json.String(job, "text") ?? "");
+                    else throw new InvalidOperationException("That isn't a job for this session.");
+                }
+                catch (Exception error)
+                {
+                    answer["error"] = error.Message;
+                }
+                SessionHalf.Send(answer);
+            });
+            thread.IsBackground = true;
+            // What reads other programs' windows wants a thread that isn't tied to windows of its own.
+            thread.SetApartmentState(ApartmentState.MTA);
+            thread.Start();
+        }
+
+        static CacheRequest Request(bool withWhatIsInIt)
+        {
+            var request = new CacheRequest();
+            request.AutomationElementMode = AutomationElementMode.Full;
+            request.TreeFilter = Automation.ControlViewCondition;
+            request.TreeScope = withWhatIsInIt ? TreeScope.Element | TreeScope.Descendants : TreeScope.Element;
+            foreach (var property in new AutomationProperty[]
+            {
+                AutomationElement.NameProperty, AutomationElement.ControlTypeProperty, AutomationElement.BoundingRectangleProperty,
+                AutomationElement.IsEnabledProperty, AutomationElement.HasKeyboardFocusProperty, AutomationElement.IsOffscreenProperty,
+                AutomationElement.HelpTextProperty, AutomationElement.IsInvokePatternAvailableProperty,
+                AutomationElement.IsValuePatternAvailableProperty, ValuePattern.ValueProperty, TogglePattern.ToggleStateProperty,
+                SelectionItemPattern.IsSelectedProperty, ExpandCollapsePattern.ExpandCollapseStateProperty,
+            })
+            {
+                request.Add(property);
+            }
+            return request;
+        }
+
+        class Reading
+        {
+            public int Count;
+            public bool Truncated;
+            public readonly Dictionary<string, AutomationElement> Parts = new Dictionary<string, AutomationElement>();
+        }
+
+        /// What is on the screen, in the same form as the agents of the other systems give it. The window
+        /// in front comes first.
+        static string Tree(Dictionary<string, object> job)
+        {
+            long depth = Json.Number(job, "depth") ?? DepthLimit;
+            string only = Json.String(job, "application");
+            bool frontOnly = Json.Flag(job, "front");
+            var clock = Stopwatch.StartNew();
+            var foreground = Native.GetForegroundWindow();
+            if (IsScreenElsewhere(foreground))
+            {
+                // What the session has is behind what is on the screen, and it would describe that for
+                // all the world as if it were there.
+                throw new InvalidOperationException("The screen is locked, or Windows is asking something on its secure desktop.");
+            }
+            var reading = new Reading();
+            var applications = new List<Dictionary<string, object>>();
+            var byName = new Dictionary<string, Dictionary<string, object>>();
+
+            // What a dialog belongs to tells the dialog a second time, among all it has itself.
+            var owner = foreground == IntPtr.Zero ? IntPtr.Zero : Native.GetWindow(foreground, 4);
+            var windows = new List<IntPtr>();
+            // From the front to the back. Those that aren't shown, as Windows hides a window it keeps
+            // ready, have nothing to say.
+            for (var window = Native.GetTopWindow(IntPtr.Zero); window != IntPtr.Zero; window = Native.GetWindow(window, 2))
+            {
+                if (window == owner || !Native.IsWindowVisible(window) || Native.IsIconic(window)) continue;
+                int cloaked;
+                if (Native.DwmGetWindowAttribute(window, 14, out cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+                Native.Rect rect;
+                if (!Native.GetWindowRect(window, out rect) || rect.Right - rect.Left < 4 || rect.Bottom - rect.Top < 4) continue;
+                if (window == foreground) windows.Insert(0, window); else windows.Add(window);
+            }
+            foreach (var window in windows)
+            {
+                string name = ApplicationName(window);
+                if (name == null) continue;
+                if (only != null && name.IndexOf(only, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                // Most of a desktop isn't what anyone looks at, and asking takes a moment for each part.
+                bool isFront = window == foreground;
+                bool withWhatIsInIt = isFront || !frontOnly;
+                int patience = Math.Min(isFront ? FrontPatience : WindowPatience, TreePatience - (int)clock.ElapsedMilliseconds);
+                var part = patience > 0 ? ReadWindow(window, reading, (int)Math.Min(depth, DepthLimit), withWhatIsInIt, patience) : null;
+                if (part == null)
+                {
+                    // A window is there even if what is in it can't be had. Saying nothing of it would make
+                    // another window the one in front.
+                    part = DescribeShallowly(window);
+                    if (withWhatIsInIt) reading.Truncated = true;
+                    if (part == null) continue;
+                }
+                Dictionary<string, object> application;
+                if (!byName.TryGetValue(name, out application))
+                {
+                    application = new Dictionary<string, object>();
+                    application["id"] = "a" + byName.Count;
+                    application["role"] = "application";
+                    application["name"] = name;
+                    application["children"] = new List<Dictionary<string, object>>();
+                    byName[name] = application;
+                    applications.Add(application);
+                }
+                if (window == foreground) application["states"] = new[] { "active" };
+                ((List<Dictionary<string, object>>)application["children"]).Add(part);
+            }
+            lock (gate) parts = reading.Parts;
+            var tree = new Dictionary<string, object>();
+            tree["applications"] = applications;
+            tree["truncated"] = reading.Truncated;
+            return Json.Write(tree);
+        }
+
+        /// Whether what is on the screen isn't this session's desktop: its lock screen, its sign-in, or
+        /// the question an elevation asks.
+        static bool IsScreenElsewhere(IntPtr foreground)
+        {
+            var input = Native.OpenInputDesktop(0, false, 0x0100);
+            if (input == IntPtr.Zero) return true;
+            Native.CloseDesktop(input);
+            if (foreground == IntPtr.Zero) return true;
+            uint process;
+            Native.GetWindowThreadProcessId(foreground, out process);
+            try
+            {
+                using (var running = System.Diagnostics.Process.GetProcessById((int)process))
+                {
+                    string name = running.ProcessName;
+                    return string.Equals(name, "LockApp", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(name, "LogonUI", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(name, "consent", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// What a window's application is called: its program, but for what Windows itself draws.
+        static string ApplicationName(IntPtr window)
+        {
+            var kind = new StringBuilder(64);
+            Native.GetClassName(window, kind, kind.Capacity);
+            switch (kind.ToString())
+            {
+                case "Shell_TrayWnd":
+                case "Shell_SecondaryTrayWnd":
+                    return "Taskbar";
+                case "Progman":
+                case "WorkerW":
+                    return "Desktop";
+            }
+            uint process;
+            Native.GetWindowThreadProcessId(window, out process);
+            if (process == Native.GetCurrentProcessId()) return null;
+            try
+            {
+                using (var running = System.Diagnostics.Process.GetProcessById((int)process)) return running.ProcessName;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// The tree of one window. On a thread of its own, as a program that doesn't answer holds up
+        /// whoever asks it for as long as it likes.
+        static Dictionary<string, object> ReadWindow(IntPtr window, Reading reading, int depth, bool withWhatIsInIt, int patience)
+        {
+            AutomationElement cached = null;
+            var thread = new Thread(delegate()
+            {
+                try
+                {
+                    using (Request(withWhatIsInIt).Activate()) cached = AutomationElement.FromHandle(window);
+                }
+                catch (Exception)
+                {
+                }
+            });
+            thread.IsBackground = true;
+            thread.SetApartmentState(ApartmentState.MTA);
+            thread.Start();
+            if (!thread.Join(patience) || cached == null) return null;
+            return Describe(cached, reading, withWhatIsInIt ? depth : 0);
+        }
+
+        /// What Windows itself knows of a window whose program doesn't answer.
+        static Dictionary<string, object> DescribeShallowly(IntPtr window)
+        {
+            Native.Rect rect;
+            if (!Native.GetWindowRect(window, out rect)) return null;
+            var part = new Dictionary<string, object>();
+            part["id"] = "w" + window.ToInt64();
+            part["role"] = "Window";
+            var title = new StringBuilder(256);
+            Native.GetWindowText(window, title, title.Capacity);
+            if (title.Length > 0) part["name"] = title.ToString();
+            part["bounds"] = new[] { rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top };
+            return part;
+        }
+
+        static Dictionary<string, object> Describe(AutomationElement element, Reading reading, int depth)
+        {
+            if (reading.Count >= NodeLimit)
+            {
+                reading.Truncated = true;
+                return null;
+            }
+            try
+            {
+                if (Equals(element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty), true)) return null;
+                reading.Count++;
+                var part = new Dictionary<string, object>();
+                string id = "p" + Interlocked.Increment(ref nextPart);
+                part["id"] = id;
+                reading.Parts[id] = element;
+                var type = element.GetCachedPropertyValue(AutomationElement.ControlTypeProperty) as ControlType;
+                string role = type == null ? "Custom" : type.ProgrammaticName;
+                part["role"] = role.Substring(role.LastIndexOf('.') + 1);
+                string name = Shown(element.GetCachedPropertyValue(AutomationElement.NameProperty) as string);
+                if (name != null) part["name"] = name;
+                string help = Shown(element.GetCachedPropertyValue(AutomationElement.HelpTextProperty) as string);
+                if (help != null) part["description"] = help;
+                string value = Shown(element.GetCachedPropertyValue(ValuePattern.ValueProperty, true) as string);
+                if (value != null) part["value"] = value;
+
+                var states = new List<string>();
+                if (Equals(element.GetCachedPropertyValue(AutomationElement.IsEnabledProperty), false)) states.Add("disabled");
+                if (Equals(element.GetCachedPropertyValue(AutomationElement.HasKeyboardFocusProperty), true)) states.Add("focused");
+                if (Equals(element.GetCachedPropertyValue(SelectionItemPattern.IsSelectedProperty, true), true)) states.Add("selected");
+                if (Equals(element.GetCachedPropertyValue(TogglePattern.ToggleStateProperty, true), ToggleState.On)) states.Add("checked");
+                if (Equals(element.GetCachedPropertyValue(ExpandCollapsePattern.ExpandCollapseStateProperty, true), ExpandCollapseState.Expanded)) states.Add("expanded");
+                if (states.Count > 0) part["states"] = states;
+                if (Equals(element.GetCachedPropertyValue(AutomationElement.IsInvokePatternAvailableProperty), true)) part["actions"] = new[] { "press" };
+
+                var bounds = element.GetCachedPropertyValue(AutomationElement.BoundingRectangleProperty);
+                if (bounds is System.Windows.Rect)
+                {
+                    var rect = (System.Windows.Rect)bounds;
+                    if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                    {
+                        part["bounds"] = new[] { (int)Math.Round(rect.X), (int)Math.Round(rect.Y), (int)Math.Round(rect.Width), (int)Math.Round(rect.Height) };
+                    }
+                }
+                if (depth > 0)
+                {
+                    var children = new List<Dictionary<string, object>>();
+                    int count = 0;
+                    foreach (AutomationElement child in element.CachedChildren)
+                    {
+                        if (++count > ChildLimit)
+                        {
+                            reading.Truncated = true;
+                            break;
+                        }
+                        var described = Describe(child, reading, depth - 1);
+                        if (described != null) children.Add(described);
+                    }
+                    if (children.Count > 0) part["children"] = children;
+                }
+                return part;
+            }
+            catch (Exception)
+            {
+                // A part that went away while it was read.
+                return null;
+            }
+        }
+
+        static string Shown(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            return text.Length > TextLimit ? text.Substring(0, TextLimit) : text;
+        }
+
+        /// Does something to one part of the last tree, and says to which.
+        static string Act(Dictionary<string, object> job)
+        {
+            string id = Json.String(job, "element") ?? "";
+            AutomationElement element;
+            lock (gate)
+            {
+                if (!parts.TryGetValue(id, out element)) throw new InvalidOperationException("Nothing on the screen has that id any more. Look again.");
+            }
+            object pattern;
+            switch (Json.String(job, "action"))
+            {
+                case "press":
+                    if (element.TryGetCurrentPattern(InvokePattern.Pattern, out pattern)) ((InvokePattern)pattern).Invoke();
+                    else if (element.TryGetCurrentPattern(TogglePattern.Pattern, out pattern)) ((TogglePattern)pattern).Toggle();
+                    else if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) ((SelectionItemPattern)pattern).Select();
+                    else if (element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pattern))
+                    {
+                        var collapse = (ExpandCollapsePattern)pattern;
+                        if (collapse.Current.ExpandCollapseState == ExpandCollapseState.Expanded) collapse.Collapse(); else collapse.Expand();
+                    }
+                    else throw new InvalidOperationException("It has nothing to press.");
+                    break;
+                case "set":
+                    if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern)) throw new InvalidOperationException("It doesn't take text this way.");
+                    ((ValuePattern)pattern).SetValue(Json.String(job, "text") ?? "");
+                    break;
+                case "focus":
+                    element.SetFocus();
+                    break;
+                default:
+                    throw new InvalidOperationException("A part of the screen can be pressed, set or focused.");
+            }
+            var acted = new Dictionary<string, object>();
+            acted["id"] = id;
+            return Json.Write(acted);
+        }
+
+        /// Types text as it is, whichever keyboard this Windows thinks it has. A key at a time, with a
+        /// moment for each: of what comes in one go, programs take the last character for all of them, and
+        /// they lose what comes quicker than they take it in.
+        static void Type(string text)
+        {
+            var size = Marshal.SizeOf(typeof(Native.Input));
+            foreach (char character in text)
+            {
+                for (int phase = 0; phase < 2; phase++)
+                {
+                    var inputs = new Native.Input[1];
+                    inputs[0].Type = 1;
+                    inputs[0].Keyboard.Scan = character;
+                    inputs[0].Keyboard.Flags = 0x0004u | (phase == 1 ? 0x0002u : 0u);
+                    if (Native.SendInput(1, inputs, size) != 1)
+                    {
+                        throw new InvalidOperationException("Windows didn't take the text: what is in front may run as administrator.");
+                    }
+                    Thread.Sleep(phase == 0 ? 1 : 2);
+                }
             }
         }
     }
@@ -3561,6 +4015,46 @@ namespace SwiftVM
 
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool SetSystemTime(ref SystemTime time);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct KeyboardInput
+        {
+            public ushort Key;
+            public ushort Scan;
+            public uint Flags;
+            public uint Time;
+            public IntPtr Extra;
+        }
+
+        /// An input event: what is a mouse's is larger than what is a keyboard's, and sets the size of all.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Input
+        {
+            public uint Type;
+            public KeyboardInput Keyboard;
+            long padding;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern uint SendInput(uint count, Input[] inputs, int size);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+
+        [DllImport("user32.dll")]
+        public static extern bool CloseDesktop(IntPtr desktop);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetTopWindow(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr window, uint relation);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId")]
+        public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentProcessId();
 
         [DllImport("kernel32.dll")]
         public static extern IntPtr GetCurrentProcess();

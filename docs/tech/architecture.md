@@ -11,9 +11,9 @@ engines.
 | SwiftVM | Your Mac | Manages machines, windows, storage, and networking |
 | `swiftvm` | Your Mac | Sends commands to the running app |
 | `qemu-system-aarch64` | Your Mac | Runs Windows guests, and Linux guests with graphics acceleration |
-| `swiftvm-agent` | macOS guests | Power, clock, clipboard, and automation |
-| `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, and automation |
-| `swiftvm-agent.exe` | Windows guests | Power, clock, clipboard, display resizing, window lists for Seamless Mode, setup progress, and commands |
+| `swiftvm-agent` | macOS guests | Power, clock, clipboard, and what is on the screen |
+| `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, commands, and what is on the screen |
+| `swiftvm-agent.exe` | Windows guests | Power, clock, clipboard, display resizing, window lists for Seamless Mode, setup progress, commands, and what is on the screen |
 
 The app and its virtualization engines run as the current Mac user. The guest
 tools use system services inside each guest.
@@ -35,6 +35,7 @@ in `Packages/SwiftVMKit`.
 | `SSHIntegration` | SSH names, keys, and generated configuration |
 | `VMControl` | Communication between the app and `swiftvm` |
 | `GuestChannel` | Messages and streaming jobs between the app and guest tools |
+| `AgentControl` | What `swiftvm control` and `swiftvm mcp` ask of a machine's desktop |
 | `GuestAgentMac` | macOS guest tools |
 
 `VMCore` defines the backend interface. `BackendRouter` selects `VZEngine` or
@@ -152,14 +153,25 @@ The app checks **Allow Automation** before accepting a job. Commands and file
 copies use the guest tools, with a separate stream for each job's input,
 output, and result. File copies use `tar` at both ends.
 
-Screenshots and input use different paths by guest:
+## Controlling a desktop
 
-| Feature | Linux | macOS | Windows |
-| --- | --- | --- | --- |
-| Screenshot and input | Guest tools read the display and create input devices | App uses the virtual machine's display and input view | App uses QEMU's display connection |
-| Accessibility tree | Guest tools use AT-SPI in the desktop session | Guest tools use the accessibility API after permission is granted | Unavailable |
+`swiftvm control` and `swiftvm mcp` send the app a list of steps, which
+`MachineController` in the `AgentControl` module carries out. Steps run without a
+process or a socket between them, and the outcome comes back as one document.
 
-`swiftvm allow-accessibility` grants the macOS guest tools permission through
+| Part | Where it happens |
+| --- | --- |
+| The screen, the mouse, the keyboard | In the app, on every guest: the virtual machine's display and input view on Apple's backend, and QEMU's display connection on QEMU. Nothing in the guest is asked |
+| Reading text off the pixels | In the app, with Apple's Vision framework |
+| What is on the screen by its parts | Guest tools, in the desktop session: accessibility on macOS, AT-SPI on Linux, UI Automation on Windows. All give the same tree, which the app makes into a list |
+| Text the keyboard has no keys for | Guest tools |
+
+The app keeps each machine's numbers between calls, by what an element is and what
+it says, so they stay from look to look. A number from an earlier look is looked up
+again before it is used if the screen may have changed. The AT-SPI helper on Linux
+stays running with its libraries loaded, and answers each job from a fork of itself.
+
+`swiftvm control <machine> allow` grants the macOS guest tools permission through
 System Settings in the guest, using the supplied administrator password.
 See [Automation](../features/automation.md) for commands and requirements.
 

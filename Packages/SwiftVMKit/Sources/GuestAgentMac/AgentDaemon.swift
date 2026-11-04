@@ -193,8 +193,8 @@ final class AgentDaemon: @unchecked Sendable {
         send(.hello(AgentHello(
             agent: version, system: system.describe(), hostName: system.hostName(),
             features: [
-                GuestFeature.clipboard, GuestFeature.timeZone, GuestFeature.exec, GuestFeature.screen, GuestFeature.input,
-                GuestFeature.accessibility, GuestFeature.permission, GuestFeature.screenRecordingPermission, GuestFeature.desktop,
+                GuestFeature.clipboard, GuestFeature.timeZone, GuestFeature.exec, GuestFeature.input,
+                GuestFeature.accessibility, GuestFeature.permission,
             ]
         )))
         reportAddresses(always: true)

@@ -56,7 +56,19 @@ import Testing
     }
 
     @Test func theConsoleSocketAndJobRequestsOpenAStream() {
-        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console, .vsock, .job])
+        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console, .vsock, .job, .control])
+    }
+
+    @Test func aToolThatHasGoneIsNoticed() throws {
+        var ends: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0)
+        defer { close(ends[0]) }
+        let told = DispatchSemaphore(value: 0)
+        let watch = ControlHangUp.watch(ends[0]) { told.signal() }
+        defer { watch.cancel() }
+        #expect(told.wait(timeout: .now() + .milliseconds(100)) == .timedOut)
+        close(ends[1])
+        #expect(told.wait(timeout: .now() + 5) == .success)
     }
 
     @Test func aJobTravelsInItsRequest() throws {
@@ -65,7 +77,7 @@ import Testing
         let data = try JSONEncoder().encode(request)
         #expect(String(decoding: data, as: UTF8.self).contains(#""command":"job""#))
         #expect(try JSONDecoder().decode(ControlRequest.self, from: data) == request)
-        let click = ControlRequest(command: .job, machine: "web", job: .pointer(.init(action: .click, x: 3, y: 4, count: 2)))
+        let click = ControlRequest(command: .job, machine: "web", job: .keys(.init(text: "x")))
         #expect(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(click)) == click)
 
         let wait = ControlRequest(command: .wait, machine: "web", timeout: 30)

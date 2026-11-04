@@ -1,7 +1,8 @@
 import Foundation
 
-/// Something the agent does in the guest for whoever drives it from the Mac: run a command, show what is
-/// on the screen, use the mouse and the keyboard, or say what is on the screen as a tree of its parts.
+/// Something the agent does in the guest for whoever drives it from the Mac: run a command, type text
+/// that the machine's own keyboard has no keys for, or say what is on the screen as a tree of its parts.
+/// The screen, the mouse and the keyboard themselves are the machine's, and the Mac has those.
 ///
 /// A job has a connection of its own, on ``GuestProtocol/jobPort``. Unlike the line the app keeps open to
 /// the agent, it carries megabytes and lasts for as long as a command runs, and many are open at once.
@@ -15,11 +16,7 @@ import Foundation
 public enum GuestJob: Sendable, Hashable {
     /// Run a command. Its input and output travel as frames, and its exit status ends the job.
     case exec(Exec)
-    /// Run agent-desktop in the guest's graphical session. Output and status are passed through.
-    case desktop(Desktop)
-    /// What is on the screen, as a PNG.
-    case screenshot
-    case pointer(Pointer)
+    /// Type text as it is, whatever the machine's keyboard has keys for.
     case keys(Keys)
     /// What is on the screen as a tree of its parts, in JSON, as the system's accessibility tells it.
     case tree(Tree)
@@ -28,15 +25,6 @@ public enum GuestJob: Sendable, Hashable {
     case permission(Permission)
     /// A kind of job this build doesn't know.
     case unknown(type: String)
-
-    public struct Desktop: Codable, Sendable, Hashable {
-        /// Arguments only: the guest chooses its installed executable, with no shell or account override.
-        public var arguments: [String]
-
-        public init(arguments: [String]) {
-            self.arguments = arguments
-        }
-    }
 
     public struct Exec: Codable, Sendable, Hashable {
         /// The command and its arguments. No shell reads them.
@@ -53,46 +41,6 @@ public enum GuestJob: Sendable, Hashable {
             self.user = user
             self.directory = directory
             self.environment = environment
-        }
-    }
-
-    /// Something done with the mouse. Places are in the pixels of a screenshot, from its top left corner.
-    public struct Pointer: Codable, Sendable, Hashable {
-        public enum Action: String, Codable, Sendable, Hashable, CaseIterable {
-            case move, click, drag, scroll
-        }
-
-        public enum Button: String, Codable, Sendable, Hashable, CaseIterable {
-            case left, right, middle
-        }
-
-        public var action: Action
-        public var x: Int
-        public var y: Int
-        /// The button to click or drag with. Without one, the left.
-        public var button: Button?
-        /// For a click: how many, two for a double click.
-        public var count: Int?
-        /// For a drag: where it ends.
-        public var toX: Int?
-        public var toY: Int?
-        /// For scrolling: notches of the wheel. Positive is down, and to the right.
-        public var deltaX: Int?
-        public var deltaY: Int?
-
-        public init(
-            action: Action, x: Int, y: Int, button: Button? = nil, count: Int? = nil, toX: Int? = nil, toY: Int? = nil,
-            deltaX: Int? = nil, deltaY: Int? = nil
-        ) {
-            self.action = action
-            self.x = x
-            self.y = y
-            self.button = button
-            self.count = count
-            self.toX = toX
-            self.toY = toY
-            self.deltaX = deltaX
-            self.deltaY = deltaY
         }
     }
 
@@ -118,11 +66,15 @@ public enum GuestJob: Sendable, Hashable {
         /// Leave nothing out. Without this, the boxes that only hold other parts are left out, and of
         /// a part's actions those that every part of its window has.
         public var all: Bool?
+        /// Only the application in front need be told in full: the others' names are enough. For agents
+        /// to whom reading a whole desktop takes long.
+        public var front: Bool?
 
-        public init(application: String? = nil, depth: Int? = nil, all: Bool? = nil) {
+        public init(application: String? = nil, depth: Int? = nil, all: Bool? = nil, front: Bool? = nil) {
             self.application = application
             self.depth = depth
             self.all = all
+            self.front = front
         }
     }
 
@@ -165,40 +117,23 @@ public enum GuestJob: Sendable, Hashable {
             case finish
         }
 
-        /// What the system is to let the agent do.
-        public enum Kind: String, Codable, Sendable, Hashable, CaseIterable {
-            /// Read the screen as a tree, act on its parts, and use the mouse and the keyboard.
-            case accessibility
-            /// Record what is on the screen, for agent-desktop's screenshots.
-            case screenRecording = "screen-recording"
-        }
-
         public var action: Action
-        /// `nil` is ``Kind/accessibility``, the only kind there was before agents offered
-        /// ``GuestFeature/screenRecordingPermission``. Those ignore it.
-        public var kind: Kind?
 
-        public init(action: Action, kind: Kind? = nil) {
+        public init(action: Action) {
             self.action = action
-            self.kind = kind
         }
     }
 
     /// Whether this job streams input to a process, including an empty frame for end of input.
     public var takesInput: Bool {
-        switch self {
-        case .exec, .desktop: true
-        default: false
-        }
+        if case .exec = self { true } else { false }
     }
 
     /// The ``GuestFeature`` an agent has to offer to be given this job.
     public var feature: String? {
         switch self {
         case .exec: GuestFeature.exec
-        case .desktop: GuestFeature.desktop
-        case .screenshot: GuestFeature.screen
-        case .pointer, .keys: GuestFeature.input
+        case .keys: GuestFeature.input
         case .tree, .element: GuestFeature.accessibility
         case .permission: GuestFeature.permission
         case .unknown: nil
@@ -206,11 +141,51 @@ public enum GuestJob: Sendable, Hashable {
     }
 }
 
+/// Something done with the mouse. Places are in the pixels of a screenshot, from its top left corner.
+public struct GuestPointer: Codable, Sendable, Hashable {
+    public enum Action: String, Codable, Sendable, Hashable, CaseIterable {
+        case move, click, drag, scroll
+    }
+
+    public enum Button: String, Codable, Sendable, Hashable, CaseIterable {
+        case left, right, middle
+    }
+
+    public var action: Action
+    public var x: Int
+    public var y: Int
+    /// The button to click or drag with. Without one, the left.
+    public var button: Button?
+    /// For a click: how many, two for a double click.
+    public var count: Int?
+    /// For a drag: where it ends.
+    public var toX: Int?
+    public var toY: Int?
+    /// For scrolling: notches of the wheel. Positive is down, and to the right.
+    public var deltaX: Int?
+    public var deltaY: Int?
+
+    public init(
+        action: Action, x: Int, y: Int, button: Button? = nil, count: Int? = nil, toX: Int? = nil, toY: Int? = nil,
+        deltaX: Int? = nil, deltaY: Int? = nil
+    ) {
+        self.action = action
+        self.x = x
+        self.y = y
+        self.button = button
+        self.count = count
+        self.toX = toX
+        self.toY = toY
+        self.deltaX = deltaX
+        self.deltaY = deltaY
+    }
+}
+
+
 /// What an agent puts out for a ``GuestJob/permission(_:)``, in JSON: how things stand, and where on
-/// the screen the answer is given. Places are in the pixels of a screenshot: left, top, width, height.
+/// the screen the answer is given. Places are in the display's pixels: left, top, width, height.
 public struct GuestPermissionState: Codable, Sendable, Hashable {
-    /// The system lets the agent do what was asked about: read the screen as a tree and act on its
-    /// parts, or record the screen.
+    /// The system lets the agent read the screen as a tree and act on its parts.
     public var isAllowed: Bool
     /// How many pixels of a screenshot make one of the points the system lays its windows out in.
     public var scale: Double
@@ -218,16 +193,12 @@ public struct GuestPermissionState: Codable, Sendable, Hashable {
     public var settings: [Int]?
     /// What the settings have put in front of their window: the question for the password.
     public var sheet: [Int]?
-    /// A question the system asks about another program, such as agent-desktop's for recording the
-    /// screen without the window picker. Said by agents that offer ``GuestFeature/screenRecordingPermission``.
-    public var alert: [Int]?
 
-    public init(isAllowed: Bool, scale: Double = 1, settings: [Int]? = nil, sheet: [Int]? = nil, alert: [Int]? = nil) {
+    public init(isAllowed: Bool, scale: Double = 1, settings: [Int]? = nil, sheet: [Int]? = nil) {
         self.isAllowed = isAllowed
         self.scale = scale
         self.settings = settings
         self.sheet = sheet
-        self.alert = alert
     }
 }
 
@@ -289,9 +260,6 @@ extension GuestJob: Codable {
         let type = try decoder.container(keyedBy: TypeKey.self).decode(String.self, forKey: .type)
         switch type {
         case "exec": self = .exec(try Exec(from: decoder))
-        case "desktop": self = .desktop(try Desktop(from: decoder))
-        case "screenshot": self = .screenshot
-        case "pointer": self = .pointer(try Pointer(from: decoder))
         case "keys": self = .keys(try Keys(from: decoder))
         case "tree": self = .tree(try Tree(from: decoder))
         case "element": self = .element(try Element(from: decoder))
@@ -306,14 +274,6 @@ extension GuestJob: Codable {
         case .exec(let exec):
             try container.encode("exec", forKey: .type)
             try exec.encode(to: encoder)
-        case .desktop(let desktop):
-            try container.encode("desktop", forKey: .type)
-            try desktop.encode(to: encoder)
-        case .screenshot:
-            try container.encode("screenshot", forKey: .type)
-        case .pointer(let pointer):
-            try container.encode("pointer", forKey: .type)
-            try pointer.encode(to: encoder)
         case .keys(let keys):
             try container.encode("keys", forKey: .type)
             try keys.encode(to: encoder)
@@ -342,7 +302,7 @@ public struct JobFrame: Sendable, Hashable {
     public enum Kind: UInt8, Sendable, Hashable {
         /// From the Mac: bytes for the command's input. An empty one says there is no more to come.
         case input = 0
-        /// From the agent: what the command printed, or what the job is for: the picture, the tree.
+        /// From the agent: what the command printed, or what the job is for: the tree.
         case output = 1
         /// From the agent: what the command printed as errors.
         case errorOutput = 2

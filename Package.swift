@@ -32,6 +32,7 @@ let package = Package(
                 .product(name: "Installers", package: "SwiftVMKit"),
                 .product(name: "VMControl", package: "SwiftVMKit"),
                 .product(name: "GuestChannel", package: "SwiftVMKit"),
+                .product(name: "AgentControl", package: "SwiftVMKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "App",
@@ -51,6 +52,7 @@ let package = Package(
                 "SwiftVM",
                 .product(name: "VMCore", package: "SwiftVMKit"),
                 .product(name: "VMControl", package: "SwiftVMKit"),
+                .product(name: "AgentControl", package: "SwiftVMKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),

@@ -45,7 +45,6 @@ public enum MacGuestAgent {
         let script = try LinuxGuestAgent.resource("macos-install.sh")
         let encoded = binary.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed])
         return script.replacingOccurrences(of: "@@swiftvm-agent@@", with: encoded)
-            .replacingOccurrences(of: "@@desktop-install.sh@@", with: try LinuxGuestAgent.resource("desktop-install.sh"))
     }
 
     // MARK: The guest tools disc

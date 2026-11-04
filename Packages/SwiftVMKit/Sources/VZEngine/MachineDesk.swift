@@ -1,8 +1,6 @@
 import AppKit
 import GuestChannel
-import ImageIO
 import IOSurface
-import UniformTypeIdentifiers
 import VMCore
 import Virtualization
 
@@ -27,9 +25,9 @@ final class MachineDesk {
     private var hasSettled = false
 
     /// How long the guest gets to take in one event before the next.
-    private static let pause: Duration = .milliseconds(12)
+    private static let pause: Duration = .milliseconds(4)
     /// The same between what a mouse does, which a guest reads more into: a click is two of them.
-    private static let mousePause: Duration = .milliseconds(60)
+    private static let mousePause: Duration = .milliseconds(25)
     /// How far one notch of the wheel scrolls, in the guest's points.
     private static let pointsPerNotch = 40
 
@@ -55,19 +53,9 @@ final class MachineDesk {
     // MARK: The display
 
     /// One picture of the display, copied out of the surface that held it.
-    struct Frame: Sendable {
-        var width: Int
-        var height: Int
-        var bytesPerRow: Int
-        /// Four bytes a pixel: blue, green, red, and one that says nothing.
-        var pixels: Data
-    }
-
-    func screenshot() async throws -> Data {
-        guard let surface = await surface(patience: .seconds(3)) else { throw MachineDeskError.nothingShown }
-        let frame = try Self.copy(surface)
-        // Packing it takes a moment that the app's windows shouldn't have to wait for.
-        return try await Task.detached(priority: .userInitiated) { try Self.png(of: frame) }.value
+    func frame() async throws -> ScreenFrame {
+        guard let surface = await surface(patience: hasSettled ? .milliseconds(300) : .seconds(3)) else { throw MachineDeskError.nothingShown }
+        return try Self.copy(surface)
     }
 
     /// The surface the view shows the display with, once it has one. A view that was only just made
@@ -108,7 +96,7 @@ final class MachineDesk {
     /// `BGRA`, the one way the framework lays a display's pixels out.
     private static let pixelFormat: OSType = 0x4247_5241
 
-    private static func copy(_ surface: IOSurface) throws -> Frame {
+    private static func copy(_ surface: IOSurface) throws -> ScreenFrame {
         guard surface.pixelFormat == pixelFormat, surface.width > 0, surface.height > 0 else { throw MachineDeskError.nothingShown }
         // The guest draws into it while it is read. A picture it changed meanwhile is read again.
         var pixels = Data()
@@ -119,23 +107,7 @@ final class MachineDesk {
             surface.unlock(options: .readOnly, seed: nil)
             if surface.seed == seed { break }
         }
-        return Frame(width: surface.width, height: surface.height, bytesPerRow: surface.bytesPerRow, pixels: pixels)
-    }
-
-    nonisolated static func png(of frame: Frame) throws -> Data {
-        let layout = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        let data = NSMutableData()
-        guard let provider = CGDataProvider(data: frame.pixels as CFData),
-              let image = CGImage(
-                  width: frame.width, height: frame.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: frame.bytesPerRow,
-                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(), bitmapInfo: layout, provider: provider,
-                  decode: nil, shouldInterpolate: false, intent: .defaultIntent
-              ),
-              let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil)
-        else { throw MachineDeskError.nothingShown }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { throw MachineDeskError.nothingShown }
-        return data as Data
+        return ScreenFrame(width: surface.width, height: surface.height, bytesPerRow: surface.bytesPerRow, pixels: pixels)
     }
 
     /// How many pixels the display has, which is what places are counted in.
@@ -152,7 +124,7 @@ final class MachineDesk {
 
     // MARK: The mouse
 
-    func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+    func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws {
         try await inTurn { [self] in
             let size = try await displaySize()
             let start = try place(request.x, request.y, of: size)
@@ -226,7 +198,7 @@ final class MachineDesk {
     }
 
     /// Hands the view what a mouse did at `place`, which is in its window.
-    private func mouse(_ kind: MouseEvent, _ button: GuestJob.Pointer.Button, at place: NSPoint) async throws {
+    private func mouse(_ kind: MouseEvent, _ button: GuestPointer.Button, at place: NSPoint) async throws {
         let event: NSEvent?
         switch (kind, button) {
         case (.moved, _), (_, .left):

@@ -1,3 +1,4 @@
+import AgentControl
 import AppKit
 import FileSharing
 import Installers
@@ -57,6 +58,8 @@ final class AppModel {
     @ObservationIgnored var machinesBeingSetUp: Set<UUID> = []
     /// Why a new macOS machine's setup didn't let automation work its desktop, for `swiftvm wait` to say.
     @ObservationIgnored var automationSetupProblems: [UUID: String] = [:]
+    /// What remembers each machine's desktop between one `swiftvm control` and the next.
+    @ObservationIgnored var machineControllers: [UUID: (run: Int, controller: MachineController)] = [:]
     /// Whether the app's item is in the menu bar. It always is: with no window open the item is all there
     /// is of the app. macOS lets an item be dragged out of the menu bar all the same, so one that is
     /// taken out is put back.

@@ -1,0 +1,1 @@
+../../Packages/SwiftVMKit/Sources/swiftvm/Resources/SKILL.md

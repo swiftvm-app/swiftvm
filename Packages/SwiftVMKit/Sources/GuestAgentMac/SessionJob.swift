@@ -1,12 +1,9 @@
 import Foundation
 import GuestChannel
 
-/// The screen, the mouse and the keyboard of whoever is logged in, as far as the agent has to do with
-/// them. Places are in the pixels of a screenshot, from its top left corner.
+/// The desktop of whoever is logged in, as far as the agent has to do with it. Places are in the
+/// display's pixels, from its top left corner.
 protocol AgentDesktop: Sendable {
-    /// What is on the screen right now, as a PNG.
-    func screenshot() throws -> Data
-    func pointer(_ request: GuestJob.Pointer) throws
     func keys(_ request: GuestJob.Keys) throws
     /// What is on the screen as a tree of its parts, in JSON.
     func tree(_ request: GuestJob.Tree) throws -> Data
@@ -17,8 +14,8 @@ protocol AgentDesktop: Sendable {
     func permission(_ request: GuestJob.Permission) throws -> Data
 }
 
-/// A job that the agent's half in a user's session does: one with the screen, the mouse or the keyboard,
-/// or with what the system lets this half do with them.
+/// A job that the agent's half in a user's session does: reading the screen as a tree, typing there, or
+/// what the system lets this half do with them.
 ///
 /// The half that runs as root says that there is one, and under which name. This half connects for it,
 /// and from there on it is the one that answers the Mac: what it sends is passed on as it is.
@@ -45,10 +42,7 @@ enum SessionJob {
               let job = GuestMessageCoding.message(GuestJob.self, from: line)
         else { return }
         switch job {
-        case .desktop(let request):
-            DesktopJob.run(request, on: descriptor)
-            return
-        case .screenshot, .pointer, .keys, .tree, .element, .permission:
+        case .keys, .tree, .element, .permission:
             break
         case .exec, .unknown:
             GuestJobLine.answer(.refusal("That isn't a job for a user's session."), on: descriptor)
@@ -60,11 +54,6 @@ enum SessionJob {
         do {
             let output: Data?
             switch job {
-            case .screenshot:
-                output = try desktop.screenshot()
-            case .pointer(let request):
-                try desktop.pointer(request)
-                output = nil
             case .keys(let request):
                 try desktop.keys(request)
                 output = nil
@@ -74,7 +63,7 @@ enum SessionJob {
                 output = try desktop.act(on: request)
             case .permission(let request):
                 output = try desktop.permission(request)
-            case .exec, .desktop, .unknown:
+            case .exec, .unknown:
                 output = nil
             }
             if let output, !output.isEmpty {
