@@ -1,0 +1,111 @@
+Exercise battery state updates, GED notifications and invalid host input.
+
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -261,6 +261,7 @@
+ 
+ # TODO: once aarch64 TCG is fixed on ARM 32 bit host, make bios-tables-test unconditional
+ qtests_aarch64 = \
++  (config_all_devices.has_key('CONFIG_ARM_VIRT') ? ['virt-battery-test'] : []) + \
+   (cpu != 'arm' and unpack_edk2_blobs ? ['bios-tables-test'] : []) +                            \
+   (config_all_accel.has_key('CONFIG_TCG') and config_all_devices.has_key('CONFIG_TPM_TIS_SYSBUS') ?            \
+     ['tpm-tis-device-test', 'tpm-tis-device-swtpm-test'] : []) +                                         \
+--- /dev/null
++++ b/tests/qtest/virt-battery-test.c
+@@ -0,0 +1,96 @@
++/*
++ * Host battery reporting on the Arm virt machine.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "libqtest.h"
++#include "qobject/qdict.h"
++
++#define GED_BASE 0x09080000
++#define BAT_BASE (GED_BASE + 0x1000)
++#define BAT_EVENT 0x40
++
++static void set_status(QTestState *qts, uint32_t status, bool valid)
++{
++    QDict *response = qtest_qmp(qts,
++        "{'execute':'qom-set', 'arguments':{'path':'/machine',"
++        " 'property':'battery-status', 'value':%u}}", status);
++    g_assert_true(qdict_haskey(response, valid ? "return" : "error"));
++    qobject_unref(response);
++}
++
++static void battery_state(void)
++{
++    QTestState *qts;
++    g_autofree char *firmware = NULL;
++    int fd = g_file_open_tmp("battery-firmware-XXXXXX", &firmware, NULL);
++
++    g_assert_cmpint(fd, >=, 0);
++    /* ACPI is built only for a firmware boot. No guest code runs under qtest. */
++    g_assert_cmpint(ftruncate(fd, 4096), ==, 0);
++    close(fd);
++    qts = qtest_initf("-machine virt,gic-version=3 -cpu max -bios %s", firmware);
++
++    /* A desktop has a battery slot but no battery, and runs on AC. */
++    g_assert_cmphex(qtest_readl(qts, BAT_BASE), ==, 0x0f);
++    g_assert_cmphex(qtest_readl(qts, BAT_BASE + 8), ==, 0xffffffff);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 12), ==, 1);
++
++    /* The first host sample must invalidate a restored guest's cached battery. */
++    set_status(qts, 0, true);
++    g_assert_cmphex(qtest_readl(qts, GED_BASE), ==, BAT_EVENT);
++    set_status(qts, 0, true);
++    g_assert_cmpuint(qtest_readl(qts, GED_BASE), ==, 0);
++
++    set_status(qts, 0x100 | 37, true);
++    g_assert_cmphex(qtest_readl(qts, BAT_BASE), ==, 0x1f);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 4), ==, 1);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 8), ==, 3700);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 12), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, GED_BASE), ==, BAT_EVENT);
++    g_assert_cmpuint(qtest_readl(qts, GED_BASE), ==, 0);
++    set_status(qts, 0x100 | 37, true);
++    g_assert_cmpuint(qtest_readl(qts, GED_BASE), ==, 0);
++
++    set_status(qts, 0x700 | 38, true);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 4), ==, 2);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 8), ==, 3800);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 12), ==, 1);
++    g_assert_cmphex(qtest_readl(qts, GED_BASE), ==, BAT_EVENT);
++
++    /* Optimized charging and fully charged are not discharging. */
++    set_status(qts, 0x300 | 80, true);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 4), ==, 0);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 12), ==, 1);
++    set_status(qts, 0x300 | 100, true);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 8), ==, 10000);
++    g_assert_cmphex(qtest_readl(qts, GED_BASE), ==, BAT_EVENT);
++
++    /* Bad percentages, absent batteries with state, and charging without AC. */
++    set_status(qts, 0x100 | 101, false);
++    set_status(qts, 0x200, false);
++    set_status(qts, 0x500 | 50, false);
++    set_status(qts, 0x800, false);
++    g_assert_cmpuint(qtest_readl(qts, GED_BASE), ==, 0);
++    qtest_writel(qts, BAT_BASE + 8, 0);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 8), ==, 10000);
++
++    /* A battery event must not eat a pending request to shut down. */
++    qtest_qmp_assert_success(qts, "{'execute':'system_powerdown'}");
++    set_status(qts, 0, true);
++    g_assert_cmphex(qtest_readl(qts, GED_BASE), ==, BAT_EVENT | 2);
++    g_assert_cmphex(qtest_readl(qts, BAT_BASE), ==, 0x0f);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 4), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, BAT_BASE + 8), ==, 0xffffffff);
++    g_assert_cmpuint(qtest_readl(qts, BAT_BASE + 12), ==, 1);
++
++    qtest_quit(qts);
++    unlink(firmware);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/virt/battery/state", battery_state);
++    return g_test_run();
++}

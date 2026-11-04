@@ -55,6 +55,25 @@ the guest writes data.
 A macOS guest without the [guest tools](guest-tools.md) asks on its screen
 before it shuts down. See [macOS guests](macos-guests.md#shutting-down).
 
+### Host battery
+
+On a MacBook, Windows 11 and Linux guests running on QEMU show the Mac's
+battery percentage and charging state in their own battery indicator, also
+in full screen. Linux uses QEMU when created with **Graphics Acceleration**
+(`swiftvm create … --gpu`). No guest tools are needed. Changes are passed on
+within a few seconds of macOS reporting them.
+
+A plugged-in Mac that has paused charging is reported as plugged in, not
+charging. Macs without an internal battery do not report one; UPS and
+accessory batteries are not shared. The guest's battery-saving and low-battery
+actions follow its own power settings. Battery health and time remaining are
+not passed through.
+
+macOS guests and Linux guests on Apple's Virtualization framework do not
+support this: that framework has no public virtual battery device. A custom
+QEMU build needs SwiftVM's battery patch. If a machine was suspended with an
+older version, shut it down and start it again to discover the battery.
+
 ## The machine's window
 
 The window shows the guest's display, which resizes with the window. Its
