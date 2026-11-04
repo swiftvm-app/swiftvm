@@ -104,23 +104,24 @@ Install the [guest tools](../features/guest-tools.md), or
 - Only text is shared. The macOS and Windows guest tools limit it to about
   250 kB.
 
-## `swiftvm exec` or `swiftvm screenshot` doesn't work
+## `swiftvm exec` or `swiftvm control` doesn't work
 
 - **The guest tools don't answer.** Commands and file copies require the
-  [guest tools](../features/guest-tools.md), as do Linux screenshots and input.
-  `swiftvm wait <machine>` waits for them. Follow the
-  [installation steps](../features/guest-tools.md#installing) for your guest.
+  [guest tools](../features/guest-tools.md). `swiftvm control` works without them,
+  from the screen's pixels, and says so in its look. `swiftvm wait <machine>` waits
+  for them. Follow the [installation steps](../features/guest-tools.md#installing)
+  for your guest.
 - **The guest tools are too old.** Install them again to update them.
 - **Automation is turned off.** Turn on **Allow Automation** in the machine's
   settings.
-- **A macOS guest denies accessibility access.** Run
-  `swiftvm allow-accessibility <machine> --password <password>` to
-  [grant permission](../features/automation.md#macos-guests) for the screen
-  tree. Screenshots and basic mouse and keyboard input need no permission.
-- **The display is off.** A guest turns its display off after a while without
-  input. `swiftvm ui <machine> key shift` wakes it.
-- **Nobody is logged in.** The tree of what is on the screen belongs to
-  whoever is logged in there.
+- **A macOS guest doesn't tell what is on its screen.** Run
+  `swiftvm control <machine> allow --password <password>` to
+  [grant permission](../features/automation.md#macos-guests).
+- **A command hangs in a macOS guest.** macOS may be asking whether it may read a
+  protected folder. `swiftvm control <machine> look --all` shows the question, and
+  `swiftvm control <machine> click Allow` answers it.
+- **Nobody is logged in.** What is on the screen by its parts belongs to whoever
+  is logged in there. Until then, `swiftvm control` reads it from the pixels.
 
 ## The USB button is missing
 

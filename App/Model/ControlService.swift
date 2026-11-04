@@ -1,4 +1,5 @@
 import AppKit
+import AgentControl
 import GuestChannel
 import Installers
 import QEMUEngine
@@ -334,14 +335,14 @@ extension AppModel {
                     return response
                 }
                 try await installGuestTools(on: machine, password: request.password)
-                // The password that installed them also lets them, and agent-desktop, work the desktop.
+                // The password that installed them also lets them read the desktop.
                 if machine.configuration.os.family == .macOS, let password = request.password, !password.isEmpty {
                     do {
                         try await allowAutomation(on: machine, password: password, sessionPatience: .seconds(120))
                     } catch {
                         // The tools are in. What they may do on the desktop is for later.
                         var response = details(machine)
-                        response.note = "macOS in “\(machine.name)” doesn't let the guest tools work its desktop yet: \(Self.explanation(of: error, for: machine)) `swiftvm allow-accessibility \(machine.configuration.ssh.alias) --password <password>` tries again."
+                        response.note = "macOS in “\(machine.name)” doesn't let the guest tools read its desktop yet: \(Self.explanation(of: error, for: machine)) `swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
                         return response
                     }
                 }
@@ -529,7 +530,7 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return templatesResponse()
-        case .list, .info, .console, .vsock, .job, .create, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
+        case .list, .info, .console, .vsock, .job, .control, .create, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
             break
         }
 
@@ -579,16 +580,6 @@ extension AppModel {
                 exec.user = machine.configuration.ssh.user
                 job = .exec(exec)
             }
-            // The screen, the mouse and the keyboard of a macOS guest, or of a guest on QEMU, are the
-            // machine's own, and the app has those: no agent is asked, and nothing in the guest has to
-            // allow it.
-            if machine.doesItself(job) {
-                guard machine.configuration.automation.isAllowed else {
-                    return (.failure(Self.explanation(of: GuestJobError.notAllowed(name: machine.name), for: machine)), nil)
-                }
-                guard machine.state == .running else { return (.failure(VMError.notRunning(name: machine.name).localizedDescription), nil) }
-                return (success(machine), { [job] connection in await Self.carryOut(job, in: machine, connection: connection) })
-            }
             do {
                 let guest = try await machine.openJob(job)
                 return (success(machine), { connection in
@@ -600,6 +591,13 @@ extension AppModel {
             } catch {
                 return (.failure(Self.explanation(of: error, for: machine)), nil)
             }
+        case .control:
+            guard let call = request.control, !call.steps.isEmpty else { return (.failure("Missing what to do on the machine's desktop."), nil) }
+            guard machine.configuration.automation.isAllowed else {
+                return (.failure(Self.explanation(of: GuestJobError.notAllowed(name: machine.name), for: machine)), nil)
+            }
+            guard machine.state == .running else { return (.failure(VMError.notRunning(name: machine.name).localizedDescription), nil) }
+            return (success(machine), { connection in await self.serveControl(call, of: machine, connection: connection) })
         default:
             return (.failure("This command doesn't open a stream."), nil)
         }
@@ -608,26 +606,24 @@ extension AppModel {
     /// How long a guest's agent gets to end a job that was called off, before the app closes the line.
     private static let jobCallOffPatience: TimeInterval = 15
 
-    /// Does a job that the app does itself, and tells the tool what came of it the way an agent would:
-    /// what the job is for, and then how it ended.
-    private nonisolated static func carryOut(_ job: GuestJob, in machine: VirtualMachine, connection: Int32) async {
-        let output: Data
-        let end: JobEnd
-        do {
-            output = try await machine.carryOut(job)
-            end = .success
-        } catch {
-            output = Data()
-            end = .failure(await explanation(of: error, for: machine))
-        }
+    /// Does what `swiftvm control` asked, and sends how it went as frames, the way a job's output comes.
+    private func serveControl(_ call: ControlCall, of machine: VirtualMachine, connection: Int32) async {
+        let controller = controller(of: machine)
+        let work = Task { await controller.perform(call) }
+        // The tool says nothing after its request, so that what shows on the connection is that it has
+        // gone. What it asked for is called off then: a wait of ten minutes has nobody to wait for.
+        let watch = ControlHangUp.watch(connection) { work.cancel() }
+        let outcome = await work.value
+        watch.cancel()
+        let data = ControlOutcomeCoding.data(for: outcome)
         // Writing waits for the tool to read, and holds a thread of its own for that.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             Thread.detachNewThread {
-                if output.isEmpty || JobFrame.write(.output, output, to: connection) {
-                    JobFrame.write(.end, JobFrame.end(end).payload, to: connection)
+                if JobFrame.write(.output, data, to: connection) {
+                    JobFrame.write(.end, JobFrame.end(.success).payload, to: connection)
                 }
-                // The tool hangs up once it has read how the job ended. Closing before that could
-                // take the end with it. The connection itself is closed by whoever handed it over.
+                // The tool hangs up once it has read how it ended. Closing before that could take the
+                // end with it. The connection itself is closed by whoever handed it over.
                 shutdown(connection, SHUT_WR)
                 var waiting = pollfd(fd: connection, events: Int16(POLLIN), revents: 0)
                 var rest = [UInt8](repeating: 0, count: 4096)
@@ -642,6 +638,18 @@ extension AppModel {
         }
     }
 
+    /// What remembers a machine's desktop from one call to the next.
+    ///
+    /// Only for as long as the guest runs: what it had on its screen means nothing after it has started
+    /// anew. Nothing is remembered of machines that aren't there any more.
+    private func controller(of machine: VirtualMachine) -> MachineController {
+        if let known = machineControllers[machine.id], known.run == machine.startCount { return known.controller }
+        machineControllers = machineControllers.filter { library.machine(id: $0.key) != nil }
+        let controller = MachineController(machine: machine)
+        machineControllers[machine.id] = (machine.startCount, controller)
+        return controller
+    }
+
     /// Why a job wasn't started, with what whoever is at the terminal can do about it.
     private static func explanation(of error: any Error, for machine: VirtualMachine) -> String {
         let alias = machine.configuration.ssh.alias
@@ -652,12 +660,10 @@ extension AppModel {
         case .notOffered: "Update them with `swiftvm install-tools \(name)`."
         case .noAnswer, .tooLong, .refused, nil: nil
         }
-        // A guest turns its display off after a while without input, and any key turns it on again.
-        let wakes = error as? MachineDeskError == .nothingShown ? "A key wakes a display that went to sleep: `swiftvm ui \(name) key shift`." : nil
-        return [error.localizedDescription, advice, wakes].compactMap { $0 }.joined(separator: " ")
+        return [error.localizedDescription, advice].compactMap { $0 }.joined(separator: " ")
     }
 
-    /// How far a machine is from being ready for `exec`, `cp` and `desktop`.
+    /// How far a machine is from being ready for `exec`, `cp` and `control`.
     private enum Readiness {
         case ready
         /// Still on its way, busy with what is said.
@@ -668,7 +674,7 @@ extension AppModel {
 
     /// Waits until a machine that is up, or coming up, is ready to be worked by scripts and agents: its
     /// guest tools answer, the setup it was created with has come to its end, restarts included, and a
-    /// desktop it logs in to by itself is logged in, so that `swiftvm desktop` works. Returns what is in
+    /// desktop it logs in to by itself is logged in, so that `swiftvm control` knows what is on it. Returns what is in
     /// the way if it doesn't get there in time.
     private func waitUntilReady(_ machine: VirtualMachine, timeout: Duration) async -> String? {
         let deadline = ContinuousClock.now + timeout
@@ -738,13 +744,13 @@ extension AppModel {
         // A new macOS machine is ready once the app has finished setting it up: until then it may still
         // be clicking through the guest's System Settings and typing the password there.
         if machinesBeingSetUp.contains(machine.id) {
-            return .waiting("the guest tools are being installed and allowed to work the desktop")
+            return .waiting("the guest tools are being installed and allowed to read the desktop")
         }
         // Said once: whoever waits next has been told, or has seen to it.
         if let problem = automationSetupProblems.removeValue(forKey: machine.id) {
-            return .failed("“\(machine.name)” is running, but its setup didn't let automation work its desktop: \(problem)")
+            return .failed("“\(machine.name)” is running, but its setup didn't let the guest tools read its desktop: \(problem)")
         }
-        guard machine.configuration.automation.isAllowed, machine.agent.offers(GuestFeature.desktop),
+        guard machine.configuration.automation.isAllowed, machine.agent.offers(GuestFeature.accessibility),
               machine.agent.offers(GuestFeature.exec)
         else { return .ready }
         // A desktop is waited for only where it logs in by itself, as SwiftVM sets them up: one that
@@ -764,10 +770,15 @@ extension AppModel {
         }
         guard hasDesktop == true else { return .ready }
         do {
-            _ = try await machine.collect(.desktop(.init(arguments: ["--version"])), patience: 20)
+            let said = try await machine.collect(.tree(.init(depth: 1)), patience: 20)
+            // A session that has only just begun lists nothing yet, and doesn't take much.
+            let tree = try? JSONSerialization.jsonObject(with: said) as? [String: Any]
+            guard (tree?["applications"] as? [Any])?.isEmpty == false else { return .waiting("its desktop is still starting") }
             return .ready
-        } catch GuestJobError.refused(let reason) where reason.contains("agent-desktop isn't installed") {
-            return .failed("“\(machine.name)” is running, but \(reason)")
+        } catch GuestJobError.refused(let reason) where !reason.contains("logged in") {
+            // There is a desktop, whose parts can't be told: macOS not letting them be read, a locked
+            // Windows, missing packages. `control` works from the pixels, and says why.
+            return .ready
         } catch {
             return .waiting("its desktop isn't logged in yet")
         }
@@ -1344,10 +1355,10 @@ extension AppModel {
             // The step a script ended at says nothing once it has come to its end.
             setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) },
             // Of what the agent says it does, the kinds of job this app knows: no other word of a
-            // guest's is passed on. And what the app does itself, with or without an agent.
+            // guest's is passed on.
             automation: MachineDetails.Automation(
                 isAllowed: configuration.automation.isAllowed,
-                features: GuestFeature.jobs.filter(machine.does)
+                features: GuestFeature.jobs.filter(machine.agent.offers)
             ),
             networkMode: configuration.networkInterfaces.first.map { $0.usesSharedNetwork ? "shared" : "bridged" },
             bridgedInterfaceIdentifier: configuration.networkInterfaces.first?.bridgedInterfaceIdentifier

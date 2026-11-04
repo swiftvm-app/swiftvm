@@ -22,13 +22,6 @@ import Testing
         #expect(text(.exec(.init(arguments: ["ls", "-l"], user: "root", directory: "/tmp", environment: ["A": "b"])))
             == #"{"arguments":["ls","-l"],"directory":"/tmp","environment":{"A":"b"},"type":"exec","user":"root"}"# + "\n")
         #expect(text(.exec(.init(arguments: ["true"]))) == #"{"arguments":["true"],"type":"exec"}"# + "\n")
-        #expect(text(.screenshot) == #"{"type":"screenshot"}"# + "\n")
-        #expect(text(.pointer(.init(action: .click, x: 10, y: 20, button: .right, count: 2)))
-            == #"{"action":"click","button":"right","count":2,"type":"pointer","x":10,"y":20}"# + "\n")
-        #expect(text(.pointer(.init(action: .drag, x: 1, y: 2, toX: 3, toY: 4)))
-            == #"{"action":"drag","toX":3,"toY":4,"type":"pointer","x":1,"y":2}"# + "\n")
-        #expect(text(.pointer(.init(action: .scroll, x: 1, y: 2, deltaX: 0, deltaY: -3)))
-            == #"{"action":"scroll","deltaX":0,"deltaY":-3,"type":"pointer","x":1,"y":2}"# + "\n")
         #expect(text(.keys(.init(text: "hi"))) == #"{"text":"hi","type":"keys"}"# + "\n")
         #expect(text(.keys(.init(keys: ["ctrl+c", "Return"]))) == #"{"keys":["ctrl+c","Return"],"type":"keys"}"# + "\n")
         #expect(text(.tree(.init(application: "Files", depth: 3, all: true)))
@@ -56,7 +49,7 @@ import Testing
         // Nothing is asked of an agent on its behalf.
         #expect(later.feature == nil)
         #expect(GuestJob.exec(.init(arguments: ["true"])).feature == GuestFeature.exec)
-        #expect(GuestJob.screenshot.feature == GuestFeature.screen)
+        #expect(GuestJob.tree(.init()).feature == GuestFeature.accessibility)
         #expect(GuestJob.keys(.init(text: "x")).feature == GuestFeature.input)
         #expect(GuestJob.tree(.init()).feature == GuestFeature.accessibility)
     }
@@ -176,7 +169,7 @@ import Testing
             close(near)
             close(far)
         }
-        #expect(GuestJobLine.open(.screenshot, over: near, timeout: 0.1) == nil)
+        #expect(GuestJobLine.open(.tree(.init()), over: near, timeout: 0.1) == nil)
     }
 
     @Test func hangingUpLetsTheLastWordsArrive() throws {

@@ -104,7 +104,7 @@ Usage: swiftvm <command> [arguments]
   wait <machine> [--timeout <seconds>]
                                     Wait until the machine is ready for the commands below: created,
                                     its guest tools answering, the setup it was created with done,
-                                    restarts included, and a desktop logged in for agent-desktop. A
+                                    restarts included, and a desktop logged in. A
                                     setup that failed is said why. 300 seconds by default; on a time-out
                                     it says what it is still waiting for, and waiting again carries on
   exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>]
@@ -116,49 +116,74 @@ Usage: swiftvm <command> [arguments]
   cp [--root | --user <name>] <from> <to>
                                     Copy a file or a folder into the machine or out of it. The side in
                                     the machine is <machine>:<path>. Works as cp -R does
-  desktop <machine> [--timeout <seconds>] [--] <agent-desktop arguments>
-                                    See and work the machine's desktop: run agent-desktop in its logged-in
-                                    session, never on this Mac. The way to drive a desktop: snapshots,
-                                    actions, keyboard and pointer, screenshots, windows, clipboard. Start
-                                    with status, skills get desktop, and skills get platform. Arguments,
-                                    input, output and exit status pass through unchanged, but for what a
-                                    Linux guest's tools do in agent-desktop's place where it refuses.
-                                    Requires current Guest Tools; times out after 120 seconds by default
-  screenshot <machine> [<file> | -] Save what is on the machine's screen as a PNG, and print where
-  ui <machine> click <x> <y> [--button left|right|middle] [--count <n>]
-  ui <machine> double-click <x> <y> | right-click <x> <y> | move <x> <y>
-  ui <machine> drag <x> <y> <to x> <to y>
-  ui <machine> scroll <x> <y> up|down|left|right [<notches>]
-                                    Use the machine's mouse. Places are in the pixels of a screenshot
-  ui <machine> type <text>          Type text on the machine's keyboard
-  ui <machine> key <key>...         Press keys, one after the other: Return, Escape, ctrl+c, cmd+space
-  ui <machine> tree [--app <name>] [--depth <levels>] [--all]
-                                    Print what is on the machine's screen as a tree of its parts, in
-                                    JSON: windows, buttons, text fields, each with an id. Boxes that
-                                    only hold other parts are left out, unless you add --all
-  ui <machine> press <element> [--action <name>] | focus <element> | set <element> <text>
-                                    Do to one part of the tree, by its id, what a click on it would or
-                                    another of its actions, give it the keyboard, or replace its text
-  allow-accessibility <machine> --password <password>
-                                    Have a macOS machine let its guest tools and agent-desktop work its
-                                    desktop: read the screen as a tree and record it. macOS asks someone
-                                    at its screen for that: this turns the switches on in its System
-                                    Settings and gives the account's password, with the machine's own
-                                    mouse and keyboard. Quick Create and install-tools --password do it
-                                    by themselves
-  automation <machine> on|off       Let exec, cp, desktop, screenshot and ui work in the machine, or not
+  control <machine> <action> [arguments] [--then <action> [arguments]]... [--json]
+                                    See and work the machine's desktop, on any system and at a login
+                                    screen: look, click, type, key, set, scroll, drag, wait, open,
+                                    clipboard, screenshot. `swiftvm help control` has all of it
+  mcp                               Serve all of this to AI agents, as a Model Context Protocol server
+  skill [install]                   Print what an AI agent needs to know to use this tool, or install it
+                                    as a skill for agents on this Mac
+  automation <machine> on|off       Let exec, cp and control work in the machine, or not
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
 <machine> is a name, SSH alias or UUID. <template> is a name or UUID.
 
-To drive a desktop, use desktop. screenshot and ui work from outside the desktop, for where agent-desktop
-can't reach: the login and lock screens, and a machine nobody is logged in to.
-
-exec, cp and desktop need the guest tools in the machine: swiftvm install-tools. So do screenshot and ui
-in a Linux machine. A macOS machine's screen, mouse and keyboard need nothing in it. Its tree needs the
-guest tools, and macOS to let them: swiftvm allow-accessibility, which Quick Create has done already.
+exec and cp need the guest tools in the machine: swiftvm install-tools. control works without them, by
+reading the screen's pixels; with them, it knows what the screen's parts are.
 """
+
+/// What `swiftvm help` says: enough to find the way, and short, as an agent reads it all.
+let overview = """
+swiftvm drives the virtual machines of the SwiftVM app on this Mac, without a network or SSH in the guest.
+AI agents: read `swiftvm skill`, or serve tools with `swiftvm mcp`.
+
+Work in a machine
+  control <machine> <action>    See and work its desktop, on any system and at a login screen
+  exec <machine> -- <command>   Run a command in it
+  cp <from> <machine>:<to>      Copy files in and out
+  ssh, console, vsock           Open a shell, its serial console, or a port on its socket device
+
+Machines
+  list, info                    What there is
+  create, wait                  Make one, and wait until it is ready
+  start, stop, restart, suspend, pause, resume, force-stop, discard-state, open, delete, clone, move
+  snapshot, snapshots, revert, delete-snapshot, rename-snapshot
+  templates, save-template, rename-template, delete-template
+  resize, compression, share, unshare, attach, eject, usb, install-tools, automation, share-clipboard
+
+Network
+  ip, forward, unforward, plug, unplug, network, network-interfaces
+
+For agents
+  skill [install], mcp
+
+  swiftvm help <command>        How one command works
+  swiftvm help all              Every command and option
+"""
+
+/// What the usage says of the commands called `topic`.
+func help(on topic: String) -> String? {
+    switch topic {
+    case "control": return Control.usage
+    case "mcp": return MCP.usage
+    case "skill": return Skill.usage
+    case "all": return usage
+    default: break
+    }
+    var blocks: [String] = []
+    var isInBlock = false
+    for line in usage.split(separator: "\n", omittingEmptySubsequences: false) {
+        if line.hasPrefix("  "), !line.hasPrefix("   ") {
+            let words = line.dropFirst(2).split(separator: " ")
+            isInBlock = words.first == Substring(topic) || (words.count > 2 && words[1] == "<machine>" && words.dropFirst(2).first == "|" && line.contains("| \(topic) "))
+        } else if !line.hasPrefix("   ") {
+            isInBlock = false
+        }
+        if isInBlock { blocks.append(String(line)) }
+    }
+    return blocks.isEmpty ? nil : blocks.joined(separator: "\n")
+}
 
 func fail(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data("swiftvm: \(message)\n".utf8))
@@ -366,7 +391,7 @@ func printDetails(of machine: MachineSummary) {
             lines.append(("Clipboard", sharesClipboard ? "shared" : "not shared"))
         }
         if let automation = details.automation {
-            // `on (exec, screen, input, accessibility)`, with what the connected guest tools do.
+            // `on (exec, input, accessibility)`, with what the connected guest tools do.
             let features = automation.features.isEmpty || !automation.isAllowed ? "" : " (\(automation.features.joined(separator: ", ")))"
             lines.append(("Automation", (automation.isAllowed ? "on" : "off") + features))
         }
@@ -393,7 +418,7 @@ if let program = CommandLine.arguments.first.map({ URL(fileURLWithPath: $0) }), 
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let commandName = arguments.first else {
-    print(usage)
+    print(overview)
     exit(0)
 }
 arguments.removeFirst()
@@ -411,9 +436,20 @@ func rejectUnknownOptions(_ options: some Sequence<String>, allowed: Set<String>
     }
 }
 
+// `swiftvm exec --help` is `swiftvm help exec`.
+if let first = arguments.first, first == "--help" || first == "-h", commandName != "help", let text = help(on: commandName) {
+    print(text)
+    exit(0)
+}
+
 switch commandName {
 case "help", "--help", "-h":
-    print(usage)
+    if let topic = arguments.first {
+        guard let text = help(on: topic) else { fail("No command is called “\(topic)”.\n\n\(overview)") }
+        print(text)
+    } else {
+        print(overview)
+    }
 
 case "list", "ls":
     let listed = send(ControlRequest(command: .list))
@@ -514,7 +550,7 @@ case "create":
     // The system sets itself up from here on, which takes from seconds to half an hour.
     if parameters.start, let machine = created.machines.first {
         let name = machine.sshAlias ?? machine.id.uuidString
-        print("\nNext: `swiftvm wait \(name)` waits until it is set up and ready for exec, cp and desktop.")
+        print("\nNext: `swiftvm wait \(name)` waits until it is set up and ready for exec, cp and control.")
     }
 
 case "scripts":
@@ -632,15 +668,6 @@ case "automation":
         printDetails(of: machine)
     }
 
-case "allow-accessibility":
-    let machine = requireMachine()
-    guard arguments.count == 3, arguments[1] == "--password" else {
-        fail("Usage: swiftvm allow-accessibility <machine> --password <password>")
-    }
-    if let machine = send(ControlRequest(command: .allowAccessibility, machine: machine, password: arguments[2])).machines.first {
-        printDetails(of: machine)
-    }
-
 case "wait":
     let machine = requireMachine()
     var options = Array(arguments.dropFirst())
@@ -661,14 +688,14 @@ case "exec":
 case "cp":
     GuestJobs.copy(arguments)
 
-case "screenshot":
-    GuestJobs.screenshot(arguments)
+case "control":
+    Control.run(arguments)
 
-case "desktop":
-    GuestJobs.desktop(arguments)
+case "mcp":
+    MCP.run(arguments)
 
-case "ui":
-    GuestJobs.ui(arguments)
+case "skill":
+    Skill.run(arguments)
 
 case "usb":
     guard let action = arguments.first else {
@@ -868,11 +895,11 @@ case "ssh":
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
     let others: [ControlRequest.Command] = [
-        .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .move,
+        .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .control, .allowAccessibility, .move,
         .templates, .saveTemplate, .deleteTemplate, .renameTemplate,
     ]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
-        fail("Unknown command “\(commandName)”.\n\n\(usage)")
+        fail("Unknown command “\(commandName)”.\n\n\(overview)")
     }
     let response = send(ControlRequest(command: command, machine: requireMachine()))
     // `delete` of a machine that was still being created has no machine to show, only what it did.

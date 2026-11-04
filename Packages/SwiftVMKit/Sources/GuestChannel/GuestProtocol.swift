@@ -20,7 +20,7 @@ public enum GuestProtocol {
     public static let maximumLineLength = 256 * 1024
     /// The version of the agent for macOS guests that is built from these sources, as it reports it
     /// when it connects. The agent for Linux keeps its own, in its script.
-    public static let macAgentVersion = "1.5"
+    public static let macAgentVersion = "1.6"
 
     /// The time on this Mac, in nanoseconds since 1970, as the agent takes it for setting the guest's clock.
     public static func currentTimeInNanoseconds() -> Int64 {
@@ -41,11 +41,7 @@ public enum GuestFeature {
     public static let timeZone = "time-zone"
     /// Takes ``GuestJob``s on ``GuestProtocol/jobPort``, and runs commands: ``GuestJob/exec(_:)``.
     public static let exec = "exec"
-    /// Runs agent-desktop in the logged-in graphical session: ``GuestJob/desktop(_:)``.
-    public static let desktop = "agent-desktop"
-    /// Shows what is on the screen: ``GuestJob/screenshot``.
-    public static let screen = "screen"
-    /// Uses the mouse and the keyboard: ``GuestJob/pointer(_:)`` and ``GuestJob/keys(_:)``.
+    /// Types text that the machine's own keyboard has no keys for: ``GuestJob/keys(_:)``.
     public static let input = "input"
     /// Reads the screen as a tree of its parts and acts on them: ``GuestJob/tree(_:)`` and
     /// ``GuestJob/element(_:)``.
@@ -53,9 +49,6 @@ public enum GuestFeature {
     /// Says whether its system lets it do that, and helps the app to have it allowed:
     /// ``GuestJob/permission(_:)``. For systems that ask someone at the screen first.
     public static let permission = "permission"
-    /// Also asks for, and says whether it may, record the screen:
-    /// ``GuestJob/Permission/Kind/screenRecording``.
-    public static let screenRecordingPermission = "permission-screen-recording"
 
     /// The guest has a driver for a display whose size can change with the window. Said by agents in
     /// guests whose engine gives them a choice of display: Windows guests on QEMU.
@@ -72,7 +65,7 @@ public enum GuestFeature {
     public static let seamless = "seamless"
 
     /// The features that are kinds of ``GuestJob``.
-    public static let jobs = [exec, screen, input, accessibility, desktop]
+    public static let jobs = [exec, input, accessibility]
 }
 
 /// What an agent says about itself and its system when a connection opens.

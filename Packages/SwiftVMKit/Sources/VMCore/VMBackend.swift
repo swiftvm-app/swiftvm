@@ -187,14 +187,14 @@ public protocol VMBackend: AnyObject {
     /// isn't. The connection is closed when the returned handle is released.
     func connectToGuest(port: UInt32) async throws -> FileHandle
 
-    /// What the machine's display shows right now, as a PNG. This Mac reads it itself: nothing in the
-    /// guest is asked, and nothing there has to allow it.
-    func screenshot() async throws -> Data
-    /// Uses the machine's own mouse. Places are in the pixels of a screenshot, from its top left corner.
+    /// What the machine's display shows right now. This Mac reads it itself: nothing in the guest is
+    /// asked, and nothing there has to allow it.
+    func frame() async throws -> ScreenFrame
+    /// Uses the machine's own mouse. Places are in the display's pixels, from its top left corner.
     ///
     /// - Parameter guestTurnsWheel: The guest scrolls the other way round than its wheel is turned, as
     ///   macOS does until someone tells it not to. A wheel is turned so that what was asked for happens.
-    func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws
+    func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws
     /// Presses keys of the machine's own keyboard, which has the keys of a US keyboard.
     func keys(_ request: GuestJob.Keys) async throws
 
@@ -228,11 +228,11 @@ extension VMBackend {
     public var canSaveState: Bool { true }
 
     // An engine with no way to a machine's display and input devices says so when asked.
-    public func screenshot() async throws -> Data {
+    public func frame() async throws -> ScreenFrame {
         throw MachineDeskError.unavailable
     }
 
-    public func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+    public func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws {
         throw MachineDeskError.unavailable
     }
 
@@ -368,7 +368,7 @@ public enum MachineDeskError: Error, LocalizedError, Equatable {
         case .invalid(let reason):
             reason
         case .notOnTheKeyboard(let character):
-            "The machine's keyboard has the keys of a US keyboard, and none of them types “\(character)”. With the guest tools in the guest, and macOS letting them, any text is typed."
+            "The machine's keyboard has the keys of a US keyboard, and none of them types “\(character)”. Current guest tools type any text."
         }
     }
 }

@@ -70,19 +70,19 @@ if (-not (Test-Path $compiler)) {
 # Built in the program's own folder, so that it has that folder's permissions: everyone may run it,
 # which its half in each session needs. A file moved from SYSTEM's temporary folder keeps that one's.
 $built = Join-Path $program "swiftvm-agent-$PID.exe"
+# Where .NET keeps what reads other programs' windows.
+$wpf = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\WPF'
 $output = & $compiler /nologo /target:winexe /optimize+ "/out:$built" `
     /r:System.ServiceProcess.dll /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Core.dll `
+    "/lib:$wpf" /r:UIAutomationClient.dll /r:UIAutomationTypes.dll /r:WindowsBase.dll `
     (Join-Path $Source 'swiftvm-agent.cs') 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "The guest agent couldn't be built: $output"
 }
 
-# Downloading the optional desktop tool must not keep the core tools out of an offline guest.
-try {
-    & (Join-Path $Source 'desktop-install.ps1') *> (Join-Path $program 'agent-desktop-install.log')
-} catch {
-    $_ | Out-String | Add-Content -LiteralPath (Join-Path $program 'agent-desktop-install.log')
-    Write-Warning 'agent-desktop was not installed. See agent-desktop-install.log in Program Files\SwiftVM and reinstall Guest Tools to retry.'
+# What older tools installed to work the desktop with. The app does that itself now.
+foreach ($old in 'agent-desktop', 'agent-desktop-install.log') {
+    Remove-Item -LiteralPath (Join-Path $program $old) -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # An older agent goes first: its service, and its halves in the sessions of whoever is logged in.

@@ -17,9 +17,9 @@ struct SessionJobNotice: Codable, Sendable, Equatable {
 /// The jobs the agent does for whoever drives this system from the Mac (``GuestJob``), each on a
 /// connection and in a thread of its own.
 ///
-/// Commands run here, in the half of the agent that runs as root. The screen, the mouse and the
-/// keyboard belong to whoever is logged in, where root can't reach them: those jobs are handed to the
-/// agent's half in that session. That half is told the job's name, connects for it on a socket of its
+/// Commands run here, in the half of the agent that runs as root. What is on the screen belongs to
+/// whoever is logged in, where root can't reach it: those jobs are handed to the agent's half in that
+/// session. That half is told the job's name, connects for it on a socket of its
 /// own, and from there speaks to the Mac itself, through this half, which only passes bytes on.
 final class AgentJobs: @unchecked Sendable {
     /// How long a job's first line may take to arrive.
@@ -95,7 +95,7 @@ final class AgentJobs: @unchecked Sendable {
         switch job {
         case .exec(let exec):
             CommandJob.run(exec, on: descriptor, system: system)
-        case .screenshot, .pointer, .keys, .tree, .element, .permission, .desktop:
+        case .keys, .tree, .element, .permission:
             handOver(line, on: descriptor)
         case .unknown(let type):
             GuestJobLine.answer(.refusal("This agent (\(version)) doesn't know what “\(type.prefix(64))” is."), on: descriptor)
@@ -110,7 +110,7 @@ final class AgentJobs: @unchecked Sendable {
         lock.withLock { handovers[token] = handover }
         guard announce(token) else {
             lock.withLock { handovers[token] = nil }
-            GuestJobLine.answer(.refusal("Nobody is logged in at this Mac's screen, or the guest tools haven't started in their session yet. The screen, the mouse and the keyboard are those of whoever is logged in."), on: descriptor)
+            GuestJobLine.answer(.refusal("Nobody is logged in at this Mac's screen, or the guest tools haven't started in their session yet. What is on the screen is that of whoever is logged in."), on: descriptor)
             return
         }
         _ = handover.arrived.wait(timeout: .now() + handoverTimeout)

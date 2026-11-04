@@ -71,7 +71,7 @@ The machine starts as a server, installs the desktop, and restarts into it,
 logged in to the account, as macOS and Windows machines are. Omarchy starts at its
 login screen instead. SwiftVM shows the step it is at; downloads can take a while.
 `swiftvm wait <machine>` waits until the desktop is up and ready for
-`swiftvm desktop`.
+`swiftvm control`.
 
 A desktop is one kind of [setup script](setup-scripts.md), and a machine can
 have several: a desktop and then Docker, say. Write your own for anything

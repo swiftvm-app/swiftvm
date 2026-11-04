@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "Installers", targets: ["Installers"]),
         .library(name: "VMControl", targets: ["VMControl"]),
         .library(name: "GuestChannel", targets: ["GuestChannel"]),
+        .library(name: "AgentControl", targets: ["AgentControl"]),
         .library(name: "GuestAgentMac", targets: ["GuestAgentMac"]),
         .executable(name: "swiftvm", targets: ["SwiftVMCLI"]),
         .executable(name: "swiftvm-agent", targets: ["swiftvm-agent"]),
@@ -40,10 +41,12 @@ let package = Package(
         .target(name: "GuestDisplayBridge"),
         .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel", "GuestDisplayBridge"]),
         .target(name: "VMControl", dependencies: ["GuestChannel"]),
+        // What `swiftvm control` and `swiftvm mcp` ask of a machine's desktop, done in the app.
+        .target(name: "AgentControl", dependencies: ["VMCore", "VMControl", "GuestChannel"]),
         // Not named `swiftvm`: a target's build folder is named after it, and on a disk that doesn't tell
         // upper case from lower, that of the app's `SwiftVM` target would be the same folder. Builds that
         // have both, such as SourceKit-LSP's, then compile the app with this tool's file map.
-        .executableTarget(name: "SwiftVMCLI", dependencies: ["VMControl", "GuestChannel"], path: "Sources/swiftvm"),
+        .executableTarget(name: "SwiftVMCLI", dependencies: ["VMControl", "GuestChannel"], path: "Sources/swiftvm", resources: [.embedInCode("Resources/SKILL.md")]),
         .testTarget(name: "GuestChannelTests", dependencies: ["GuestChannel"]),
         .testTarget(name: "GuestAgentMacTests", dependencies: ["GuestAgentMac", "GuestChannel"]),
         .testTarget(name: "VMCoreTests", dependencies: ["VMCore", "GuestChannel"]),
@@ -52,6 +55,7 @@ let package = Package(
         .testTarget(name: "InstallersTests", dependencies: ["Installers", "DiskTools", "GuestChannel"]),
         .testTarget(name: "VMNetworkingTests", dependencies: ["VMNetworking"]),
         .testTarget(name: "VMControlTests", dependencies: ["VMControl", "GuestChannel"]),
+        .testTarget(name: "AgentControlTests", dependencies: ["AgentControl", "VMControl", "VMCore", "GuestChannel"]),
         .testTarget(name: "SwiftVMCLITests", dependencies: ["SwiftVMCLI", "VMControl", "GuestChannel"]),
         .testTarget(name: "VZEngineTests", dependencies: ["VZEngine", "VMCore"]),
         .testTarget(name: "QEMUEngineTests", dependencies: ["QEMUEngine", "VMCore", "GuestChannel"]),

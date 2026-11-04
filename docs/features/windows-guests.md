@@ -173,9 +173,6 @@ account name and password you chose during creation.
 - [Seamless Mode](#seamless-mode) supports Windows guests only, on your Mac's
   main display.
 - TPM and Secure Boot are unavailable; software that requires them will not work.
-- Reading the screen as an accessibility tree is not supported.
-- Automated typing supports characters available on a US keyboard. Use
-  commands or file copies for other text; see [Automation](automation.md).
 - Attached disk images must be raw or ISO; ASIF is unsupported.
 - Duplicates and machines made from a template keep the original Windows
   computer name. Rename them in Windows Settings if they will run together.

@@ -38,12 +38,12 @@ private final class AgentBackend: VMBackend {
     /// What was done with the machine's own display, mouse and keyboard.
     var deskCalls: [String] = []
 
-    func screenshot() async throws -> Data {
-        deskCalls.append("screenshot")
-        return Data("a picture".utf8)
+    func frame() async throws -> ScreenFrame {
+        deskCalls.append("frame")
+        return ScreenFrame(width: 1, height: 1, bytesPerRow: 4, pixels: Data(count: 4))
     }
 
-    func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+    func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws {
         deskCalls.append("\(request.action.rawValue) \(request.x),\(request.y)")
     }
 
@@ -164,37 +164,15 @@ private final class AgentProvider: VMBackendProvider {
         await machine.forceStop()
     }
 
-    @Test(arguments: [GuestFamily.linux, .macOS, .windows])
-    func desktopJobsStayInTheGuestAndRespectAutomation(family: GuestFamily) async throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        provider.backend.features = [GuestFeature.desktop]
-        provider.backend.echoInput = true
-        let machine = try await startMachine(automation: false, family: family)
-        let job = GuestJob.desktop(.init(arguments: ["type", "@snapshot:e1", "quotes ' \" ; $HOME\nünïcödé"]))
-        await #expect(throws: GuestJobError.notAllowed(name: "Web")) { _ = try await machine.openJob(job) }
-        #expect(provider.backend.jobs.isEmpty)
-        #expect(!machine.doesItself(job))
-        try machine.updateConfiguration { $0.automation.isAllowed = true }
-        let input = Data("batch input\n".utf8)
-        #expect(try await machine.collect(job, input: input, patience: 5) == input)
-        let line = try #require(provider.backend.jobs.first)
-        #expect(GuestMessageCoding.message(GuestJob.self, from: Data(line.utf8)) == job)
-        #expect(provider.backend.deskCalls.isEmpty)
-        await machine.forceStop()
-    }
-
     @Test func anAgentIsOnlyAskedForWhatItSaysItDoes() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        // An agent from before it could show the screen.
+        // An agent from before it could read the screen.
         let machine = try await startMachine()
         await #expect(throws: GuestJobError.notOffered(name: "Web", version: "9.9")) {
-            _ = try await machine.openJob(.screenshot)
+            _ = try await machine.openJob(.tree(.init()))
         }
         await #expect(throws: GuestJobError.notOffered(name: "Web", version: "9.9")) {
             _ = try await machine.openJob(.unknown(type: "later"))
-        }
-        await #expect(throws: GuestJobError.notOffered(name: "Web", version: "9.9")) {
-            _ = try await machine.openJob(.desktop(.init(arguments: ["status"])))
         }
         // A job that is longer than a line may be would be passed over without a word. It isn't sent.
         await #expect(throws: GuestJobError.tooLong) {
@@ -274,39 +252,33 @@ private final class AgentProvider: VMBackendProvider {
         await machine.forceStop()
     }
 
-    @Test func aMacGuestsScreenMouseAndKeyboardAreTheMachinesOwn() async throws {
+    @Test(arguments: [GuestFamily.linux, .macOS, .windows])
+    func theScreenMouseAndKeyboardAreTheMachinesOwnOnEverySystem(family: GuestFamily) async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        // An agent that would do all of it, if macOS in the guest let it.
-        provider.backend.features = [GuestFeature.exec, GuestFeature.screen, GuestFeature.input, GuestFeature.accessibility]
-        let machine = try await startMachine(family: .macOS)
-        #expect(machine.doesItself(.screenshot))
-        #expect(machine.doesItself(.pointer(.init(action: .click, x: 4, y: 2))))
-        #expect(machine.doesItself(.keys(.init(text: "ls -la\n", keys: ["cmd+k"]))))
-        // Text that the machine's keyboard has no keys for is left to an agent that types.
-        #expect(!machine.doesItself(.keys(.init(text: "grüße"))))
-        // Commands and the screen as a tree are in the guest, and an agent's to do.
-        #expect(!machine.doesItself(.exec(.init(arguments: ["true"]))))
-        #expect(!machine.doesItself(.tree(.init())))
-
-        #expect(try await machine.carryOut(.screenshot) == Data("a picture".utf8))
-        _ = try await machine.carryOut(.pointer(.init(action: .click, x: 4, y: 2)))
-        _ = try await machine.carryOut(.keys(.init(text: "ls")))
-        #expect(provider.backend.deskCalls == ["screenshot", "click 4,2", "keys ls"])
+        provider.backend.features = [GuestFeature.exec, GuestFeature.input, GuestFeature.accessibility]
+        let machine = try await startMachine(family: family)
+        _ = try await machine.frame()
+        try await machine.pointer(.init(action: .click, x: 4, y: 2))
+        try await machine.press(.init(text: "ls -la\n", keys: ["ctrl+k"]))
+        #expect(provider.backend.deskCalls == ["frame", "click 4,2", "keys ls -la\n"])
         // None of it went to the agent.
         #expect(provider.backend.jobs.isEmpty)
 
         // A machine that is not to be driven is not driven this way either.
         try machine.updateConfiguration { $0.automation.isAllowed = false }
-        await #expect(throws: GuestJobError.notAllowed(name: "Web")) { _ = try await machine.carryOut(.screenshot) }
+        await #expect(throws: GuestJobError.notAllowed(name: "Web")) { _ = try await machine.frame() }
         #expect(provider.backend.deskCalls.count == 3)
         await machine.forceStop()
     }
 
-    @Test func aLinuxGuestsScreenIsItsAgentsToShow() async throws {
+    @Test func textTheMachinesKeyboardHasNoKeysForIsLeftToAnAgentThatTypes() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
+        provider.backend.features = [GuestFeature.exec, GuestFeature.input]
+        provider.backend.jobOutput = JobFrame.end(.success).encoded
         let machine = try await startMachine()
-        #expect(!machine.doesItself(.screenshot))
-        #expect(!machine.doesItself(.keys(.init(text: "ls"))))
+        try await machine.press(.init(text: "grüße"))
+        #expect(provider.backend.jobs == [#"{"text":"grüße","type":"keys"}"#])
+        #expect(provider.backend.deskCalls.isEmpty)
         await machine.forceStop()
     }
 

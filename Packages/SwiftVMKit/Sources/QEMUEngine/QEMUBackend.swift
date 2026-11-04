@@ -712,44 +712,30 @@ public final class QEMUBackend: VMBackend {
 
     // MARK: The machine's own display, mouse and keyboard
 
-    public func screenshot() async throws -> Data {
-        if let spice { return try await spice.screenshot() }
+    public func frame() async throws -> ScreenFrame {
+        if let spice {
+            guard let frame = ScreenFrame(png: try await spice.screenshot()) else { throw MachineDeskError.nothingShown }
+            return frame
+        }
         guard let picture = screen?.picture else { throw MachineDeskError.nothingShown }
         let surface = picture.surface
         surface.lock(options: .readOnly, seed: nil)
-        let pixels = Data(bytes: surface.baseAddress, count: surface.bytesPerRow * surface.height)
-        let bytesPerRow = surface.bytesPerRow
-        surface.unlock(options: .readOnly, seed: nil)
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.png(pixels: pixels, width: picture.width, height: picture.height, bytesPerRow: bytesPerRow)
-        }.value
-    }
-
-    nonisolated static func png(pixels: Data, width: Int, height: Int, bytesPerRow: Int) throws -> Data {
-        let layout = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        let data = NSMutableData()
-        guard let provider = CGDataProvider(data: pixels as CFData),
-              let image = CGImage(
-                  width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
-                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(), bitmapInfo: layout, provider: provider,
-                  decode: nil, shouldInterpolate: false, intent: .defaultIntent
-              ),
-              let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil)
-        else { throw MachineDeskError.nothingShown }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { throw MachineDeskError.nothingShown }
-        return data as Data
+        defer { surface.unlock(options: .readOnly, seed: nil) }
+        return ScreenFrame(
+            width: picture.width, height: picture.height, bytesPerRow: surface.bytesPerRow,
+            pixels: Data(bytes: surface.baseAddress, count: surface.bytesPerRow * surface.height)
+        )
     }
 
     /// How long the guest gets to take in what the mouse did before the next thing.
-    private static let mousePause: Duration = .milliseconds(40)
+    private static let mousePause: Duration = .milliseconds(20)
     /// How long the guest gets to take in a key before the next. Keys typed over SPICE come in bunches,
     /// and a guest's USB keyboard that gets them faster than it reports them loses some: at a login
     /// screen, the password typed is then not the one it gets.
     private static let wheelPause: Duration = .milliseconds(12)
     private var keyPause: Duration { spice == nil ? .milliseconds(12) : .milliseconds(40) }
 
-    public func pointer(_ request: GuestJob.Pointer, guestTurnsWheel: Bool) async throws {
+    public func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws {
         let size: (width: Int, height: Int)
         if let spice, spice.size.width > 0, spice.size.height > 0 {
             size = (Int(spice.size.width), Int(spice.size.height))

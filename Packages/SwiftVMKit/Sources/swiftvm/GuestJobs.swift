@@ -2,7 +2,7 @@ import Foundation
 import GuestChannel
 import VMControl
 
-/// `swiftvm exec`, `cp`, `screenshot` and `ui`: what the guest tools do in a guest when asked from here.
+/// `swiftvm exec` and `cp`: what the guest tools do in a guest when asked from here.
 ///
 /// The app opens the job and then only passes bytes on, so that this tool and the agent in the guest
 /// speak to each other in ``JobFrame``s. Leaving, for whatever reason, calls the job off.
@@ -13,9 +13,9 @@ enum GuestJobs {
     static let failedStatus: Int32 = 125
     /// A reader that went away, as the shell reports a program that a closed pipe ended.
     static let brokenPipeStatus: Int32 = 141
-    /// The most that a job which isn't a command may put out: a screenshot, or the tree of a screen.
+    /// The most that a command run to read what it says may put out.
     static let longestCollectedOutput = 256 << 20
-    /// How long such a job gets. An agent gives its own slowest part, the tree, a minute.
+    /// How long such a command gets.
     static let collectTimeout: TimeInterval = 120
 
     // MARK: Running a job
@@ -102,7 +102,7 @@ enum GuestJobs {
         // What comes after, a copy for one, may take as long as it takes.
         defer { watchdog.cancel() }
         let end = run(descriptor) { data in
-            // A picture of a screen is a few megabytes. A guest that sends without end isn't sending one.
+            // A guest that sends without end isn't answering.
             guard collected.count + data.count <= longestCollectedOutput else {
                 fail("The guest sent more than \(longestCollectedOutput >> 20) MB, which is no answer to this.")
             }
@@ -532,147 +532,5 @@ enum GuestJobs {
         }
         guard end.status == 0 else { exit(end.status ?? 1) }
         exit(archiver.terminationStatus)
-    }
-
-    // MARK: screenshot
-
-    /// `swiftvm screenshot`: saves what is on the guest's screen as a PNG.
-    static func screenshot(_ arguments: [String]) -> Never {
-        guard let machine = arguments.first, arguments.count <= 2 else { fail("Usage: swiftvm screenshot <machine> [<file> | -]") }
-        let picture = collect(.screenshot, in: machine)
-        if arguments.count == 2, arguments[1] == "-" {
-            exit(write(picture, to: STDOUT_FILENO) ? 0 : 1)
-        }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        // A name of this tool's choosing is made of what a machine may be called by and nothing else.
-        let stem = machine.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "-" }
-        let path = arguments.count == 2 ? arguments[1] : "\(String(stem))-\(formatter.string(from: Date())).png"
-        do {
-            try picture.write(to: URL(fileURLWithPath: path), options: .atomic)
-        } catch {
-            fail("The screenshot couldn't be saved: \(error.localizedDescription)")
-        }
-        print(path)
-        exit(0)
-    }
-
-    // MARK: ui
-
-    static let uiUsage = """
-        Usage: swiftvm ui <machine> click <x> <y> [--button left|right|middle] [--count <n>]
-               swiftvm ui <machine> double-click <x> <y> | right-click <x> <y> | move <x> <y>
-               swiftvm ui <machine> drag <x> <y> <to x> <to y>
-               swiftvm ui <machine> scroll <x> <y> up|down|left|right [<notches>]
-               swiftvm ui <machine> type <text>
-               swiftvm ui <machine> key <key>...
-               swiftvm ui <machine> tree [--app <name>] [--depth <levels>] [--all]
-               swiftvm ui <machine> press <element> [--action <name>] | focus <element> | set <element> <text>
-        """
-
-    /// `swiftvm ui`: the guest's mouse and keyboard, and what is on its screen as a tree.
-    static func ui(_ arguments: [String]) -> Never {
-        guard arguments.count >= 2 else { fail(uiUsage) }
-        let machine = arguments[0]
-        let action = arguments[1]
-        var rest = Array(arguments.dropFirst(2))
-
-        /// Takes `--name <value>` out of the arguments, if it is there.
-        func option(_ name: String) -> String? {
-            guard let index = rest.firstIndex(of: name) else { return nil }
-            guard index + 1 < rest.count else { fail("\(name) needs a value.") }
-            defer { rest.removeSubrange(index...(index + 1)) }
-            return rest[index + 1]
-        }
-        func numbers(_ count: Int) -> [Int] {
-            let values = rest.prefix(count).compactMap { Int($0) }
-            guard values.count == count, values.allSatisfy({ $0 >= 0 }) else { fail(uiUsage) }
-            rest.removeFirst(count)
-            return values
-        }
-        func nothingLeft() {
-            guard rest.isEmpty else { fail("“\(rest[0])” is one word too many.\n\(uiUsage)") }
-        }
-
-        let job: GuestJob
-        switch action {
-        case "click", "double-click", "right-click":
-            var button = GuestJob.Pointer.Button.left
-            if let name = option("--button") {
-                guard let named = GuestJob.Pointer.Button(rawValue: name) else { fail("--button is left, right or middle.") }
-                button = named
-            }
-            var count = action == "double-click" ? 2 : 1
-            if let text = option("--count") {
-                guard let number = Int(text), (1...3).contains(number) else { fail("--count is 1, 2 or 3.") }
-                count = number
-            }
-            let place = numbers(2)
-            nothingLeft()
-            job = .pointer(.init(action: .click, x: place[0], y: place[1], button: action == "right-click" ? .right : button, count: count))
-        case "move":
-            let place = numbers(2)
-            nothingLeft()
-            job = .pointer(.init(action: .move, x: place[0], y: place[1]))
-        case "drag":
-            let places = numbers(4)
-            nothingLeft()
-            job = .pointer(.init(action: .drag, x: places[0], y: places[1], toX: places[2], toY: places[3]))
-        case "scroll":
-            let place = numbers(2)
-            guard let direction = rest.first else { fail(uiUsage) }
-            rest.removeFirst()
-            var notches = 3
-            if let text = rest.first {
-                guard let number = Int(text), (1...100).contains(number) else { fail("How far to scroll is a number of notches, 100 at most.") }
-                notches = number
-                rest.removeFirst()
-            }
-            nothingLeft()
-            let delta: (x: Int, y: Int)
-            switch direction {
-            case "up": delta = (0, -notches)
-            case "down": delta = (0, notches)
-            case "left": delta = (-notches, 0)
-            case "right": delta = (notches, 0)
-            default: fail("Scrolling goes up, down, left or right.")
-            }
-            job = .pointer(.init(action: .scroll, x: place[0], y: place[1], deltaX: delta.x, deltaY: delta.y))
-        case "type":
-            guard !rest.isEmpty else { fail("Missing the text to type.") }
-            job = .keys(.init(text: rest.joined(separator: " ")))
-        case "key":
-            guard !rest.isEmpty else { fail("Missing the key to press, such as Return or ctrl+c.") }
-            job = .keys(.init(keys: rest))
-        case "tree":
-            let application = option("--app")
-            var depth: Int?
-            if let text = option("--depth") {
-                guard let number = Int(text), number > 0 else { fail("--depth needs a positive number.") }
-                depth = number
-            }
-            let all = rest.firstIndex(of: "--all").map { rest.remove(at: $0) } != nil
-            nothingLeft()
-            job = .tree(.init(application: application, depth: depth, all: all ? true : nil))
-        case "press", "focus":
-            let named = action == "press" ? option("--action") : nil
-            guard rest.count == 1 else { fail("Usage: swiftvm ui <machine> \(action) <element>, with the element's id from `swiftvm ui <machine> tree`") }
-            job = .element(.init(action: action == "press" ? .press : .focus, element: rest[0], actionName: named))
-        case "set":
-            guard rest.count >= 2 else { fail("Usage: swiftvm ui <machine> set <element> <text>") }
-            job = .element(.init(action: .set, element: rest[0], text: rest.dropFirst().joined(separator: " ")))
-        default:
-            fail("Unknown action “\(action)”.\n\(uiUsage)")
-        }
-        // What the guest tools have to say about it: the tree, or the element they acted on.
-        let said = collect(job, in: machine)
-        if !said.isEmpty {
-            write(said, to: STDOUT_FILENO)
-            if said.last != UInt8(ascii: "\n") {
-                write(Data("\n".utf8), to: STDOUT_FILENO)
-            }
-        }
-        exit(0)
     }
 }

@@ -72,7 +72,7 @@ macOS Recovery.
 - macOS guests have no [serial console](linux-guests.md#serial-console).
 - `swiftvm` can [run commands in the guest](automation.md), see its screen,
   and use its mouse and keyboard. The last three work in any macOS guest,
-  whatever its version, also at the login screen. To read the screen as a
-  tree, macOS wants a say-so in the guest, once:
-  [`swiftvm allow-accessibility`](automation.md#macos-guests) gives it.
+  whatever its version, also at the login screen. To know what is on the
+  screen by its parts, macOS wants a say-so in the guest, once:
+  [`swiftvm control <machine> allow`](automation.md#macos-guests) gives it.
 - A copy of a Mac gets its own serial number.

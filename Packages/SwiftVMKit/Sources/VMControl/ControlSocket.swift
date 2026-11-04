@@ -157,6 +157,23 @@ public struct ControlClient: Sendable {
     }
 }
 
+/// Tells when a tool has gone from a connection on which it says nothing after its request.
+public enum ControlHangUp {
+    /// Calls `gone` once when the other side of `connection` hangs up. Cancel what this returns before
+    /// the connection is closed.
+    public static func watch(_ connection: Int32, gone: @escaping @Sendable () -> Void) -> any DispatchSourceRead {
+        let source = DispatchSource.makeReadSource(fileDescriptor: connection, queue: .global())
+        source.setEventHandler { [weak source] in
+            var byte: UInt8 = 0
+            guard recv(connection, &byte, 1, MSG_PEEK) == 0 else { return }
+            source?.cancel()
+            gone()
+        }
+        source.resume()
+        return source
+    }
+}
+
 /// Accepts control connections on a background thread and hands each request to `handler`.
 public final class ControlServer: @unchecked Sendable {
     public typealias Handler = @Sendable (ControlRequest) async -> ControlResponse

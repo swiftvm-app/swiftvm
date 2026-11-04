@@ -57,7 +57,7 @@ import Testing
 
     @Test func putsTheSetupNextToTheAnswerFileOnItsDisc() throws {
         let files = try WindowsGuestAgent.setupFiles()
-        #expect(Set(files.keys) == ["setup.ps1", "install.ps1", "desktop-install.ps1", "swiftvm-agent.cs"])
+        #expect(Set(files.keys) == ["setup.ps1", "install.ps1", "swiftvm-agent.cs"])
         // Windows' own tools read what is written for them with Windows' line breaks.
         let runner = String(decoding: try #require(files["setup.ps1"]), as: UTF8.self)
         #expect(runner.contains("\r\n"))

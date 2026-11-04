@@ -4,7 +4,7 @@
 # They are one small program, the guest agent, that lets the SwiftVM app on the Mac that runs this
 # virtual machine see this system's version and addresses, share the clipboard with it, set its
 # clock and time zone, and shut it down without a question on its screen. For the swiftvm command
-# on that Mac it runs commands here, shows the screen, and uses the mouse and the keyboard, once
+# on that Mac it runs commands here and tells what is on the screen, once
 # macOS has been told to let it. It talks to the app over the virtual machine's socket device, so
 # none of that needs a network.
 #
@@ -92,13 +92,8 @@ esac
 # Sent over SSH it arrives for one account's eyes only. There is nothing in it to hide.
 chmod 644 "$directory/install.sh" 2>/dev/null || true
 
-cat > "$directory/desktop-install.sh" <<'SWIFTVM_END_OF_FILE'
-@@desktop-install.sh@@
-SWIFTVM_END_OF_FILE
-# Internet access is only needed for this download, never for the desktop control connection.
-if ! sh "$directory/desktop-install.sh" > "$directory/agent-desktop-install.log" 2>&1; then
-    echo "swiftvm: agent-desktop wasn't installed; see $directory/agent-desktop-install.log and reinstall Guest Tools to retry" >&2
-fi
+# What older tools installed to work the desktop with. The app does that itself now.
+rm -rf "$directory/agent-desktop" "$directory/desktop-install.sh" "$directory/agent-desktop-install.log"
 
 # Stopping first is what puts a newer agent in the place of a running older one.
 users=$(session_users)
@@ -127,7 +122,7 @@ cat > "$daemon" <<'SWIFTVM_END_OF_FILE'
 SWIFTVM_END_OF_FILE
 
 # The half that runs in the session of whoever logs in at the screen: for the clipboard, and for
-# the screen, the mouse and the keyboard.
+# what is on the screen.
 cat > "$session" <<'SWIFTVM_END_OF_FILE'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

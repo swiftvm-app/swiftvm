@@ -29,8 +29,8 @@ esac
 packages="hyprland foot dolphin hyprlauncher waybar woff2-font-awesome noto-fonts xdg-desktop-portal-hyprland
     hyprpolkitagent qt6-wayland xorg-xwayland pipewire-pulse wireplumber sddm firefox spice-vdagent"
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
-# the Mac (swiftvm ui): the desktop's own accessibility, and what Python takes to ask it.
-packages="$packages at-spi2-core python-gobject"
+# the Mac (swiftvm control): the desktop's own accessibility, and what Python takes to ask it.
+packages="$packages at-spi2-core python-gobject wl-clipboard xclip"
 # A compiler for the few lines that make Hyprland wait for its drawing (below). It goes again
 # afterwards, unless the system had one already.
 had_compiler=no
@@ -132,7 +132,7 @@ systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 # One login screen at a time: a desktop installed before this one keeps its own.
 [ -e /etc/systemd/system/display-manager.service ] || systemctl enable sddm
 # The account logs in by itself, as it does in a macOS or Windows machine that SwiftVM sets up:
-# whoever drives the desktop from the Mac (swiftvm desktop) finds it there after every start. The
+# whoever drives the desktop from the Mac (swiftvm control) finds it there after every start. The
 # password still unlocks a locked screen, sudo and SSH.
 if [ -n "${SWIFTVM_USER:-}" ]; then
     mkdir -p /etc/sddm.conf.d

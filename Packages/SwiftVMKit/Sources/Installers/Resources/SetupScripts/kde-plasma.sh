@@ -30,10 +30,10 @@ case $ID in
     *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
-# the Mac (swiftvm ui): the desktop's own accessibility, and what Python takes to ask it.
+# the Mac (swiftvm control): the desktop's own accessibility, and what Python takes to ask it.
 case $ID in
-    arch | archarm) packages="$packages at-spi2-core python-gobject" ;;
-    *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0" ;;
+    arch | archarm) packages="$packages at-spi2-core python-gobject wl-clipboard xclip" ;;
+    *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0 wl-clipboard xclip" ;;
 esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then

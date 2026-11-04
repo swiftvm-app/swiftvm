@@ -2,14 +2,15 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import Testing
+import VMCore
 @testable import VZEngine
 
 @Suite struct MachineDeskTests {
     @Test func aPictureOfTheDisplayKeepsItsColors() throws {
         // Two pixels as a display's surface has them: blue first, then green, red, and a byte that
         // says nothing. A red one and a blue one, in a row that is longer than its pixels.
-        let frame = MachineDesk.Frame(width: 2, height: 1, bytesPerRow: 12, pixels: Data([0, 0, 255, 0, 255, 0, 0, 0, 9, 9, 9, 9]))
-        let png = try MachineDesk.png(of: frame)
+        let frame = ScreenFrame(width: 2, height: 1, bytesPerRow: 12, pixels: Data([0, 0, 255, 0, 255, 0, 0, 0, 9, 9, 9, 9]))
+        let png = try #require(frame.png())
 
         let source = try #require(CGImageSourceCreateWithData(png as CFData, nil))
         let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))

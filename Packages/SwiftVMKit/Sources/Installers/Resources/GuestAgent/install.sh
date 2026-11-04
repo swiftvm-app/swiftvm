@@ -4,7 +4,7 @@
 # They are one small program, the guest agent, that lets the SwiftVM app on the Mac see this
 # system's version and addresses, set its clock after the virtual machine was suspended, mount
 # the folders shared with it and shut it down. For the swiftvm command on the Mac it runs
-# commands here, shows the screen, and uses the mouse and the keyboard. It talks to the app over
+# commands here and tells what is on the screen. It talks to the app over
 # the virtual machine's socket device, so none of that needs a network.
 #
 # Run it as root:    sudo sh install.sh
@@ -71,13 +71,8 @@ case "$0" in
     */install.sh | install.sh) cp "$0" "$directory/install.sh" 2>/dev/null || true ;;
 esac
 
-cat > "$directory/desktop-install.sh" <<'SWIFTVM_END_OF_FILE'
-@@desktop-install.sh@@
-SWIFTVM_END_OF_FILE
-# An offline or unsupported guest still gets the core tools. Reinstalling retries this step.
-if ! sh "$directory/desktop-install.sh" > "$directory/agent-desktop-install.log" 2>&1; then
-    echo "swiftvm: agent-desktop wasn't installed; see $directory/agent-desktop-install.log and reinstall Guest Tools to retry" >&2
-fi
+# What older tools installed to work the desktop with. The app does that itself now.
+rm -rf "$directory/agent-desktop" "$directory/desktop-install.sh" "$directory/agent-desktop-install.log"
 
 systemctl daemon-reload
 systemctl --quiet enable swiftvm-agent.service swiftvm-sshd-vsock.socket

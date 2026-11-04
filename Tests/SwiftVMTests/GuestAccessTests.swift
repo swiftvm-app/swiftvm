@@ -1,3 +1,4 @@
+import AgentControl
 import CoreGraphics
 import Foundation
 import Testing
@@ -37,24 +38,6 @@ import Testing
         #expect(ScreenText.matchingLine(name, among: ["swiftvm-agent-helper", "not-swiftvm-agent"]) == nil)
         #expect(ScreenText.matchingLine(name, among: ["swiftvm-agent-helper", "Swiftvm–Agent"]) == 1)
         #expect(ScreenText.matchingLine(name, among: ["swiftvm-agent", "Swiftvm—Agent"]) == nil)
-    }
-
-    @Test func theGuestToolsAreAddedWithTheFirstListsAddButton() {
-        // As a macOS 27.2 guest gave the tree of its Screen & System Audio Recording page: two lists,
-        // each with an Add button, and a menu with an item named alike.
-        let tree = Data("""
-            {"applications":[{"id":"1302","role":"application","name":"System Settings","children":[
-              {"id":"1302/0","role":"window","name":"Screen & System Audio Recording","children":[
-                {"id":"1302/0/0/0/3/0/0/2/0/0/0/0/0","role":"staticText","value":"No Items"},
-                {"id":"1302/0/0/0/3/0/0/2/1","role":"button","name":"Add","actions":["press"]},
-                {"id":"1302/0/0/0/3/0/0/2/2","role":"button","name":"Remove","actions":["press"]},
-                {"id":"1302/0/0/0/3/0/0/5/1","role":"button","name":"Add","actions":["press"]}]},
-              {"id":"1302/1/1","role":"menuItem","name":"Add","actions":["press"]}]}],
-             "truncated":false}
-            """.utf8)
-        #expect(MacGuestTools.addButton(inTree: tree) == "1302/0/0/0/3/0/0/2/1")
-        #expect(MacGuestTools.addButton(inTree: Data(#"{"applications":[],"truncated":false}"#.utf8)) == nil)
-        #expect(MacGuestTools.addButton(inTree: Data("not a tree".utf8)) == nil)
     }
 
     @Test func aNameIsKnownByItsLettersHoweverItsDashWasRead() {

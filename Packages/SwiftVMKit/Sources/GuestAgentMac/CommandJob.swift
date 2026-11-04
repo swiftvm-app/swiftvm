@@ -205,22 +205,36 @@ final class JobConnection: @unchecked Sendable {
 final class HangUpWatch: @unchecked Sendable {
     private let lock = NSLock()
     private var isStopped = false
+    /// Written to when the job is over, so that waiting ends at once: a command that took a moment
+    /// isn't made to take a quarter of a second more.
+    private let wake: [Int32]
+
+    init() {
+        var ends: [Int32] = [-1, -1]
+        wake = pipe(&ends) == 0 ? ends : []
+    }
+
+    deinit {
+        wake.forEach { close($0) }
+    }
 
     /// Waits until the other side of `descriptor` has said it sends no more, and returns `true`. Returns
     /// `false` once ``stop()`` was called.
     func waitForHangUp(of descriptor: Int32) -> Bool {
         let queue = kqueue()
-        guard queue >= 0 else { return false }
+        guard queue >= 0, wake.count == 2 else { return false }
         defer { close(queue) }
         // Told once about what arrives, not for as long as it lies there unread.
-        var change = kevent(ident: UInt(descriptor), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD | EV_CLEAR), fflags: 0, data: 0, udata: nil)
-        guard kevent(queue, &change, 1, nil, 0, nil) == 0 else { return false }
+        var changes = [
+            kevent(ident: UInt(descriptor), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD | EV_CLEAR), fflags: 0, data: 0, udata: nil),
+            kevent(ident: UInt(wake[0]), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD), fflags: 0, data: 0, udata: nil),
+        ]
+        guard kevent(queue, &changes, 2, nil, 0, nil) == 0 else { return false }
         while !lock.withLock({ isStopped }) {
             var event = kevent()
-            var patience = timespec(tv_sec: 0, tv_nsec: 250_000_000)
-            let count = kevent(queue, nil, 0, &event, 1, &patience)
+            let count = kevent(queue, nil, 0, &event, 1, nil)
             if count < 0, errno != EINTR { return false }
-            if count > 0, Int32(event.flags) & EV_EOF != 0 {
+            if count > 0, event.ident == UInt(descriptor), Int32(event.flags) & EV_EOF != 0 {
                 return !lock.withLock { isStopped }
             }
         }
@@ -229,5 +243,9 @@ final class HangUpWatch: @unchecked Sendable {
 
     func stop() {
         lock.withLock { isStopped = true }
+        if wake.count == 2 {
+            var byte: UInt8 = 1
+            _ = write(wake[1], &byte, 1)
+        }
     }
 }
