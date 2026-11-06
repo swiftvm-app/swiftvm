@@ -64,7 +64,8 @@ public struct WindowsSetup: Sendable, Hashable {
         let language = Self.xml(self.language)
         let password = Self.encodedPassword(self.password)
         // Windows 11 asks for a TPM, Secure Boot, a processor it knows and more memory than a small
-        // machine has. It runs well without them, and is told so before it looks.
+        // machine has. It runs well without them, and is told so before it looks: a machine can have its
+        // TPM turned off, and none has Secure Boot.
         let checks = ["BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck", "BypassCPUCheck", "BypassStorageCheck"]
         let skips = checks.enumerated().map { index, check in
             """
@@ -73,6 +74,10 @@ public struct WindowsSetup: Sendable, Hashable {
         }.joined(separator: "\n")
         // The setup disc's letter isn't known ahead: whichever drive has the runner on it.
         let specialize = "cmd.exe /c \"for %d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do if exist %d:\\swiftvm\\setup.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File %d:\\swiftvm\\setup.ps1 -Phase specialize\""
+        // With a TPM there, Windows encrypts its disk with BitLocker by itself where it can. The disk
+        // would then only open with that TPM's state, or a recovery key that nobody was shown. Turning
+        // it on stays the user's to do.
+        let preventEncryption = "reg.exe add HKLM\\SYSTEM\\CurrentControlSet\\Control\\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f"
         let firstLogon = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\ProgramData\\SwiftVM\\setup\\setup.ps1 -Phase firstlogon"
         let displayName = Self.xml((fullName?.isEmpty == false ? fullName : nil) ?? userName)
         return """
@@ -123,7 +128,8 @@ public struct WindowsSetup: Sendable, Hashable {
             </component>
             \(component("Microsoft-Windows-Deployment"))
               <RunSynchronous>
-                <RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>\(Self.xml(specialize))</Path></RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>\(Self.xml(preventEncryption))</Path></RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add"><Order>2</Order><Path>\(Self.xml(specialize))</Path></RunSynchronousCommand>
               </RunSynchronous>
             </component>
           </settings>

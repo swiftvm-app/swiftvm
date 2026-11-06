@@ -515,11 +515,15 @@ public struct BootConfiguration: Codable, Sendable, Hashable {
     /// Let a Linux guest run virtual machines of its own (`/dev/kvm`). Needs an M3 or later, and Apple's
     /// virtualization: QEMU's Hypervisor.framework accelerator doesn't start a guest at EL2.
     public var nestedVirtualization: Bool
+    /// Give a Windows guest a TPM 2.0, which Windows 11 and apps that keep keys in one look for. Its
+    /// state is kept in the bundle (``VMBundle/tpmStateURL``). Other guests go without.
+    public var tpm: Bool
 
-    public init(secureBoot: Bool = false, rosetta: Bool = false, nestedVirtualization: Bool = false) {
+    public init(secureBoot: Bool = false, rosetta: Bool = false, nestedVirtualization: Bool = false, tpm: Bool = true) {
         self.secureBoot = secureBoot
         self.rosetta = rosetta
         self.nestedVirtualization = nestedVirtualization
+        self.tpm = tpm
     }
 
     public init(from decoder: any Decoder) throws {
@@ -528,6 +532,9 @@ public struct BootConfiguration: Codable, Sendable, Hashable {
         rosetta = try c.decode(.rosetta, default: false)
         // Machines made before it was a setting have it off.
         nestedVirtualization = try c.decode(.nestedVirtualization, default: false)
+        // Machines made before it was a setting get one from their next start from shut down. One that
+        // was saved without it resumes without it (see the QEMU engine's saved state).
+        tpm = try c.decode(.tpm, default: true)
     }
 }
 

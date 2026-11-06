@@ -21,6 +21,9 @@ import Testing
         for check in ["BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck", "BypassCPUCheck"] {
             #expect(answers.contains(check))
         }
+        // Windows doesn't encrypt its disk by itself with the TPM, before SwiftVM's setup or anything else.
+        let specialize = try text("//*[local-name()='settings'][@pass='specialize']//*[local-name()='RunSynchronousCommand']/*[local-name()='Path']")
+        #expect(specialize.first?.contains("BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1") == true)
         // The account, which logs in by itself and then finishes SwiftVM's setup.
         #expect(try text("//*[local-name()='LocalAccount']/*[local-name()='Name']") == ["saeed"])
         #expect(try text("//*[local-name()='LocalAccount']/*[local-name()='DisplayName']") == ["Saeed & Co"])

@@ -26,6 +26,14 @@ public struct QEMUInstallation: Sendable, Hashable {
         FileManager.default.fileExists(atPath: libraryDirectory.appending(path: "libdxmt-native.dylib").path)
     }
 
+    /// `swtpm`, the TPM 2.0 that Windows guests get, which runs next to QEMU. Custom builds can leave it out.
+    public var tpmEmulator: URL { program.deletingLastPathComponent().appending(path: "swtpm") }
+
+    /// Whether Windows guests can have a TPM.
+    public var supportsTPM: Bool {
+        FileManager.default.isExecutableFile(atPath: tpmEmulator.path)
+    }
+
     var libraryDirectory: URL { program.deletingLastPathComponent().deletingLastPathComponent().appending(path: "lib") }
     var displayLibrary: URL { libraryDirectory.appending(path: "libSwiftVMDisplay.dylib") }
 

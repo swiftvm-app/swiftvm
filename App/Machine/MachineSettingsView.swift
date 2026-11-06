@@ -19,8 +19,8 @@ nonisolated enum MachineSettingsPane: String, SettingsPane {
         }
         panes += [.keyboard, .automation]
         // Secure Boot, Rosetta and nested virtualization are Apple's virtualization's. A Linux machine
-        // with graphics acceleration runs on QEMU, which has none of them.
-        if configuration.os.family == .linux, configuration.engine == .virtualization {
+        // with graphics acceleration runs on QEMU, which has none of them. Windows has its TPM.
+        if (configuration.os.family == .linux && configuration.engine == .virtualization) || configuration.os.family == .windows {
             panes.append(.startup)
         }
         return panes
@@ -539,7 +539,25 @@ struct MachineSettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var bootSection: some View {
+        if configuration.os.family == .windows {
+            windowsBootSection
+        } else {
+            linuxBootSection
+        }
+    }
+
+    private var windowsBootSection: some View {
+        Section {
+            Toggle("TPM 2.0", isOn: binding(\.boot.tpm))
+        } footer: {
+            Text("Windows 11 and some apps look for a TPM. What it holds stays in the virtual machine, and goes with its snapshots and copies. BitLocker can't use it yet.")
+        }
+        .disabled(isActive)
+    }
+
+    private var linuxBootSection: some View {
         Section {
             Toggle("Secure Boot", isOn: binding(\.boot.secureBoot))
             Toggle("Rosetta for x86-64 Programs", isOn: binding(\.boot.rosetta))

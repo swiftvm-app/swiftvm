@@ -20,6 +20,8 @@ public struct VMBundle: Sendable, Hashable {
     public var machineIdentifierURL: URL { url.appending(path: "machine-identifier.bin") }
     /// Linux and Windows guests: UEFI variable store.
     public var efiVariableStoreURL: URL { url.appending(path: "efi-vars.fd") }
+    /// Windows guests: what the TPM holds, the keys Windows and its apps keep in it among it.
+    public var tpmStateURL: URL { url.appending(path: "tpm-state.bin") }
     /// Saved state written when the machine is suspended.
     public var savedStateURL: URL { url.appending(path: "state.vzvmsave") }
     /// cloud-init / unattended setup media.
@@ -75,10 +77,11 @@ public struct VMBundle: Sendable, Hashable {
         // What a snapshot holds of the machine. The rest never changes, and is in the bundle itself.
         let state = Set(
             configuration.disks.filter { !$0.readOnly }.map(\.fileName)
-                + [auxiliaryStorageURL, efiVariableStoreURL].map(\.lastPathComponent)
+                + [auxiliaryStorageURL, efiVariableStoreURL, tpmStateURL].map(\.lastPathComponent)
         )
+        // The TPM goes along, so that what the copy's Windows keeps in it still opens.
         let names = configuration.disks.map(\.fileName) + [
-            auxiliaryStorageURL, hardwareModelURL, efiVariableStoreURL, seedImageURL,
+            auxiliaryStorageURL, hardwareModelURL, efiVariableStoreURL, tpmStateURL, seedImageURL,
         ].map(\.lastPathComponent)
         return names
             .map { name in

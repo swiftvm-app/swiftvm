@@ -15,7 +15,7 @@ import VMCore
 
     private func commandLine(
         display: QEMUCommandLine.Display = .framebuffer, restoring: Bool = false, source: QEMUCommandLine.DiskSource? = nil,
-        drives: [RemovableImage]? = nil, usbPorts: [UUID: Int] = [:]
+        drives: [RemovableImage]? = nil, usbPorts: [UUID: Int] = [:], tpm: Bool = false
     ) -> QEMUCommandLine {
         let configuration = VMConfiguration(
             name: "Windows", os: GuestOS(family: .windows), cpuCount: 4, memorySize: 8 << 30, disks: [disk],
@@ -28,7 +28,7 @@ import VMCore
         return QEMUCommandLine(
             configuration: configuration, bundle: bundle, installation: installation,
             diskSources: [disk.id: source ?? .file(bundle.diskURL(for: disk))], display: display, restoresSavedState: restoring,
-            usbPorts: usbPorts
+            usbPorts: usbPorts, attachesTPM: tpm
         )
     }
 
@@ -113,6 +113,54 @@ import VMCore
         #expect(cards.compactMap { $0["mac"] as? String } == ["02:00:00:00:00:01", "02:00:00:00:00:02"])
         // Nothing listens anywhere: the app hands QEMU the display's one client itself.
         #expect(values(of: "-vnc", in: arguments) == ["none"])
+    }
+
+    @Test func aTPMIsOnTheLineAfterTheNetworkCards() throws {
+        let arguments = try commandLine(tpm: true).arguments()
+        // The two cards are on 6 and 7.
+        #expect(values(of: "-chardev", in: arguments).contains("socket,id=tpm,fd=8"))
+        #expect(values(of: "-tpmdev", in: arguments) == ["emulator,id=tpm0,chardev=tpm"])
+        // Windows on Arm only drives a TPM through its command response buffer.
+        let device = try #require(objects("-device", in: arguments).first { $0["driver"] as? String == "tpm-crb-device" })
+        #expect(device["tpmdev"] as? String == "tpm0")
+
+        let without = try commandLine().arguments()
+        #expect(values(of: "-tpmdev", in: without).isEmpty)
+        #expect(!values(of: "-chardev", in: without).contains { $0.contains("id=tpm") })
+    }
+
+    @Test func aMachineStartsAfreshWithItsTPMSettingAndResumesWithTheHardwareItWasSavedWith() throws {
+        var windows = VMConfiguration(name: "Windows", os: GuestOS(family: .windows), cpuCount: 4, memorySize: 8 << 30, disks: [disk])
+        #expect(try QEMUCommandLine.attachesTPM(configuration: windows, supportsTPM: true, savedWithTPM: nil))
+        // A copy of the app built without swtpm starts Windows without one.
+        #expect(try !QEMUCommandLine.attachesTPM(configuration: windows, supportsTPM: false, savedWithTPM: nil))
+        // Saved before machines had one: it resumes without, and has one from its next fresh start.
+        #expect(try !QEMUCommandLine.attachesTPM(configuration: windows, supportsTPM: true, savedWithTPM: false))
+        windows.boot.tpm = false
+        #expect(try !QEMUCommandLine.attachesTPM(configuration: windows, supportsTPM: true, savedWithTPM: nil))
+        // Turned off since it was saved: QEMU only restores it onto the hardware it had.
+        #expect(try QEMUCommandLine.attachesTPM(configuration: windows, supportsTPM: true, savedWithTPM: true))
+        #expect(throws: QEMUError.self) { try QEMUCommandLine.attachesTPM(configuration: windows, supportsTPM: false, savedWithTPM: true) }
+
+        let linux = VMConfiguration(name: "Arch", os: GuestOS(family: .linux), engine: .qemu, cpuCount: 4, memorySize: 8 << 30, disks: [disk])
+        #expect(try !QEMUCommandLine.attachesTPM(configuration: linux, supportsTPM: true, savedWithTPM: nil))
+    }
+
+    @Test func theTPMFindsItsStateByItsNameInTheBundleItRunsIn() {
+        // swtpm can't read a comma in an option, which a machine's path may have.
+        let arguments = TPMEmulator.arguments(stateFileName: "tpm-state.bin")
+        #expect(arguments.contains("backend-uri=file://tpm-state.bin,mode=0600,lock"))
+        #expect(arguments.contains("type=unixio,clientfd=3,terminate"))
+        // Given the standard error it writes to anyway as a log, swtpm closes it and doesn't start.
+        #expect(!arguments.contains("--log"))
+    }
+
+    @Test func aFailedStartIsPutDownToTheTPMOnlyWhenItSaysWhatWentWrong() {
+        // It says this whenever QEMU goes, whatever QEMU went for, as swtpm writes it.
+        #expect(TPMEmulator.complaint(in: "swtpm: Data client disconnected\n") == nil)
+        #expect(TPMEmulator.complaint(in: "") == nil)
+        let locked = "swtpm: SWTPM_NVRAM_Lock_Linear: Could not lock backend-uri\nswtpm: Data client disconnected\n"
+        #expect(TPMEmulator.complaint(in: locked) == "SWTPM_NVRAM_Lock_Linear: Could not lock backend-uri")
     }
 
     @Test func discsAreDiscDrivesAndDiskImagesAreDisks() throws {
@@ -303,6 +351,20 @@ import VMCore
         #expect(try SavedStateHeader.read(from: url) == header)
         // QEMU's part is as it wrote it.
         #expect(try Data(contentsOf: url).dropFirst(SavedStateHeader.size) == stream)
+    }
+
+    @Test func remembersWhetherTheMachineHadATPM() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "swiftvm-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(count: SavedStateHeader.size + 16).write(to: url)
+        try SavedStateHeader(usbPorts: [:], hasTPM: true).write(into: url)
+        #expect(try SavedStateHeader.read(from: url).hasTPM)
+
+        // What was saved before machines had a TPM says nothing of one.
+        var old = Data("SwiftVM QEMU machine state 1\n".utf8) + Data(#"{"usbPorts":{}}"#.utf8)
+        old.append(Data(count: SavedStateHeader.size + 16 - old.count))
+        try old.write(to: url)
+        #expect(try !SavedStateHeader.read(from: url).hasTPM)
     }
 
     @Test func aFileWithoutTheHeaderIsNoStateToResume() throws {

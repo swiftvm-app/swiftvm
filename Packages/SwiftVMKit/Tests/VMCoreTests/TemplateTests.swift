@@ -88,12 +88,14 @@ private struct Scratch {
         let library = scratch.makeLibrary()
         let machine = try scratch.makeMachine()
         try await machine.takeSnapshot(named: "Before")
+        // Keys that Windows keeps in the TPM go with the disk into the copies.
+        try Data("keys".utf8).write(to: machine.bundle.tpmStateURL)
 
         let template = try await library.save(machine, named: "Golden")
         let package = try #require(library.bundle(of: template))
         #expect(package.url.lastPathComponent == "Golden.swiftvmtemplate")
         let names = try FileManager.default.contentsOfDirectory(atPath: package.url.path).sorted()
-        #expect(names == ["aux.img", "disk.img", "hardware-model.bin", "template.json"])
+        #expect(names == ["aux.img", "disk.img", "hardware-model.bin", "template.json", "tpm-state.bin"])
         #expect(library.templates == [template])
         #expect(machine.activity == nil)
 

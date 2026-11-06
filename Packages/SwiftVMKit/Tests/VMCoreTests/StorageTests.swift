@@ -207,6 +207,7 @@ private struct Scratch {
     @Test func goesBackToTheDiskAsItWas() async throws {
         defer { scratch.cleanUp() }
         let machine = try scratch.makeMachine()
+        try Data("keys".utf8).write(to: machine.bundle.tpmStateURL)
 
         let snapshot = try await machine.takeSnapshot(named: "  Clean install ")
         #expect(snapshot.name == "Clean install")
@@ -216,9 +217,12 @@ private struct Scratch {
 
         try scratch.writeDisk("second", of: machine)
         try Data("changed".utf8).write(to: machine.bundle.efiVariableStoreURL)
+        try Data("other keys".utf8).write(to: machine.bundle.tpmStateURL)
         try await machine.revert(to: snapshot)
         #expect(try scratch.diskContents(of: machine) == "first")
         #expect(try String(contentsOf: machine.bundle.efiVariableStoreURL, encoding: .utf8) == "nvram")
+        // The TPM's keys go back with the disk whose Windows made them.
+        #expect(try String(contentsOf: machine.bundle.tpmStateURL, encoding: .utf8) == "keys")
         #expect(machine.state == .stopped)
 
         // The snapshot is still there, and a machine opened later finds it.

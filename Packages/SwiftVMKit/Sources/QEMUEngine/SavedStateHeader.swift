@@ -1,7 +1,7 @@
 import Foundation
 
 /// What a restore needs to know besides what QEMU saved of a machine: the USB port each drive was in,
-/// which QEMU tells USB devices apart by.
+/// which QEMU tells USB devices apart by, and whether it had a TPM.
 ///
 /// A snapshot copies the saved state's one file, so this is at the start of that file, and QEMU's own
 /// part comes after it, from ``size`` on: a line that says what the file is, this as JSON, and zeros.
@@ -12,14 +12,18 @@ struct SavedStateHeader: Equatable {
 
     /// The USB port of each drive and disk on USB, by its identifier.
     var usbPorts: [UUID: Int]
+    /// The machine had a TPM. It resumes with one, whatever its settings say by then.
+    var hasTPM = false
 
     private struct Contents: Codable {
         var usbPorts: [String: Int]
+        /// Missing from what was saved before machines had a TPM.
+        var hasTPM: Bool?
     }
 
     /// Writes this over the start of a saved state that QEMU has written the rest of.
     func write(into url: URL) throws {
-        let contents = Contents(usbPorts: Dictionary(uniqueKeysWithValues: usbPorts.map { ($0.key.uuidString, $0.value) }))
+        let contents = Contents(usbPorts: Dictionary(uniqueKeysWithValues: usbPorts.map { ($0.key.uuidString, $0.value) }), hasTPM: hasTPM)
         let data = Self.signature + (try JSONEncoder().encode(contents))
         guard data.count < Self.size else { throw QEMUError.refused("The machine has too many drives to save its state.") }
         let handle = try FileHandle(forWritingTo: url)
@@ -41,6 +45,6 @@ struct SavedStateHeader: Equatable {
         for (key, port) in contents.usbPorts {
             if let id = UUID(uuidString: key) { ports[id] = port }
         }
-        return SavedStateHeader(usbPorts: ports)
+        return SavedStateHeader(usbPorts: ports, hasTPM: contents.hasTPM ?? false)
     }
 }

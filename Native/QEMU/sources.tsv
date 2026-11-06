@@ -5,6 +5,8 @@ spice-protocol-0.14.5.tar.xz	baf58449f6e89d19f475899ad5fb9196fdc46c03cc53233f4e3
 spice-gtk-0.42.patch	ba43d3ecd1334d0be82b2b04dfba16f018da70336b78a18f1df1001d1684258e	https://raw.githubusercontent.com/utmapp/UTM/v5.0.6/patches/spice-gtk-0.42.patch	all
 json-glib-1.10.0.tar.xz	1bca8d66d96106ecc147df3133b95a5bb784f1fa6f15d06dd7c1a8fb4a10af7b	https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.0.tar.xz	all
 libjpeg-turbo-3.1.2.tar.gz	8f0012234b464ce50890c490f18194f913a7b1f4e6a03d6644179fa0f867d0cf	https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.2/libjpeg-turbo-3.1.2.tar.gz	all
+libtpms-0.10.2.tar.gz	edac03680f8a4a1c5c1d609a10e3f41e1a129e38ff5158f0c8deaedc719fb127	https://github.com/stefanberger/libtpms/archive/refs/tags/v0.10.2.tar.gz	all
+swtpm-0.10.2.tar.gz	f61cf6f1e9bbcb4cefb30b70cafaf1c4df54c6961e65cfa63830e8ad0e220134	https://github.com/stefanberger/swtpm/archive/refs/tags/v0.10.2.tar.gz	all
 libucontext.tar.gz	a327029576aeb88f74595b9a5c4f9639884eb7b197d7f3ca3c7d393c1b0a085f	https://codeload.github.com/utmapp/libucontext/tar.gz/9b1d8f01a6e99166f9808c79966abe10786de8b6	all
 gstreamer-1.19.1.tar.xz	0bdf5395a6982ae8a20c568603892877437ce3e2d206bf9ab54de29ca417dcc1	https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.19.1.tar.xz	all
 gst-plugins-base-1.19.1.tar.xz	80da678df6274a7e63c0adc8788aaa354ec163dc94417cdd1fbd36081205430c	https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.19.1.tar.xz	all

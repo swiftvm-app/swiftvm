@@ -44,6 +44,8 @@ public final class QEMUBackend: VMBackend {
     /// What waits for the display's next picture. See ``afterDisplayUpdate(_:)``.
     private var afterUpdate: [@MainActor () -> Void] = []
     private var process: QEMUProcess?
+    /// The machine's TPM, while it has one.
+    private var tpm: QEMUProcess?
     private var monitor: QMPConnection?
     private var battery: QEMUBattery?
     private var agentChannel: AgentChannel?
@@ -251,6 +253,8 @@ public final class QEMUBackend: VMBackend {
 
     private func launch(restoringFrom savedState: URL?) async throws {
         await QEMUProcess.endLeftover(pidFile: Self.pidFile(in: bundle), machineID: configuration.id)
+        // Once its QEMU is gone, a TPM left behind ends by itself. This waits for it.
+        await TPMEmulator.endLeftover(in: bundle)
 
         var sources: [UUID: QEMUCommandLine.DiskSource] = [:]
         for disk in configuration.disks {
@@ -278,10 +282,14 @@ public final class QEMUBackend: VMBackend {
             try installation.makeVariableStore(at: bundle.efiVariableStoreURL)
         }
 
+        let header = try savedState.map { try SavedStateHeader.read(from: $0) }
+        let attachesTPM = try QEMUCommandLine.attachesTPM(
+            configuration: configuration, supportsTPM: installation.supportsTPM, savedWithTPM: header?.hasTPM
+        )
         let commandLine = QEMUCommandLine(
             configuration: configuration, bundle: bundle, installation: installation, diskSources: sources,
             display: adapter == .virtioGPU3D ? .virtioGPU3D : adapter == .virtioGPU ? .virtioGPU : .framebuffer, restoresSavedState: savedState != nil,
-            usbPorts: try savedState.map { try SavedStateHeader.read(from: $0).usbPorts } ?? [:], spiceSocket: spice?.socket
+            usbPorts: header?.usbPorts ?? [:], spiceSocket: spice?.socket, attachesTPM: attachesTPM
         )
         let arguments = try commandLine.arguments()
         usbPorts = try commandLine.startingUSBPorts()
@@ -294,8 +302,19 @@ public final class QEMUBackend: VMBackend {
         for _ in configuration.networkInterfaces {
             networkPairs.append(try VmnetPort.makeSocketPair())
         }
-        let engineEnds = [monitorPair.engine, consolePair.engine, agentPair.engine] + networkPairs.map(\.engine)
+        var engineEnds = [monitorPair.engine, consolePair.engine, agentPair.engine] + networkPairs.map(\.engine)
         let appEnds = [monitorPair.app, consolePair.app, agentPair.app] + networkPairs.map(\.port)
+        // The TPM is up before QEMU, which starts it as soon as it is up itself.
+        if attachesTPM {
+            do {
+                let tpm = try TPMEmulator.launch(program: installation.tpmEmulator, bundle: bundle)
+                self.tpm = tpm.process
+                engineEnds.append(tpm.engineEnd)
+            } catch {
+                (engineEnds + appEnds).forEach { close($0) }
+                throw QEMUError.didNotStart("Its TPM couldn't be started: \(error.localizedDescription)")
+            }
+        }
         let process: QEMUProcess
         do {
             process = try QEMUProcess.launch(
@@ -389,6 +408,10 @@ public final class QEMUBackend: VMBackend {
     /// Why QEMU didn't start: what it said as it ended, which it says once it has.
     private func reason(_ process: QEMUProcess) async -> String {
         _ = await process.waitForExit(timeout: .seconds(2))
+        // QEMU only says it lost its TPM. The TPM says why, when that is what went wrong.
+        if let tpm, let complaint = TPMEmulator.complaint(in: tpm.lastOutput) {
+            return "Its TPM said: \(complaint)"
+        }
         return process.complaint.map { "It said: \($0)" } ?? "It ended without saying why."
     }
 
@@ -444,7 +467,7 @@ public final class QEMUBackend: VMBackend {
         do {
             try await monitor.execute("migrate", ["channels": Self.migrationChannels(to: url)])
             try await waitForMigration()
-            try SavedStateHeader(usbPorts: usbPorts).write(into: url)
+            try SavedStateHeader(usbPorts: usbPorts, hasTPM: tpm != nil).write(into: url)
         } catch {
             await plugInAudio()
             throw error
@@ -557,6 +580,12 @@ public final class QEMUBackend: VMBackend {
             process.forceKill()
             _ = await process.waitForExit(timeout: .seconds(5))
         }
+        // It ends by itself once QEMU has: this is for a start that failed before QEMU was there.
+        if let tpm, !tpm.hasExited, !(await tpm.waitForExit(timeout: .seconds(2))) {
+            tpm.forceKill()
+            _ = await tpm.waitForExit(timeout: .seconds(5))
+        }
+        tpm = nil
         monitor?.close()
         monitor = nil
         screen?.close()

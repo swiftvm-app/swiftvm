@@ -65,7 +65,7 @@ jobs:
       - name: Install QEMU's build tools and libraries
         if: steps.qemu.outputs.found != 'true'
         run: |
-          brew install cmake ninja meson pkgconf glib pixman openssl@3 python
+          brew install cmake ninja meson pkgconf glib pixman openssl@3 python autoconf automake libtool libtasn1
           xcodebuild -downloadComponent MetalToolchain
 
       # Its sources and the libraries made from them, which take most of its first build. The script

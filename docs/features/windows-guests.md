@@ -155,6 +155,22 @@ requires the guest tools and a connection to SwiftVM's virtual network.
 Changes to the shared-folder list apply while the machine runs. See
 [Shared folders](sharing.md).
 
+## TPM
+
+Windows machines have a TPM 2.0, which Windows 11 and apps that keep their keys
+in a TPM look for. Turn it off in the machine's **Startup** settings while it is
+shut down.
+
+The TPM's contents, its keys among them, are kept in the machine as
+`tpm-state.bin`. They go with its snapshots, duplicates, and templates.
+
+BitLocker can't use the TPM yet: that needs Secure Boot, which Windows machines
+don't have. Windows that SwiftVM installs doesn't encrypt its disk by itself.
+
+Machines made before SwiftVM had a TPM get one the next time they start up
+fresh. A machine resuming saved memory continues with the hardware it was saved
+with.
+
 ## Remote Desktop
 
 Enable **Settings > System > Remote Desktop** in Windows, then connect to the
@@ -172,7 +188,11 @@ account name and password you chose during creation.
   its previous size.
 - [Seamless Mode](#seamless-mode) supports Windows guests only, on your Mac's
   main display.
-- TPM and Secure Boot are unavailable; software that requires them will not work.
+- Secure Boot is unavailable; software that requires it will not work, and
+  BitLocker can't use the [TPM](#tpm).
+- The TPM has no manufacturer's certificate, so services that check one, such
+  as device attestation, do not accept it. `Get-Tpm` in PowerShell reports an
+  error, although Windows and apps use the TPM.
 - Attached disk images must be raw or ISO; ASIF is unsupported.
 - Duplicates and machines made from a template keep the original Windows
   computer name. Rename them in Windows Settings if they will run together.
