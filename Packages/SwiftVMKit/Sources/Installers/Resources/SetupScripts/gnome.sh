@@ -1,8 +1,8 @@
 #!/bin/sh
 # name: GNOME
-# summary: The GNOME desktop, as Ubuntu, Debian and Arch Linux set it up
+# summary: The GNOME desktop, as Ubuntu, Debian, Fedora and Arch Linux set it up
 # category: desktop
-# systems: ubuntu debian arch
+# systems: ubuntu debian fedora arch
 # memory: 4
 # disk: 24
 # restart: yes
@@ -27,17 +27,23 @@ case $ID in
     ubuntu) packages="ubuntu-desktop-minimal network-manager-config-connectivity-ubuntu spice-vdagent gnome-initial-setup- firefox-" ;;
     debian) packages="gnome-core network-manager-config-connectivity-debian firefox-esr spice-vdagent gnome-initial-setup-" ;;
     arch | archarm) packages="gnome-shell gdm gnome-control-center gnome-console nautilus gnome-text-editor gnome-keyring xdg-user-dirs-gtk networkmanager pipewire-pulse wireplumber firefox spice-vdagent" ;;
-    *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
+    fedora) packages="@gnome-desktop gdm ptyxis firefox spice-vdagent" ;;
+    *) echo "This script is written for Ubuntu, Debian, Fedora and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
 # the Mac (swiftvm control): the desktop's own accessibility, and what Python takes to ask it.
 case $ID in
     arch | archarm) packages="$packages at-spi2-core python-gobject wl-clipboard xclip" ;;
+    fedora) packages="$packages at-spi2-core python3-gobject wl-clipboard xclip" ;;
     *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0 wl-clipboard xclip" ;;
 esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
     packages="$packages linux-image-generic"
+fi
+# Fedora's cloud kernel leaves it to its own package of modules.
+if [ "$ID" = fedora ] && ! modinfo virtio_snd > /dev/null 2>&1; then
+    packages="$packages kernel-modules"
 fi
 
 if command -v pacman > /dev/null; then
@@ -54,6 +60,19 @@ if command -v pacman > /dev/null; then
     # One login screen at a time: a desktop installed before this one keeps its own.
     [ -e /etc/systemd/system/display-manager.service ] || systemctl enable gdm
     systemctl enable NetworkManager
+elif command -v dnf > /dev/null; then
+    # Left out, as on Ubuntu and Debian: the assistant that would ask for an account that is there
+    # already, and the tour that would cover the desktop at every first login.
+    echo "==> Getting the list of packages"
+    dnf -y makecache
+
+    echo "==> Downloading GNOME"
+    dnf -y install --downloadonly --exclude=gnome-initial-setup,gnome-tour $packages
+
+    echo "==> Installing GNOME"
+    dnf -y install --exclude=gnome-initial-setup,gnome-tour $packages
+    # One login screen at a time: a desktop installed before this one keeps its own.
+    [ -e /etc/systemd/system/display-manager.service ] || systemctl enable gdm
 else
     echo "==> Getting the list of packages"
     # A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.

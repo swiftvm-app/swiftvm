@@ -79,7 +79,7 @@ import VMCore
         #expect(text.contains("write_files:\n  - path: \"/etc/default/grub.d/99-swiftvm-console.cfg\"\n    content: \""))
         // One line of YAML, with the display named after the serial console so that it stays the system console.
         #expect(text.contains(#"GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 console=tty1\"\n""#))
-        #expect(text.contains("runcmd:\n  - \"command -v update-grub >/dev/null && update-grub || true\"\n"))
+        #expect(text.contains("runcmd:\n  - \"if command -v update-grub >/dev/null; then update-grub; elif command -v grubby"))
 
         var displayOnly = seed
         displayOnly.kernelMessagesOnSerialConsole = false
@@ -95,7 +95,7 @@ import VMCore
         withRosetta.rosettaTag = GuestIntegration.rosettaTag
         withRosetta.guestAgentInstaller = nil
         #expect(withRosetta.userData.components(separatedBy: "runcmd:").count == 2)
-        #expect(withRosetta.userData.hasSuffix("  - \"command -v update-grub >/dev/null && update-grub || true\"\n"))
+        #expect(withRosetta.userData.hasSuffix("--args='console=hvc0 console=tty1'; fi; true\"\n"))
     }
 
     @Test func installsTheGuestAgentOnTheFirstBoot() throws {
@@ -249,6 +249,22 @@ import VMCore
         #expect(ImageDownloader.expectedDigest(for: "ubuntu-26.04-desktop-arm64.iso", in: listing) == "c2afd538d66fdd77")
         #expect(ImageDownloader.expectedDigest(for: "ubuntu-26.04-server-cloudimg-arm64.img", in: listing) == "d31e9b3d01ac0fa8")
         #expect(ImageDownloader.expectedDigest(for: "missing.img", in: listing) == nil)
+    }
+
+    @Test func findsDigestInFedorasSignedListing() {
+        let listing = """
+        -----BEGIN PGP SIGNED MESSAGE-----
+        Hash: SHA256
+
+        # Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2: 596705280 bytes
+        SHA256 (Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2) = 1632acc8bc14d45b
+        SHA256 (Fedora-Cloud-Base-UEFI-UKI-45-1.4.aarch64.qcow2) = f51f556104434e66
+        -----BEGIN PGP SIGNATURE-----
+        iQIzBAEBCAAdFiEET1CmEUzVxpdqfxF5ZVpLAvV3hh4FAmrllHUACgkQZVpLAvV3
+        """
+        #expect(ImageDownloader.expectedDigest(for: "Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2", in: listing) == "1632acc8bc14d45b")
+        #expect(ImageDownloader.expectedDigest(for: "Fedora-Cloud-Base-UEFI-UKI-45-1.4.aarch64.qcow2", in: listing) == "f51f556104434e66")
+        #expect(ImageDownloader.expectedDigest(for: "45-1.4.aarch64.qcow2", in: listing) == nil)
     }
 
     @Test func computesDigests() throws {

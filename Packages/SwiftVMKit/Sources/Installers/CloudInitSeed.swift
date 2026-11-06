@@ -334,7 +334,13 @@ public struct CloudInitSeed: Sendable, Hashable {
     static let loginScreenSettingsPath = "/etc/sddm.conf.d/90-swiftvm-users.conf"
     static let shellsOfServices = "/usr/bin/nologin,/usr/sbin/nologin,/sbin/nologin,/bin/false,/usr/bin/false"
 
-    static let bootMenuUpdateCommand = "command -v update-grub >/dev/null && update-grub || true"
+    /// Writes the boot menu anew with the settings above. Fedora reads none of them: it writes its boot
+    /// menu from `/etc/default/grub` whenever a kernel is installed, so the consoles go there, and
+    /// `grubby` gives them to the kernels it has already. Neither adds them a second time.
+    static let bootMenuUpdateCommand = #"if command -v update-grub >/dev/null; then update-grub; "#
+        + #"elif command -v grubby >/dev/null; then "#
+        + #"sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT=/{/console=hvc0/!s/"$/ console=hvc0 console=tty1"/}' /etc/default/grub; "#
+        + #"grubby --update-kernel=ALL --args='console=hvc0 console=tty1'; fi; true"#
 
     /// Registers Rosetta with binfmt_misc so the kernel runs x86-64 ELF binaries through it.
     ///

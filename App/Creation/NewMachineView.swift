@@ -316,6 +316,7 @@ private struct LinuxMachineForm: View {
     @State private var password = ""
     @State private var installsSSHKey = true
     @State private var usesRosetta = false
+    @State private var usesNestedVirtualization = false
     @State private var acceleratesGraphics = false
     @State private var compressesDisk = false
     @State private var startsWhenReady = true
@@ -442,6 +443,9 @@ private struct LinuxMachineForm: View {
     private var chosenAcceleratesGraphics: Bool {
         acceleratesGraphics && canAccelerateGraphics
     }
+    private var chosenUsesNestedVirtualization: Bool {
+        usesNestedVirtualization && VZGenericPlatformConfiguration.isNestedVirtualizationSupported && !chosenAcceleratesGraphics
+    }
 
     /// Whether this copy of the app can give a Linux machine the Mac's GPU to draw with.
     private var canAccelerateGraphics: Bool {
@@ -450,7 +454,7 @@ private struct LinuxMachineForm: View {
 
     private var graphicsNote: String {
         if chosenAcceleratesGraphics {
-            "Draws with your Mac's GPU. The machine runs on QEMU: it can't be suspended or use Rosetta, and shared folders added while it runs appear after a restart."
+            "Draws with your Mac's GPU. The machine runs on QEMU: it can't be suspended or use Rosetta or nested virtualization, and shared folders added while it runs appear after a restart."
         } else if isQuickCreate, selectedScripts.contains(where: \.isDesktop) {
             "Recommended for a desktop. Without it, the machine's processors draw everything on the screen."
         } else {
@@ -480,12 +484,19 @@ private struct LinuxMachineForm: View {
             }
             DiskSizeRow(gigabytes: $diskGigabytes, range: Self.diskRange)
             Toggle("Keep the disk compressed", isOn: $compressesDisk)
+            // Apple silicon from the M3 on gives a guest the processor level that hypervisors run at. Only
+            // Apple's virtualization passes it on: a machine with graphics acceleration runs on QEMU.
+            if VZGenericPlatformConfiguration.isNestedVirtualizationSupported, !chosenAcceleratesGraphics {
+                Toggle("Run virtual machines inside it", isOn: $usesNestedVirtualization)
+            }
             LocationRow(location: $location)
         } header: {
             Text("Hardware")
         } footer: {
             if let diskProblem {
                 Text(diskProblem).foregroundStyle(.red)
+            } else if chosenUsesNestedVirtualization {
+                Text("Nested virtualization gives the guest KVM, for Docker Desktop, Firecracker, Android emulators and virtual machines of its own.")
             } else if compressesDisk {
                 Text("A compressed disk usually takes less than half the space on your Mac. Writing to it is slower, and a crash of your Mac can cost what the guest wrote in its last second.")
             }
@@ -763,6 +774,7 @@ private struct LinuxMachineForm: View {
                 password: password,
                 installsSSHKey: chosenInstallsSSHKey,
                 rosetta: usesRosetta && !chosenAcceleratesGraphics,
+                nestedVirtualization: chosenUsesNestedVirtualization,
                 compressesDisk: compressesDisk,
                 acceleratesGraphics: chosenAcceleratesGraphics,
                 setupScripts: selectedScripts,
@@ -782,6 +794,7 @@ private struct LinuxMachineForm: View {
                 cpuCount: cpuCount,
                 memorySize: memorySize,
                 diskCapacity: diskCapacity,
+                nestedVirtualization: chosenUsesNestedVirtualization,
                 compressesDisk: compressesDisk,
                 acceleratesGraphics: chosenAcceleratesGraphics,
                 location: chosenLocation

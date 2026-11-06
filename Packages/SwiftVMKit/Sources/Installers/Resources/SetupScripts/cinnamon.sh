@@ -2,7 +2,7 @@
 # name: Cinnamon
 # summary: The desktop of Linux Mint, from the distribution's own packages
 # category: desktop
-# systems: ubuntu debian arch
+# systems: ubuntu debian fedora arch
 # memory: 4
 # disk: 24
 # restart: yes
@@ -25,17 +25,23 @@ case $ID in
     ubuntu) packages="cinnamon-core lightdm slick-greeter network-manager-config-connectivity-ubuntu spice-vdagent" ;;
     debian) packages="cinnamon-core lightdm slick-greeter network-manager-config-connectivity-debian firefox-esr spice-vdagent" ;;
     arch | archarm) packages="cinnamon gnome-terminal lightdm lightdm-slick-greeter networkmanager pipewire-pulse wireplumber firefox spice-vdagent" ;;
-    *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
+    fedora) packages="@cinnamon-desktop lightdm slick-greeter firefox spice-vdagent" ;;
+    *) echo "This script is written for Ubuntu, Debian, Fedora and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
 # the Mac (swiftvm control): the desktop's own accessibility, and what Python takes to ask it.
 case $ID in
     arch | archarm) packages="$packages at-spi2-core python-gobject wl-clipboard xclip" ;;
+    fedora) packages="$packages at-spi2-core python3-gobject wl-clipboard xclip" ;;
     *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0 wl-clipboard xclip" ;;
 esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
     packages="$packages linux-image-generic"
+fi
+# Fedora's cloud kernel leaves it to its own package of modules.
+if [ "$ID" = fedora ] && ! modinfo virtio_snd > /dev/null 2>&1; then
+    packages="$packages kernel-modules"
 fi
 
 if command -v pacman > /dev/null; then
@@ -52,6 +58,17 @@ if command -v pacman > /dev/null; then
     # One login screen at a time: a desktop installed before this one keeps its own.
     [ -e /etc/systemd/system/display-manager.service ] || systemctl enable lightdm
     systemctl enable NetworkManager
+elif command -v dnf > /dev/null; then
+    echo "==> Getting the list of packages"
+    dnf -y makecache
+
+    echo "==> Downloading Cinnamon"
+    dnf -y install --downloadonly $packages
+
+    echo "==> Installing Cinnamon"
+    dnf -y install $packages
+    # One login screen at a time: a desktop installed before this one keeps its own.
+    [ -e /etc/systemd/system/display-manager.service ] || systemctl enable lightdm
 else
     echo "==> Getting the list of packages"
     # A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.

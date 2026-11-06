@@ -512,10 +512,22 @@ public struct BootConfiguration: Codable, Sendable, Hashable {
     public var secureBoot: Bool
     /// Expose Rosetta so x86-64 Linux binaries run in the guest.
     public var rosetta: Bool
+    /// Let a Linux guest run virtual machines of its own (`/dev/kvm`). Needs an M3 or later, and Apple's
+    /// virtualization: QEMU's Hypervisor.framework accelerator doesn't start a guest at EL2.
+    public var nestedVirtualization: Bool
 
-    public init(secureBoot: Bool = false, rosetta: Bool = false) {
+    public init(secureBoot: Bool = false, rosetta: Bool = false, nestedVirtualization: Bool = false) {
         self.secureBoot = secureBoot
         self.rosetta = rosetta
+        self.nestedVirtualization = nestedVirtualization
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        secureBoot = try c.decode(.secureBoot, default: false)
+        rosetta = try c.decode(.rosetta, default: false)
+        // Machines made before it was a setting have it off.
+        nestedVirtualization = try c.decode(.nestedVirtualization, default: false)
     }
 }
 

@@ -52,7 +52,7 @@ and `swiftvm info <machine>`. You can use the machine while setup runs.
 | Script | Name for `--script` | Systems | Minimum memory / disk |
 | --- | --- | --- | --- |
 | GNOME | `gnome` | All | 4 GB / 24 GB |
-| KDE Plasma | `kde-plasma` | Ubuntu, Debian | 4 GB / 24 GB |
+| KDE Plasma | `kde-plasma` | Ubuntu, Debian, Fedora | 4 GB / 24 GB |
 | Xfce | `xfce` | All | 2 GB / 16 GB |
 | Cinnamon | `cinnamon` | All | 4 GB / 24 GB |
 | Hyprland | `hyprland` | Arch Linux | 4 GB / 16 GB |
@@ -61,13 +61,13 @@ and `swiftvm info <machine>`. You can use the machine while setup runs.
 | Web Server | `web-server` | All | Default machine settings |
 | Updates | `updates` | All | Default machine settings |
 
-All is Ubuntu 26.04, Ubuntu 24.04, Debian 13, and Arch Linux ARM. On Arch
+All is Ubuntu 26.04, Ubuntu 24.04, Debian 13, Fedora 45, and Arch Linux ARM. On Arch
 Linux, a script that installs packages brings the whole system up to date
 with them, as Arch Linux expects. When that replaces the running kernel, the
 machine restarts once setup is done, whether a script asks for it or not.
 
 KDE Plasma isn't offered on Arch Linux ARM while its upstream Plasma packages
-are only partly built. It remains available on Ubuntu and Debian.
+are only partly built. It remains available on Ubuntu, Debian, and Fedora.
 
 ## Desktops
 

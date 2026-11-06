@@ -6,7 +6,8 @@
 | --- | --- |
 | SwiftVM and `swiftvm` | macOS 27 or newer on Apple silicon |
 | macOS guest setup and tools | macOS 27 or newer in the guest |
-| Linux guests | ARM64; Quick Create offers Ubuntu 26.04, Ubuntu 24.04, Debian 13, and Arch Linux ARM |
+| Linux guests | ARM64; Quick Create offers Ubuntu 26.04, Ubuntu 24.04, Debian 13, Fedora 45, and Arch Linux ARM |
+| Nested virtualization | An M3 or later, for Linux guests on Apple's virtualization (not with graphics acceleration) |
 | Linux guest tools | systemd and Python 3; automation requires Python 3.9 or newer |
 | Windows guests | Windows 11 for Arm |
 

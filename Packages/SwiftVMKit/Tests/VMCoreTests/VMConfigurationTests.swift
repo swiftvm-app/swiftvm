@@ -86,6 +86,15 @@ private final class StubProvider: VMBackendProvider {
         #expect(try JSONDecoder().decode(DisplayConfiguration.self, from: JSONEncoder().encode(accelerated)).acceleratesGraphics)
     }
 
+    @Test func bootSettingsFromBeforeNestedVirtualizationKeepItOff() throws {
+        let json = #"{"secureBoot":true,"rosetta":true}"#
+        let boot = try JSONDecoder().decode(BootConfiguration.self, from: Data(json.utf8))
+        #expect(boot.secureBoot && boot.rosetta)
+        #expect(!boot.nestedVirtualization)
+        let nested = BootConfiguration(nestedVirtualization: true)
+        #expect(try JSONDecoder().decode(BootConfiguration.self, from: JSONEncoder().encode(nested)).nestedVirtualization)
+    }
+
     @Test func remembersWhatWasDecidedAboutTheClipboardAndTheTimeZone() throws {
         var configuration = sample()
         configuration.clipboard.isShared = false

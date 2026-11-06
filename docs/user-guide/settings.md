@@ -65,7 +65,7 @@ Choose **Settings…** in a machine's menu, or the gear in its window's toolbar.
 | USB Devices | Devices the machine takes whenever they are plugged in. See [USB devices](../features/usb-devices.md) |
 | Keyboard | **Send System Shortcuts to the Guest** |
 | Automation | **Allow Automation**: whether `swiftvm` may run commands in the guest, see its screen, and use its mouse and keyboard. See [Automation](../features/automation.md) |
-| Startup | **Secure Boot** and **Rosetta for x86-64 Programs**, for Linux guests |
+| Startup | **Secure Boot**, **Rosetta for x86-64 Programs**, and [**Nested Virtualization**](../features/linux-guests.md#nested-virtualization) (on an M3 or later), for Linux guests |
 
 Shut down the machine to change processors, memory, display, audio, or startup
 settings. Linux clipboard settings require a shutdown only without graphics

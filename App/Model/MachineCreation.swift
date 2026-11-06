@@ -47,6 +47,8 @@ struct LinuxQuickCreateRequest {
     var password: String
     var installsSSHKey: Bool
     var rosetta: Bool
+    /// Let the guest run virtual machines of its own. See ``BootConfiguration/nestedVirtualization``.
+    var nestedVirtualization = false
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
     /// Draw with the Mac's GPU, on QEMU. Without Rosetta and without suspending: see
@@ -70,6 +72,8 @@ struct LinuxInstallerRequest {
     var cpuCount: Int
     var memorySize: UInt64
     var diskCapacity: UInt64
+    /// Let the guest run virtual machines of its own. See ``BootConfiguration/nestedVirtualization``.
+    var nestedVirtualization = false
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
     /// Draw with the Mac's GPU, on QEMU.
@@ -247,7 +251,8 @@ extension AppModel {
             display: DisplayConfiguration(acceleratesGraphics: request.acceleratesGraphics),
             networkInterfaces: [interface],
             clipboard: ClipboardConfiguration(isShared: !request.acceleratesGraphics),
-            boot: BootConfiguration(rosetta: rosetta),
+            // Both are Apple's virtualization's, which a machine on QEMU doesn't run on.
+            boot: BootConfiguration(rosetta: rosetta, nestedVirtualization: request.nestedVirtualization && !request.acceleratesGraphics),
             ssh: SSHConfiguration(alias: alias, user: request.userName, identityFile: keyPair?.privateKeyPath),
             installation: InstallationConfiguration(attachesSeedImage: true)
         )
@@ -332,6 +337,7 @@ extension AppModel {
             display: DisplayConfiguration(acceleratesGraphics: request.acceleratesGraphics),
             networkInterfaces: [NetworkInterfaceConfiguration()],
             clipboard: ClipboardConfiguration(isShared: !request.acceleratesGraphics),
+            boot: BootConfiguration(nestedVirtualization: request.nestedVirtualization && !request.acceleratesGraphics),
             ssh: SSHConfiguration(alias: uniqueAlias(for: request.name))
         )
         let bundle = try VMBundle.create(at: library.makeStagingBundleURL(in: request.location), configuration: configuration)

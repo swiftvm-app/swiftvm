@@ -2,7 +2,7 @@
 # name: KDE Plasma
 # summary: The KDE Plasma desktop, with its own login screen
 # category: desktop
-# systems: ubuntu debian
+# systems: ubuntu debian fedora
 # memory: 4
 # disk: 24
 # restart: yes
@@ -27,17 +27,24 @@ case $ID in
     ubuntu) packages="kde-plasma-desktop sddm sddm-theme-breeze network-manager-config-connectivity-ubuntu spice-vdagent" ;;
     debian) packages="kde-plasma-desktop sddm network-manager-config-connectivity-debian firefox-esr spice-vdagent" ;;
     arch | archarm) packages="plasma-desktop sddm konsole dolphin plasma-nm networkmanager pipewire-pulse wireplumber firefox spice-vdagent" ;;
-    *) echo "This script is written for Ubuntu, Debian and Arch Linux, not for $ID." >&2; exit 1 ;;
+    # Fedora's Plasma has a login screen of its own, Plasma Login, which takes SDDM's settings.
+    fedora) packages="@kde-desktop konsole dolphin plasma-nm firefox spice-vdagent" ;;
+    *) echo "This script is written for Ubuntu, Debian, Fedora and Arch Linux, not for $ID." >&2; exit 1 ;;
 esac
 # What the guest tools read the screen with, part by part, for whoever drives this machine from
 # the Mac (swiftvm control): the desktop's own accessibility, and what Python takes to ask it.
 case $ID in
     arch | archarm) packages="$packages at-spi2-core python-gobject wl-clipboard xclip" ;;
+    fedora) packages="$packages at-spi2-core python3-gobject wl-clipboard xclip" ;;
     *) packages="$packages at-spi2-core python3-gi gir1.2-atspi-2.0 wl-clipboard xclip" ;;
 esac
 # Ubuntu's kernel for virtual machines may come without the sound driver. The full one has it.
 if [ "$ID" = ubuntu ] && ! modinfo virtio_snd > /dev/null 2>&1; then
     packages="$packages linux-image-generic"
+fi
+# Fedora's cloud kernel leaves it to its own package of modules.
+if [ "$ID" = fedora ] && ! modinfo virtio_snd > /dev/null 2>&1; then
+    packages="$packages kernel-modules"
 fi
 
 if command -v pacman > /dev/null; then
@@ -54,6 +61,21 @@ if command -v pacman > /dev/null; then
     # One login screen at a time: a desktop installed before this one keeps its own.
     [ -e /etc/systemd/system/display-manager.service ] || systemctl enable sddm
     systemctl enable NetworkManager
+elif command -v dnf > /dev/null; then
+    # Left out: the assistant for a first start, which the system would start, sign in as itself and
+    # have ask for an account that is there already; and the welcome window that would cover the
+    # desktop at every first login.
+    excluded=--exclude=plasma-setup,plasma-welcome
+    echo "==> Getting the list of packages"
+    dnf -y makecache
+
+    echo "==> Downloading KDE Plasma"
+    dnf -y install --downloadonly $excluded $packages
+
+    echo "==> Installing KDE Plasma"
+    dnf -y install $excluded $packages
+    # One login screen at a time: a desktop installed before this one keeps its own.
+    [ -e /etc/systemd/system/display-manager.service ] || systemctl enable plasmalogin
 else
     echo "==> Getting the list of packages"
     # A setup that was cut short carries on here. Unlike apt, dpkg doesn't wait for its lock.
@@ -84,7 +106,7 @@ else
 fi
 
 echo "==> Finishing"
-if [ "$ID" != debian ]; then
+if [ "$ID" != debian ] && [ "$ID" != fedora ]; then
     mkdir -p /etc/sddm.conf.d
     printf '[Theme]\nCurrent=breeze\n' > /etc/sddm.conf.d/90-swiftvm.conf
 fi
@@ -92,9 +114,12 @@ fi
 # its screen doesn't lock while nobody types: whoever drives the desktop from the Mac (swiftvm
 # desktop) finds it there after every start. The password still unlocks a locked screen, sudo and SSH.
 # Plasma's own session, which is Wayland from Plasma 6 and X11 before.
+# Fedora's Plasma Login reads the same settings from a folder of its own.
 if [ -n "${SWIFTVM_USER:-}" ]; then
-    mkdir -p /etc/sddm.conf.d
-    printf '[Autologin]\nUser=%s\nSession=plasma.desktop\n' "$SWIFTVM_USER" > /etc/sddm.conf.d/80-swiftvm-autologin.conf
+    settings=/etc/sddm.conf.d
+    [ "$ID" != fedora ] || settings=/etc/plasmalogin.conf.d
+    mkdir -p "$settings"
+    printf '[Autologin]\nUser=%s\nSession=plasma.desktop\n' "$SWIFTVM_USER" > "$settings/80-swiftvm-autologin.conf"
 fi
 mkdir -p /etc/xdg
 printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > /etc/xdg/kscreenlockerrc

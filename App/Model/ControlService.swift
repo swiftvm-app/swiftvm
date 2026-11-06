@@ -895,12 +895,21 @@ extension AppModel {
             }
         }
 
+        let usesNestedVirtualization = parameters.nestedVirtualization ?? false
+        if usesNestedVirtualization {
+            guard !isMac else { return .failure("--nested-virt is for Linux guests.") }
+            guard VZGenericPlatformConfiguration.isNestedVirtualizationSupported else {
+                return .failure("This Mac can't run virtual machines inside a virtual machine: that takes an M3 or later. Leave out --nested-virt.")
+            }
+        }
+
         if isMac, parameters.acceleratesGraphics != nil {
             return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.")
         }
         let acceleratesGraphics = parameters.acceleratesGraphics ?? false
         if acceleratesGraphics {
             guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Use --no-gpu to use Rosetta, or leave out --rosetta to use the GPU.") }
+            guard !usesNestedVirtualization else { return .failure("A machine with --gpu runs on QEMU, which can't run virtual machines inside it. Use --no-gpu with --nested-virt, or leave out --nested-virt to use the GPU.") }
             guard qemuProvider?.canAccelerateGraphics == true else {
                 return .failure("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.")
             }
@@ -932,6 +941,7 @@ extension AppModel {
                 password: parameters.password ?? "",
                 installsSSHKey: installsSSHKey,
                 rosetta: usesRosetta,
+                nestedVirtualization: usesNestedVirtualization,
                 compressesDisk: compressesDisk,
                 acceleratesGraphics: acceleratesGraphics,
                 setupScripts: setupScripts,
@@ -988,6 +998,7 @@ extension AppModel {
     private func createWindowsMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.") }
         guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.") }
+        guard parameters.nestedVirtualization == nil else { return .failure("--nested-virt is for Linux guests.") }
         guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.") }
         guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription) }
         let canAccelerateGraphics = qemuProvider?.canAccelerateWindowsGraphics == true
@@ -1056,6 +1067,7 @@ extension AppModel {
     private func createMachine(fromTemplate identifier: String, _ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
         guard parameters.user == nil, parameters.password == nil, parameters.restoreImagePath == nil,
               parameters.installerPath == nil, parameters.scripts == nil, parameters.rosetta == nil,
+              parameters.nestedVirtualization == nil,
               parameters.installsSSHKey == nil, parameters.compressed == nil, parameters.acceleratesGraphics == nil
         else {
             return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.")

@@ -50,6 +50,31 @@
       "installers": []
     },
     {
+      "id": "fedora-45",
+      "distribution": "fedora",
+      "name": "Fedora 45",
+      "summary": "Latest release, from the Fedora Cloud edition",
+      "cloudImage": {
+        "url": "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2",
+        "checksumsURL": "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/aarch64/images/Fedora-Cloud-45-1.4-aarch64-CHECKSUM",
+        "checksumAlgorithm": "sha256"
+      },
+      "installers": [
+        {
+          "name": "Workstation",
+          "url": "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Workstation/aarch64/iso/Fedora-Workstation-Live-45-1.4.aarch64.iso",
+          "checksumsURL": "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Workstation/aarch64/iso/Fedora-Workstation-45-1.4-aarch64-CHECKSUM",
+          "checksumAlgorithm": "sha256"
+        },
+        {
+          "name": "Server",
+          "url": "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Server/aarch64/iso/Fedora-Server-dvd-aarch64-45-1.4.iso",
+          "checksumsURL": "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Server/aarch64/iso/Fedora-Server-45-1.4-aarch64-CHECKSUM",
+          "checksumAlgorithm": "sha256"
+        }
+      ]
+    },
+    {
       "id": "arch",
       "distribution": "arch",
       "name": "Arch Linux ARM",
