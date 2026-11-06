@@ -2,7 +2,7 @@
 # name: Web Server
 # summary: nginx, serving the pages in /srv/site
 # category: server
-# systems: ubuntu debian arch
+# systems: ubuntu debian fedora arch
 
 set -eu
 
@@ -11,6 +11,8 @@ if command -v pacman > /dev/null; then
     # The keys that sign today's packages first, which may be newer than the system's.
     pacman -Sy --noconfirm --needed $(pacman -Qqs '^arch.*-keyring$')
     pacman -Su --noconfirm --needed nginx
+elif command -v dnf > /dev/null; then
+    dnf -y install nginx
 else
     apt-get update
     apt-get install -y nginx
@@ -29,7 +31,11 @@ server {
 END
     systemctl reload nginx
 else
-    # Arch Linux keeps the whole configuration in one file, and doesn't start nginx by itself.
+    # Arch Linux and Fedora keep the whole configuration in one file, and don't start nginx by
+    # themselves. On Fedora, SELinux lets nginx read only what is marked as web content.
+    if command -v restorecon > /dev/null && [ "$(getenforce 2> /dev/null)" = Enforcing ]; then
+        chcon -R -t httpd_sys_content_t /srv/site
+    fi
     cat > /etc/nginx/nginx.conf << 'END'
 worker_processes auto;
 

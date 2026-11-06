@@ -14,6 +14,7 @@ public struct VZConfigurationBuilder {
         case unsupportedHardwareModel
         case invalidMACAddress(String)
         case rosettaNotInstalled
+        case nestedVirtualizationUnsupported
 
         public var errorDescription: String? {
             switch self {
@@ -29,6 +30,8 @@ public struct VZConfigurationBuilder {
                 "“\(address)” isn't a valid MAC address."
             case .rosettaNotInstalled:
                 "Rosetta isn't installed on this Mac."
+            case .nestedVirtualizationUnsupported:
+                "This Mac can't run virtual machines inside a virtual machine: that takes an M3 or later. Turn off Nested Virtualization in the machine's settings."
             }
         }
     }
@@ -125,6 +128,12 @@ public struct VZConfigurationBuilder {
     private func configureLinuxPlatform(_ vz: VZVirtualMachineConfiguration) throws {
         let platform = VZGenericPlatformConfiguration()
         platform.machineIdentifier = try loadOrCreateGenericMachineIdentifier()
+        if configuration.boot.nestedVirtualization {
+            guard VZGenericPlatformConfiguration.isNestedVirtualizationSupported else {
+                throw BuildError.nestedVirtualizationUnsupported
+            }
+            platform.isNestedVirtualizationEnabled = true
+        }
         vz.platform = platform
 
         let bootLoader = VZEFIBootLoader()

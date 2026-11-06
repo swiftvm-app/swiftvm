@@ -326,9 +326,19 @@ public struct ImageDownloader: Sendable {
         }
     }
 
-    /// Finds the digest listed for `fileName` in a `SHA256SUMS`-style listing (`<hex>  <name>` or `<hex> *<name>`).
+    /// Finds the digest listed for `fileName` in a `SHA256SUMS`-style listing (`<hex>  <name>` or `<hex> *<name>`),
+    /// or in a BSD-style one as Fedora signs it (`SHA256 (<name>) = <hex>`).
     static func expectedDigest(for fileName: String, in listing: String) -> String? {
         for line in listing.split(whereSeparator: \.isNewline) {
+            // BSD style: the algorithm, the name in parentheses, then the digest.
+            if let open = line.firstIndex(of: "("), let close = line.range(of: ") = ", options: .backwards),
+               open < close.lowerBound {
+                let name = line[line.index(after: open)..<close.lowerBound]
+                if name == fileName {
+                    return String(line[close.upperBound...]).trimmingCharacters(in: .whitespaces)
+                }
+                continue
+            }
             let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
             guard parts.count == 2 else { continue }
             var name = parts[1].trimmingCharacters(in: .whitespaces)

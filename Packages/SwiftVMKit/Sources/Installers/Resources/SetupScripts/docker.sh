@@ -2,7 +2,7 @@
 # name: Docker
 # summary: Docker Engine, for the account to use without sudo
 # category: development
-# systems: ubuntu debian arch
+# systems: ubuntu debian fedora arch
 # memory: 2
 # disk: 16
 
@@ -17,6 +17,10 @@ if command -v pacman > /dev/null; then
     # Bringing the system up to date may have replaced the kernel that runs, and with it the modules
     # Docker needs. Then it starts with the system's next start.
     systemctl start docker.service || echo "Docker starts once the system is restarted."
+elif command -v dnf > /dev/null; then
+    # Fedora's build of Docker Engine, which it calls Moby.
+    dnf -y install moby-engine
+    systemctl enable --now docker.service
 else
     apt-get update
     apt-get install -y docker.io

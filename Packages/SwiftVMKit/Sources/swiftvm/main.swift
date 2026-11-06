@@ -16,8 +16,10 @@ Usage: swiftvm <command> [arguments]
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
       --rosetta                     Linux: run x86-64 programs with Rosetta, using Apple's backend without GPU acceleration
+      --nested-virt                 Linux: let the guest run virtual machines of its own with KVM, using Apple's
+                                    backend without GPU acceleration. Needs an M3 or later
       --gpu                         Linux: draw with this Mac's GPU (off by default, including Omarchy).
-                                    The machine runs on QEMU, so it can't be suspended or use Rosetta.
+                                    The machine runs on QEMU, so it can't be suspended or use Rosetta or --nested-virt.
                                     Windows: install the experimental 3D driver (off by default).
                                     Windows is sharp at the size it starts at; a new window size takes a restart
       --no-gpu                      Linux: use Apple's backend without GPU acceleration, with suspend support.
@@ -487,6 +489,7 @@ case "create":
         case "--location": parameters.location = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--no-ssh-key": parameters.installsSSHKey = false
         case "--rosetta": parameters.rosetta = true
+        case "--nested-virt": parameters.nestedVirtualization = true
         case "--gpu": parameters.acceleratesGraphics = true
         case "--no-gpu": parameters.acceleratesGraphics = false
         case "--compressed": parameters.compressed = true

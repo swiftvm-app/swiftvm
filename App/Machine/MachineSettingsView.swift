@@ -1,4 +1,5 @@
 import SwiftUI
+import Virtualization
 import VMControl
 import VMCore
 import VMNetworking
@@ -17,8 +18,8 @@ nonisolated enum MachineSettingsPane: String, SettingsPane {
             panes.append(.usb)
         }
         panes += [.keyboard, .automation]
-        // Secure Boot and Rosetta are Apple's virtualization's. A Linux machine with graphics
-        // acceleration runs on QEMU, which has neither.
+        // Secure Boot, Rosetta and nested virtualization are Apple's virtualization's. A Linux machine
+        // with graphics acceleration runs on QEMU, which has none of them.
         if configuration.os.family == .linux, configuration.engine == .virtualization {
             panes.append(.startup)
         }
@@ -542,8 +543,20 @@ struct MachineSettingsView: View {
         Section {
             Toggle("Secure Boot", isOn: binding(\.boot.secureBoot))
             Toggle("Rosetta for x86-64 Programs", isOn: binding(\.boot.rosetta))
+            // A machine copied from a Mac that has it can have it turned off on one that hasn't.
+            if VZGenericPlatformConfiguration.isNestedVirtualizationSupported || configuration.boot.nestedVirtualization {
+                Toggle("Nested Virtualization", isOn: binding(\.boot.nestedVirtualization))
+            }
         } footer: {
-            Text("Secure Boot only starts systems signed with Microsoft's UEFI keys, which most major distributions are.")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Secure Boot only starts systems signed with Microsoft's UEFI keys, which most major distributions are.")
+                if VZGenericPlatformConfiguration.isNestedVirtualizationSupported {
+                    Text("Nested Virtualization gives the guest KVM, so that it can run virtual machines of its own.")
+                } else if configuration.boot.nestedVirtualization {
+                    Text("This Mac can't run virtual machines inside a virtual machine: that takes an M3 or later. Turn this off to start the machine here.")
+                        .foregroundStyle(.red)
+                }
+            }
         }
         .disabled(isActive)
     }

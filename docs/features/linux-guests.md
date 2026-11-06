@@ -26,6 +26,7 @@ finish inside the running guest.
 | Ubuntu 26.04 LTS | `ubuntu-26.04` |
 | Ubuntu 24.04 LTS | `ubuntu-24.04` |
 | Debian 13 | `debian-13` |
+| Fedora 45 | `fedora-45` |
 | Arch Linux ARM | `arch` |
 
 | Setting | What it is |
@@ -35,6 +36,7 @@ finish inside the running guest.
 | Password | For signing in on the console, and at a desktop's login screen. Optional for a server when your SSH key is installed |
 | **Sign in over SSH with my key** | Installs your SSH key, so `ssh` works without a password |
 | **Run x86-64 programs with Rosetta** | Shown when Rosetta is installed on your Mac |
+| **Run virtual machines inside it** | Under **Hardware**. [Nested virtualization](#nested-virtualization), shown on a Mac with an M3 or later |
 
 A Quick Create machine comes with:
 
@@ -111,7 +113,7 @@ through virglrenderer to your Mac's GPU. That changes a few things:
 - The machine can't be suspended, and has no memory snapshots: QEMU can't
   save and restore VirGL's GPU state. Pause works while SwiftVM stays open,
   but keeps the machine in memory. Snapshots while it is shut down work as usual.
-- It has no Rosetta, and no Secure Boot. Apple's supported Rosetta integration
+- It has no Rosetta, no Secure Boot, and no [nested virtualization](#nested-virtualization). Apple's supported Rosetta integration
   requires its Virtualization backend, whose Linux graphics device has no 3D
   acceleration; sharing a directory through QEMU doesn't provide that integration.
 - Each shared folder is a device of its own, mounted under
@@ -147,6 +149,20 @@ You can expose Rosetta to an existing machine by shutting it down and enabling
 first boot, you also need to mount the `rosetta` share and register the binary
 handler inside Linux; changing the setting alone does not perform those steps.
 
+## Nested virtualization
+
+With nested virtualization the guest has KVM (`/dev/kvm`), so it can run
+virtual machines of its own: Docker Desktop, Firecracker, Android emulators,
+or QEMU with `-accel kvm`. It needs a Mac with an M3 or later.
+
+Turn on **Run virtual machines inside it** when creating the machine, or pass
+`--nested-virt` to `swiftvm create`. For an existing machine, shut it down and
+turn on **Nested Virtualization** in its **Startup** settings.
+
+It uses Apple's virtualization, so it can't be combined with
+[graphics acceleration](#graphics-acceleration). A machine copied to a Mac
+without nested virtualization doesn't start until the setting is turned off.
+
 ## Secure Boot
 
 **Secure Boot**, in the machine's settings, only starts systems signed with
@@ -164,8 +180,8 @@ there.
   [package](../user-guide/settings.md#files). The log rotates at 4 MB and
   starts over on a fresh boot; resuming continues the existing log.
 - Quick Create machines also send their kernel's messages there, from their
-  second start on. Ubuntu only lets errors through once it is up; Debian shows
-  everything. Arch Linux only lets serious errors through, from its first
+  second start on. Ubuntu only lets errors through once it is up; Debian and
+  Fedora show everything. Arch Linux only lets serious errors through, from its first
   start on.
 
 ## Good to know
@@ -178,7 +194,7 @@ there.
   [graphics acceleration](#graphics-acceleration), which
   the [desktops](#desktops-and-setup-scripts) SwiftVM installs bring.
 - SSH [without a network](ssh.md#without-a-network) works out of the box on
-  Ubuntu 26.04, Debian 13, and Arch Linux ARM. Ubuntu 24.04 needs the guest
+  Ubuntu 26.04, Debian 13, Fedora 45, and Arch Linux ARM. Ubuntu 24.04 needs the guest
   tools for it.
 - `swiftvm` can [run commands in the guest, see its screen, and use its mouse
   and keyboard](automation.md), from the login screen on.
