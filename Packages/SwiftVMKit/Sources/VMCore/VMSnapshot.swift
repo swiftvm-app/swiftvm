@@ -86,6 +86,7 @@ extension VMBundle {
         let candidates = configuration.disks.filter { !$0.readOnly }.map(\.fileName) + [
             auxiliaryStorageURL.lastPathComponent,
             efiVariableStoreURL.lastPathComponent,
+            tpmStateURL.lastPathComponent,
             savedStateURL.lastPathComponent,
         ]
         return candidates.filter { FileManager.default.fileExists(atPath: url.appending(path: $0).path) }

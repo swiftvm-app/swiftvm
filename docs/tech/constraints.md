@@ -58,8 +58,11 @@ See [Networking](../features/networking.md) for addresses and port forwarding.
 - The accessibility tree requires a logged-in desktop session. Linux needs
   `python3-gi` and `gir1.2-atspi-2.0`; macOS requires permission in the guest.
   Windows does not support this feature.
-- Windows does not support physical USB passthrough, microphone input, TPM,
-  or Secure Boot. See [Windows limitations](../features/windows-guests.md#limitations).
+- Windows does not support physical USB passthrough, microphone input, or
+  Secure Boot. Its TPM is swtpm, which runs next to QEMU, as the CRB device
+  Windows on Arm drives (`Native/QEMU/qemu-tpm-crb.patch`). It has no
+  endorsement key certificate, and BitLocker can't use it without Secure Boot.
+  See [Windows limitations](../features/windows-guests.md#limitations).
 
 See [Guest tools](../features/guest-tools.md) and
 [Automation](../features/automation.md) for the features available in each guest.

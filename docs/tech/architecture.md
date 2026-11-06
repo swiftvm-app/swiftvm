@@ -50,6 +50,7 @@ A `.swiftvm` package contains the machine's files:
 | `config.json` | Machine configuration |
 | `disk.img`, `disk.asif`, or `disk.swiftvmdisk` | Raw, ASIF, or compressed disk |
 | `efi-vars.fd` | Linux and Windows firmware variables |
+| `tpm-state.bin` | Windows TPM state, from swtpm |
 | `aux.img`, `hardware-model.bin`, `machine-identifier.bin` | macOS firmware and identity |
 | `seed.iso` | Linux first-boot data or temporary Windows setup data |
 | `state.vzvmsave` | Saved state while suspended |

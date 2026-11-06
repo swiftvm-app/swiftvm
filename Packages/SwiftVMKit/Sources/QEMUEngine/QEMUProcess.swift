@@ -43,9 +43,14 @@ final class QEMUProcess: @unchecked Sendable {
 
     /// Starts `program` with `arguments`. What it prints goes to `log`, and its process ID to `pidFile`.
     ///
-    /// - Parameter descriptors: Open descriptors that QEMU gets as 3, 4, 5 and so on. The caller keeps its
-    ///   own and closes them once QEMU has started.
-    static func launch(program: URL, arguments: [String], descriptors: [Int32], log: URL, pidFile: URL, environment: [String: String] = [:]) throws -> QEMUProcess {
+    /// - Parameters:
+    ///   - descriptors: Open descriptors that QEMU gets as 3, 4, 5 and so on. The caller keeps its own
+    ///     and closes them once QEMU has started.
+    ///   - directory: The folder it runs in: the log's, unless another is given.
+    static func launch(
+        program: URL, arguments: [String], descriptors: [Int32], log: URL, pidFile: URL, directory: URL? = nil,
+        environment: [String: String] = [:]
+    ) throws -> QEMUProcess {
         try? FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
         var output: [Int32] = [0, 0]
         guard pipe(&output) == 0 else { throw QEMUError.didNotStart(String(cString: strerror(errno))) }
@@ -67,7 +72,7 @@ final class QEMUProcess: @unchecked Sendable {
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addchdir(&actions, log.deletingLastPathComponent().path)
+        posix_spawn_file_actions_addchdir(&actions, (directory ?? log.deletingLastPathComponent()).path)
         posix_spawn_file_actions_adddup2(&actions, output[1], 1)
         posix_spawn_file_actions_adddup2(&actions, output[1], 2)
         for (index, source) in sources.enumerated() {
@@ -211,10 +216,16 @@ final class QEMUProcess: @unchecked Sendable {
     /// that was replaced since leaves a QEMU behind whose program is gone, and a process ID that was
     /// written down long ago may have been given to something else by now, another machine's QEMU too.
     static func endLeftover(pidFile: URL, machineID: UUID) async {
+        await endLeftover(pidFile: pidFile) { _, arguments in isQEMU(arguments, runningMachine: machineID) }
+    }
+
+    /// Ends the process that `pidFile` names, if `isLeftover` says from its ID and what it was started
+    /// with that it is the one left behind, and waits until it is gone.
+    static func endLeftover(pidFile: URL, isLeftover: (pid_t, [String]) -> Bool) async {
         guard let text = try? String(contentsOf: pidFile, encoding: .utf8),
               let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1
         else { return }
-        if let arguments = arguments(of: pid), isQEMU(arguments, runningMachine: machineID) {
+        if let arguments = arguments(of: pid), isLeftover(pid, arguments) {
             kill(pid, SIGKILL)
             for _ in 0..<250 where kill(pid, 0) == 0 {
                 try? await Task.sleep(for: .milliseconds(20))

@@ -91,6 +91,9 @@ private final class StubProvider: VMBackendProvider {
         let boot = try JSONDecoder().decode(BootConfiguration.self, from: Data(json.utf8))
         #expect(boot.secureBoot && boot.rosetta)
         #expect(!boot.nestedVirtualization)
+        // A Windows machine made before it had a TPM gets one.
+        #expect(boot.tpm)
+        #expect(try !JSONDecoder().decode(BootConfiguration.self, from: JSONEncoder().encode(BootConfiguration(tpm: false))).tpm)
         let nested = BootConfiguration(nestedVirtualization: true)
         #expect(try JSONDecoder().decode(BootConfiguration.self, from: JSONEncoder().encode(nested)).nestedVirtualization)
     }

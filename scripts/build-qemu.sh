@@ -8,7 +8,8 @@
 # with no emulator, CoreAudio, 9p shared folders, a VNC server for the app to show the screen through,
 # and SPICE with OpenGL for machines with graphics acceleration. Their OpenGL is replayed on the Mac's
 # GPU by virglrenderer through ANGLE, which draws with Metal, and the app shows it with CocoaSpice. The
-# patches in Native/QEMU carry what that takes on macOS, after UTM's.
+# patches in Native/QEMU carry what that takes on macOS, after UTM's. Windows guests get a TPM 2.0 from
+# swtpm, with libtpms, which runs next to QEMU.
 #
 # Experimental Direct3D for Windows guests is included by default: DXMT turns it into Metal, and its
 # shader translator is built with LLVM 15, which makes the first build far longer. Set
@@ -16,7 +17,7 @@
 #
 # Every source is pinned in Native/QEMU/sources.tsv by its checksum. The libraries the build doesn't
 # make itself are Homebrew's, and so are the tools to build with:
-#   brew install cmake ninja meson pkgconf glib pixman openssl@3 python
+#   brew install cmake ninja meson pkgconf glib pixman openssl@3 python autoconf automake libtool libtasn1
 # and Xcode's Metal toolchain: xcodebuild -downloadComponent MetalToolchain
 #
 # QEMU is GPL. What goes into the app carries the licences and says where the source is, which is also
@@ -37,17 +38,18 @@ export MACOSX_DEPLOYMENT_TARGET=27.0
 configure_options=(
     --target-list=aarch64-softmmu --without-default-features
     --enable-hvf --disable-tcg --enable-coreaudio --enable-pixman --enable-fdt=internal --enable-virtfs
-    --enable-vnc --enable-spice --enable-opengl --enable-virglrenderer
+    --enable-vnc --enable-spice --enable-opengl --enable-virglrenderer --enable-tpm
     --disable-docs --disable-tools --disable-werror --enable-trace-backends=nop
 )
 
 brew_prefix=${HOMEBREW_PREFIX:-/opt/homebrew}
-for tool in cmake ninja meson pkg-config clang xcrun; do
-    (( $+commands[$tool] )) || fail "Building QEMU takes $tool, which isn't installed: brew install cmake ninja meson pkgconf glib pixman openssl@3 python"
+for tool in cmake ninja meson pkg-config clang xcrun autoreconf glibtoolize; do
+    (( $+commands[$tool] )) || fail "Building QEMU takes $tool, which isn't installed: brew install cmake ninja meson pkgconf glib pixman openssl@3 python autoconf automake libtool libtasn1"
 done
 export PKG_CONFIG_PATH=$brew_prefix/opt/openssl@3/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
-for library in glib-2.0 pixman-1 openssl; do
-    pkg-config --exists $library || fail "Building QEMU takes $library, which isn't installed: brew install glib pixman openssl@3"
+# swtpm's configure asks for libtasn1, which only its certificate tools link, and those aren't built.
+for library in glib-2.0 pixman-1 openssl libtasn1; do
+    pkg-config --exists $library || fail "Building QEMU takes $library, which isn't installed: brew install glib pixman openssl@3 libtasn1"
 done
 xcrun -sdk macosx metal --version > /dev/null 2>&1 || fail "Building QEMU's display takes Xcode's Metal toolchain: xcodebuild -downloadComponent MetalToolchain"
 # QEMU's build reads TOML, which Python's own library does from 3.11 on, and the sources are unpacked
@@ -138,6 +140,35 @@ meson_build() {
     meson setup $reconfigure "$directory/build" "$directory" --prefix="$prefix" --libdir=lib --buildtype=release -Dauto_features=disabled "$@"
     meson compile -C "$directory/build"
     meson install -C "$directory/build"
+}
+
+# Configures the autotools project in $1, in its own folder, with the options after it. Its scripts are
+# made once, as its releases come without them. They look for OpenSSL where the compiler does, which
+# Homebrew's isn't.
+autotools_configure() {
+    local directory=$1
+    shift
+    (
+        cd "$directory"
+        [[ -x configure ]] || NOCONFIGURE=1 LIBTOOLIZE=glibtoolize ./autogen.sh
+        CPPFLAGS="$(pkg-config --cflags openssl)" LDFLAGS="$(pkg-config --libs-only-L openssl)" \
+            ./configure --prefix="$prefix" --libdir="$prefix/lib" --disable-static --disable-dependency-tracking "$@"
+    )
+}
+
+# The TPM that Windows guests get: swtpm, on libtpms. Only swtpm itself is built, not its tools for
+# setting a TPM up with certificates: QEMU's guests start with an empty one.
+build_tpm() {
+    unpack libtpms-0.10.2.tar.gz libtpms
+    autotools_configure "$sources/libtpms" --with-openssl --with-tpm2 --without-tpm1 --disable-hardening
+    make -C "$sources/libtpms" -j"$(sysctl -n hw.ncpu)"
+    make -C "$sources/libtpms" install
+    unpack swtpm-0.10.2.tar.gz swtpm
+    autotools_configure "$sources/swtpm" --with-openssl --without-gnutls --without-seccomp --without-cuse --without-selinux \
+        --disable-tests --disable-hardening
+    make -C "$sources/swtpm/src/utils" -j"$(sysctl -n hw.ncpu)"
+    make -C "$sources/swtpm/src/swtpm" -j"$(sysctl -n hw.ncpu)"
+    make -C "$sources/swtpm/src/swtpm" install
 }
 
 build_libraries() {
@@ -284,6 +315,7 @@ package() {
     mkdir -p "$out/bin" "$out/lib" "$out/share/keymaps" "$out/licenses"
     cp "$source_dir/build/qemu-system-aarch64" "$out/bin/"
     cp "$prefix/libexec/virgl_render_server" "$out/bin/"
+    cp "$prefix/bin/swtpm" "$out/bin/"
     # What nothing links, as these are opened while QEMU runs: ANGLE by epoxy, and DXMT by virglrenderer.
     local name file search_path minimum
     local opened=(libSwiftVMDisplay.dylib libEGL.dylib libGLESv2.dylib)
@@ -389,11 +421,14 @@ licenses/build-qemu.sh, which is scripts/build-qemu.sh in SwiftVM's repository, 
 everything else here. licenses/sources.tsv names every source that went in, with its checksum.
 
 qemu-graphics.patch and qemu-hvf-ipa-granule.patch carry graphics acceleration on macOS
-over from UTM's QEMU (github.com/utmapp/qemu). qemu-vnc-refresh.patch adjusts VNC's
+over from UTM's QEMU (github.com/utmapp/qemu). qemu-tpm-crb.patch adds the TPM CRB device that
+Windows on Arm needs, after UTM's "tpm: introduce TPM CRB SysBus device". qemu-vnc-refresh.patch adjusts VNC's
 refresh timing for a local display.
 
+bin/swtpm is swtpm (BSD 3-Clause), the TPM 2.0 of Windows guests, on libtpms (BSD 3-Clause).
+
 The libraries in lib/ are SPICE, GStreamer, json-glib, libjpeg-turbo, libepoxy,
-virglrenderer and ANGLE, built from those sources, and Homebrew's builds of glib $(pkg-config --modversion glib-2.0),
+virglrenderer, ANGLE, libtpms and swtpm's own, built from those sources, and Homebrew's builds of glib $(pkg-config --modversion glib-2.0),
 pixman $(pkg-config --modversion pixman-1), OpenSSL, PCRE2 and gettext's libintl. SPICE, GStreamer, glib and
 libintl are under the GNU Lesser General Public License 2.1 or later. libSwiftVMDisplay is
 CocoaSpice (Apache 2.0) with SwiftVM's display code. The firmware in share/ is EDK II, as it
@@ -404,12 +439,18 @@ lib/libdxmt-native.dylib is DXMT (LGPL 2.1), built with LLVM 15. share/viogpu3d-
 is the Windows driver from github.com/osy/kvm-guest-drivers-windows v0.3." >> "$out/README.txt"
 
     # Signed to run on this Mac, so that it does so by itself. In the app it is signed again.
-    for file in "$out"/lib/*.dylib "$out/bin/virgl_render_server"; do
+    for file in "$out"/lib/*.dylib "$out/bin/virgl_render_server" "$out/bin/swtpm"; do
         codesign --force --sign - "$file" 2> /dev/null
     done
     print '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>' > "$work/entitlements.plist"
     codesign --force --sign - --entitlements "$work/entitlements.plist" "$out/bin/qemu-system-aarch64" 2> /dev/null
     "$out/bin/qemu-system-aarch64" --version > /dev/null || fail "The QEMU that was built doesn't run."
+    # QEMU lists them on standard error.
+    local tpm_types=$("$out/bin/qemu-system-aarch64" -tpmdev help 2>&1 || true)
+    [[ $tpm_types == *emulator* ]] || fail "The QEMU that was built has no TPM emulator."
+    local devices=$("$out/bin/qemu-system-aarch64" -device help 2>&1 || true)
+    [[ $devices == *'"tpm-crb-device"'* ]] || fail "The QEMU that was built has no TPM CRB device."
+    "$out/bin/swtpm" socket --print-capabilities > /dev/null || fail "The swtpm that was built doesn't run."
 }
 
 print -u2 "Building QEMU $qemu_version and its graphics (the first build takes a while)…"
@@ -420,6 +461,7 @@ set +e
 (
     set -e
     build_libraries
+    build_tpm
     build_display
     build_qemu
 ) > "$log" 2>&1

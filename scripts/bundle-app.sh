@@ -265,6 +265,11 @@ if [[ -n $qemu ]]; then
         /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/renderer-entitlements.plist"
     fi
     sign --identifier com.swiftvm.app.qemu.renderer --entitlements "$stage/renderer-entitlements.plist" "$contents/Helpers/QEMU/bin/virgl_render_server"
+    # swtpm, the TPM of Windows guests, needs no more than the renderer. A QEMU built before it was there
+    # comes without.
+    if [[ -f $contents/Helpers/QEMU/bin/swtpm ]]; then
+        sign --identifier com.swiftvm.app.qemu.tpm --entitlements "$stage/renderer-entitlements.plist" "$contents/Helpers/QEMU/bin/swtpm"
+    fi
 fi
 sign --entitlements "$stage/entitlements.plist" "$app"
 codesign --verify --deep --strict "$app" || fail "The signature of $app doesn't hold."

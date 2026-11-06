@@ -14,13 +14,13 @@ For Windows guests and Linux
 install QEMU's build dependencies and Xcode's Metal toolchain:
 
 ```bash
-brew install cmake ninja meson pkgconf glib pixman openssl@3 python
+brew install cmake ninja meson pkgconf glib pixman openssl@3 python autoconf automake libtool libtasn1
 xcodebuild -downloadComponent MetalToolchain
 ```
 
 The build scripts build QEMU on the first run with `scripts/build-qemu.sh`:
-QEMU 11 with SPICE, virglrenderer, and ANGLE, and the library the app shows
-accelerated screens with. The patches in `Native/QEMU` port UTM's graphics work
+QEMU 11 with SPICE, virglrenderer, and ANGLE, the library the app shows
+accelerated screens with, and swtpm with libtpms for the TPM of Windows guests. The patches in `Native/QEMU` port UTM's graphics work
 to it, and `Native/QEMU/sources.tsv` pins every source by checksum. The first
 build takes several minutes; later ones reuse `.build/qemu`. Set
 `SWIFTVM_QEMU=-` to build without Windows guests or graphics acceleration.

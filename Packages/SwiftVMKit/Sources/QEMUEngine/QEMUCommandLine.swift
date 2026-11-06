@@ -10,7 +10,7 @@ import VMCore
 /// as one it starts with.
 ///
 /// The lines to the app are open descriptors that QEMU is handed when it starts, numbered from 3:
-/// its machine protocol, the serial console, the guest's agent, and one per network card.
+/// its machine protocol, the serial console, the guest's agent, one per network card, and the TPM's.
 public struct QEMUCommandLine: Sendable {
     /// What shows the machine's display.
     public enum Display: Sendable, Hashable {
@@ -41,10 +41,13 @@ public struct QEMUCommandLine: Sendable {
     /// identifier. The others get free ones.
     public var usbPorts: [UUID: Int]
     public var spiceSocket: URL?
+    /// The machine has a TPM, whose emulator is at the other end of ``tpmDescriptor``.
+    public var attachesTPM: Bool
 
     public init(
         configuration: VMConfiguration, bundle: VMBundle, installation: QEMUInstallation, diskSources: [UUID: DiskSource],
-        display: Display, restoresSavedState: Bool = false, usbPorts: [UUID: Int] = [:], spiceSocket: URL? = nil
+        display: Display, restoresSavedState: Bool = false, usbPorts: [UUID: Int] = [:], spiceSocket: URL? = nil,
+        attachesTPM: Bool = false
     ) {
         self.configuration = configuration
         self.bundle = bundle
@@ -54,6 +57,22 @@ public struct QEMUCommandLine: Sendable {
         self.restoresSavedState = restoresSavedState
         self.usbPorts = usbPorts
         self.spiceSocket = spiceSocket
+        self.attachesTPM = attachesTPM
+    }
+
+    /// Whether a machine starts with a TPM. One that resumes has the one it was saved with, as QEMU only
+    /// restores a machine onto the same hardware. One that starts afresh has it if it is Windows and
+    /// has it turned on, and this QEMU comes with the emulator.
+    ///
+    /// - Parameter savedWithTPM: For a machine that resumes, whether it was saved with a TPM.
+    public static func attachesTPM(configuration: VMConfiguration, supportsTPM: Bool, savedWithTPM: Bool?) throws -> Bool {
+        if let savedWithTPM {
+            guard !savedWithTPM || supportsTPM else {
+                throw QEMUError.didNotStart("“\(configuration.name)” was saved with a TPM, and this copy of SwiftVM was built without one. Discard its saved state to start it up fresh.")
+            }
+            return savedWithTPM
+        }
+        return configuration.os.family == .windows && configuration.boot.tpm && supportsTPM
     }
 
     /// The machine type, by its version. A machine saved by one QEMU only resumes on a QEMU that builds
@@ -67,6 +86,11 @@ public struct QEMUCommandLine: Sendable {
     /// The descriptor of the network card at `index` among the machine's interfaces.
     public static func networkDescriptor(at index: Int) -> Int32 {
         6 + Int32(index)
+    }
+
+    /// The descriptor of the TPM emulator's control line, after the network cards'.
+    public var tpmDescriptor: Int32 {
+        Self.networkDescriptor(at: configuration.networkInterfaces.count)
     }
 
     /// The name the agent's serial port has in the guest, which is how the agent finds it.
@@ -281,6 +305,14 @@ public struct QEMUCommandLine: Sendable {
         }
 
         devices.append(["driver": "virtio-rng-pci"])
+        if attachesTPM {
+            // A TPM on the machine's platform bus, which the firmware and Windows find through ACPI. QEMU
+            // asks the emulator for a line of its own for commands over this one.
+            arguments += ["-chardev", "socket,id=tpm,fd=\(tpmDescriptor)", "-tpmdev", "emulator,id=tpm0,chardev=tpm"]
+            // Its command response buffer interface, which is the one Windows on Arm drives: it finds a
+            // TIS one and reports it broken. QEMU has it for this machine through qemu-tpm-crb.patch.
+            devices.append(["driver": "tpm-crb-device", "tpmdev": "tpm0"])
+        }
         if configuration.audio.outputEnabled {
             arguments += ["-audiodev", "coreaudio,id=audio"]
             // A restored machine was saved without it, and has it plugged in once it is back.
