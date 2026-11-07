@@ -11,7 +11,45 @@
  
  @end
  
-@@ -435,6 +435,7 @@
+@@ -203,4 +203,5 @@
+     // Save the size of the drawable as we'll pass these
+     //   values to our vertex shader when we draw
+     [self _setViewportCGSize:size];
++    self.renderNeedsUpdate = YES;
+ }
+@@ -274,6 +275,11 @@
+ /// Called whenever the view needs to render a frame
+ - (void)drawInMTKView:(nonnull MTKView *)view
+ {
++    // Pending completions must keep their existing drawable/command-buffer ordering.
++    if (self.renderCompletions.count == 0 && (!self.renderNeedsUpdate || !self.renderSourceData.isVisible)) {
++        return;
++    }
++
+     // Obtain a renderPassDescriptor generated from the view's drawable textures
+     MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
+     id<CAMetalDrawable> currentDrawable = view.currentDrawable;
+@@ -298,2 +304,6 @@
+     id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
++    if (commandBuffer == nil) {
++        self.renderNeedsUpdate = YES;
++        return;
++    }
+     commandBuffer.label = @"Draw Frame";
+@@ -311,5 +321,11 @@
++    // An older frame must not release a newer frame's scanout while the GPU still reads it.
++    NSArray<completionCallback_t> *completions = [self.renderCompletions copy];
++    [self.renderCompletions removeAllObjects];
++
+     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+         dispatch_async(dispatch_get_main_queue(), ^{
+-            [self _completeDraw];
++            for (completionCallback_t completion in completions) {
++                completion();
++            }
+         });
+     }];
+@@ -435,6 +451,7 @@
      }
  
      [renderEncoder endEncoding];

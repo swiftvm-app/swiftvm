@@ -99,7 +99,8 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     self.displayLink = nil;
     if (!self.metalView.window || self.closed) return;
     self.displayLink = [self.metalView displayLinkWithTarget:self selector:@selector(drawFrame:)];
-    self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
+    // The view's link follows its screen, including moves between 60 Hz and 120 Hz displays.
+    self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 120);
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     CSDisplay *display = self.owner.display;
     if (display) [self.renderer invalidateRenderSource:display withCompletion:nil];
@@ -183,7 +184,8 @@ void gst_ios_init(void) { gst_init(NULL, NULL); }
     self.displayLink = nil;
     if (!self.metalView.window || self.closed) return;
     self.displayLink = [self.metalView displayLinkWithTarget:self selector:@selector(drawFrame:)];
-    self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
+    // The view's link follows its screen, including moves between 60 Hz and 120 Hz displays.
+    self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 120);
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     // The new window shows nothing until the next frame, which an idle guest doesn't send.
     if (self.display) [self.renderer invalidateRenderSource:self.display withCompletion:nil];
