@@ -36,7 +36,7 @@ import sys
 import threading
 import time
 
-AGENT_VERSION = "1.7"
+AGENT_VERSION = "1.8"
 PROTOCOL_VERSION = 1
 # Below 1024, where only root may listen: the app has to know who answers.
 PORT = 717
@@ -609,7 +609,7 @@ class ScreenTree:
     # What pressing a part is called, by the toolkits that draw them.
     PRESSES = ("click", "press", "activate", "toggle", "jump", "open")
     # What makes a part worth showing. Most of a tree is boxes that only hold other boxes.
-    TELLING = ("name", "description", "value", "actions", "states")
+    TELLING = ("identifier", "name", "description", "value", "actions", "states")
 
     def __init__(self, atspi, everything=False):
         self.atspi = atspi
@@ -629,10 +629,12 @@ class ScreenTree:
             try:
                 application = desktop.get_child_at_index(index)
                 if application is None:
+                    self.truncated = True
                     continue
                 process = application.get_process_id()
             except Exception:
-                # One that has gone, or doesn't answer.
+                # One that has gone, or doesn't answer: neither proves that its controls are absent.
+                self.truncated = True
                 continue
             # A process is what an application stays through its windows opening and closing.
             yield application, process, str(process) if process > 0 else "n%d" % index
@@ -646,9 +648,10 @@ class ScreenTree:
                 if only and only.lower() not in (application.get_name() or "").lower():
                     continue
                 self.places_are_real = self.compositor is None or process == self.compositor
-                entries = self.describe(application, identifier, 1 if front else depth, 0)
+                entries = self.describe(application, identifier, 1 if front else depth, 0, shallow=front)
                 applications += [(application, process, identifier, entry) for entry in entries if entry.get("children")]
             except Exception:
+                self.truncated = True
                 continue
         def is_active(entry):
             return any("active" in (window.get("states") or []) for window in entry.get("children", []))
@@ -661,14 +664,18 @@ class ScreenTree:
                     self.places_are_real = self.compositor is None or process == self.compositor
                     entry = self.describe(application, identifier, depth, 0)[0]
                 except Exception:
-                    pass
+                    self.truncated = True
             told.append(entry)
         return {"applications": told, "truncated": self.truncated}
 
-    def describe(self, node, identifier, depth, level):
+    def describe(self, node, identifier, depth, level, shallow=False):
         """What there is to show of `node`: the part itself with what is in it, or, for a box that
         says nothing of itself, only what is in it. An application is at level 0, its windows at 1."""
         states = node.get_state_set()
+        # libatspi reports a failed GetState as DEFUNCT, without raising an error.
+        if states is None or states.contains(self.atspi.StateType.DEFUNCT):
+            self.truncated = True
+            return []
         if level > 0 and not states.contains(self.atspi.StateType.SHOWING):
             return []
         if self.count >= MAX_TREE_NODES:
@@ -677,6 +684,23 @@ class ScreenTree:
         self.count += 1
         entry = {"id": identifier, "role": node.get_role_name()}
         name = node.get_name()
+        try:
+            # AccessibleId is optional on older AT-SPI providers and bindings.
+            accessible_id = node.get_accessible_id()
+            if accessible_id is None:
+                self.truncated = True
+            elif accessible_id:
+                entry["identifier"] = accessible_id
+        except AttributeError:
+            pass
+        except Exception as error:
+            # libatspi can discard the D-Bus error name, leaving only its message.
+            message = str(getattr(error, "message", error)).lower()
+            unsupported = message == "property unavailable" or any(reason in message for reason in ("unknownproperty", "unknownmethod", "unknowninterface")) or (
+                "accessibleid" in message and any(reason in message for reason in ("unknown property", "no such property", "not found", "not supported", "not implemented"))
+            )
+            if not unsupported:
+                self.truncated = True
         if name:
             entry["name"] = name[:MAX_TREE_TEXT]
         description = node.get_description()
@@ -701,17 +725,19 @@ class ScreenTree:
         if bounds:
             entry["bounds"] = bounds
         children = []
+        total = node.get_child_count() if depth > 0 or not shallow else 0
+        if total > MAX_TREE_CHILDREN or depth == 0 and total > 0:
+            self.truncated = True
         if depth > 0:
-            total = node.get_child_count()
-            if total > MAX_TREE_CHILDREN:
-                self.truncated = True
             for index in range(min(total, MAX_TREE_CHILDREN)):
                 try:
                     child = node.get_child_at_index(index)
                     if child is not None:
-                        children += self.describe(child, "%s/%d" % (identifier, index), depth - 1, level + 1)
+                        children += self.describe(child, "%s/%d" % (identifier, index), depth - 1, level + 1, shallow=shallow)
+                    else:
+                        self.truncated = True
                 except Exception:
-                    continue
+                    self.truncated = True
         if children:
             entry["children"] = children
         if self.everything or level < 2 or any(key in entry for key in self.TELLING):

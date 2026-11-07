@@ -22,6 +22,33 @@ import VMControl
         #expect(drag.to == .text("Trash"))
     }
 
+    @Test func identifiersWorkWhereverATargetDoes() throws {
+        for action in ["click", "move", "focus"] {
+            #expect(try Control.parse([action, "#Save"]).call.steps[0].target == .id("Save"))
+        }
+        let drag = try Control.parse(["drag", "#source", "--to", "#destination"]).call.steps[0]
+        #expect(drag.target == .id("source") && drag.to == .id("destination"))
+        #expect(try Control.parse(["click", "#row", "--right"]).call.steps[0] == ControlStep(.click, target: .id("row"), button: .right))
+        #expect(try Control.parse(["scroll", "#list", "down"]).call.steps[0].target == .id("list"))
+        #expect(try Control.parse(["set", "#search", "100"]).call.steps[0] == ControlStep(.set, target: .id("search"), text: "100"))
+        #expect(try Control.parse(["click", "#12"]).call.steps[0].target == .id("12"))
+        #expect(throws: Control.ParseError.self) { try Control.parse(["click", "#"]) }
+    }
+
+    @Test func identifierWaitsTakeOneConditionAndPreserveTheId() throws {
+        #expect(try Control.parse(["wait", "--id", "Save", "--timeout", "2"]).call.steps[0] == ControlStep(.wait, timeout: 2, id: "Save"))
+        #expect(try Control.parse(["wait", "--id-gone", "Save"]).call.steps[0] == ControlStep(.wait, idGone: "Save"))
+        for first in ["--text", "--gone", "--id", "--id-gone"] {
+            for second in ["--text", "--gone", "--id", "--id-gone"] where first != second {
+                #expect(throws: Control.ParseError.self) { try Control.parse(["wait", first, "a", second, "b"]) }
+            }
+        }
+        for option in ["--id", "--id-gone"] {
+            #expect(throws: Control.ParseError.self) { try Control.parse(["wait", option]) }
+            #expect(throws: Control.ParseError.self) { try Control.parse(["wait", option, ""]) }
+        }
+    }
+
     @Test func setTakesOneWordForWhatAndAllTheRestIsTheText() throws {
         #expect(try Control.parse(["set", "5", "100"]).call.steps[0] == ControlStep(.set, target: .number(5), text: "100"))
         #expect(try Control.parse(["set", "Search", "two", "words"]).call.steps[0] == ControlStep(.set, target: .text("Search"), text: "two words"))

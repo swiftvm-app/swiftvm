@@ -62,8 +62,9 @@ apps: TextEdit*, Dock
 [49] menu "File" 116,0 42x30
 ```
 
-- Each line has a number, a role, what it says, its states, and its left, top,
-  width and height. A line is indented by what holds it.
+- Each line has a number, a role, what it says, its states, an optional `#id`, and
+  its left, top, width and height. A line is indented by what holds it. `--json`
+  includes `"id"` when the application publishes a nonempty accessibility identifier.
 - **Numbers stay with an element from look to look.** `--changes` says only what
   changed: `+` is new, `~` is different, `-` has gone.
 - **There is one space.** The list, the picture from `--image`, and the places
@@ -89,14 +90,14 @@ swiftvm control desk look --image=/tmp/screen.jpg
 | Step | What it does |
 | --- | --- |
 | `look [--changes] [--image[=<file>]] [--region <x> <y> <w> <h>] [--app <name>] [--all] [--ocr]` | Says what is on the screen. `--image` also saves a JPEG and prints where; `--region` shows that part sharply, for reading only: its pixels aren't places |
-| `wait [--text <text> \| --gone <text>] [--timeout <seconds>]` | Waits until the text shows or goes, ending with 124 after 30 seconds. Without text, until the screen settles, for 10 seconds at most |
+| `wait [--text <text> \| --gone <text> \| --id <id> \| --id-gone <id>] [--timeout <seconds>]` | Waits until the text or exact id shows or goes, ending with 124 after 30 seconds. Without a condition, until the screen settles, for 10 seconds at most |
 | `click <target> [--right \| --middle] [--double \| --count <n>]` | Clicks |
 | `move <target>` | Moves the pointer |
 | `drag <target> --to <target>` | Drags |
 | `scroll [<target>] up\|down\|left\|right [<notches>]` | Scrolls |
 | `type <text>` | Types at the keyboard focus |
 | `key <key>...` | Presses keys one after the other |
-| `set <number \| text> <text>` | Replaces what a text field holds, as a person would. `''` empties it |
+| `set <number \| text \| #id> <text>` | Replaces what a text field holds, as a person would. `''` empties it |
 | `focus <target>` | Gives it the keyboard |
 | `open <application \| file \| URL>` | Opens it in the guest's session |
 | `clipboard [<text>]` | Says what is on the guest's clipboard, or puts text there |
@@ -107,11 +108,13 @@ step failed, 124 when a `wait` ran out of time, and 125 when it couldn't be aske
 
 ### Targets
 
-A target is a number from the last look, what something says, or a place:
+A target is a number from the last look, what something says, an accessibility id,
+or a place:
 
 ```bash
 swiftvm control desk click 12
 swiftvm control desk click 'Sign In'
+swiftvm control desk click '#settings-save'
 swiftvm control desk click 640 400
 ```
 
@@ -121,6 +124,17 @@ swiftvm control desk click 640 400
   above it went away, is an error: look again.
 - Text ignores case and goes by what is exactly said before what is partly said.
   If several things say it, nothing is done and their numbers are listed.
+- `'#<id>'` matches the application's author-provided accessibility identifier
+  exactly and case-sensitively, never text. No match fails with status 1; several
+  matches fail and list their numbers. Quote the target so the shell doesn't take
+  `#` for a comment. It works for every target, including both ends of a drag.
+- Ids need current guest tools and an application that publishes them: `AXIdentifier`
+  on macOS, AT-SPI `AccessibleId` on Linux, or UI Automation `AutomationId` on Windows.
+  Older Linux providers without `AccessibleId` still work, but supply no ids.
+  OCR cannot supply an id or locate an id-only target whose coordinates are unknown.
+- `wait --id settings-save` waits for the id to appear; `--id-gone settings-save`
+  waits for it to disappear. Pass the id without the `#` prefix. A failed or
+  incomplete accessibility read cannot prove that an id has disappeared.
 - Places are in the space of the look, from the top left corner of the screen.
 
 ### Keys and text

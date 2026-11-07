@@ -301,7 +301,7 @@ enum MacKeyboard {
 /// What is on the screen, part by part, as it goes to the Mac.
 struct ScreenTree: Encodable {
     var applications: [ScreenPart]
-    /// There was more than is passed on.
+    /// There was more than is passed on, or part of the desktop couldn't be read.
     var truncated: Bool
 }
 
@@ -309,6 +309,8 @@ struct ScreenTree: Encodable {
 struct ScreenPart: Encodable {
     /// What the part is asked for by: the application's process, and the way down from it.
     var id: String
+    /// The application's author-provided identifier, independent of the path above.
+    var identifier: String?
     var role: String
     var name: String?
     var description: String?
@@ -334,7 +336,7 @@ struct ScreenPart: Encodable {
 
     /// Whether the part says anything of itself. Most of a tree is boxes that only hold other boxes.
     var isTelling: Bool {
-        name != nil || description != nil || value != nil || actions != nil || states != nil
+        identifier != nil || name != nil || description != nil || value != nil || actions != nil || states != nil
     }
 }
 
@@ -354,6 +356,11 @@ struct ScreenReader {
     var everything: Bool
     private(set) var isTruncated = false
     private var count = 0
+    var readAttributes: (AXUIElement, [String]) -> [Any]? = { element, attributes in
+        var fetched: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(element, attributes as CFArray, [], &fetched) == .success else { return nil }
+        return fetched as? [Any]
+    }
 
     init(scale: Double, everything: Bool) {
         self.scale = scale
@@ -364,7 +371,7 @@ struct ScreenReader {
     private static let commonActions: Set<String> = ["showMenu", "scrollToVisible", "showDefaultUI", "showAlternateUI"]
     private static let attributes = [
         "AXRole", "AXTitle", "AXDescription", "AXValue", "AXEnabled", "AXFocused", "AXSelected", "AXExpanded", "AXPosition",
-        "AXSize", "AXChildren",
+        "AXSize", "AXChildren", "AXIdentifier",
     ]
 
     mutating func describe(application process: pid_t, named name: String, isActive: Bool = false, depth: Int) -> [ScreenPart] {
@@ -387,14 +394,21 @@ struct ScreenReader {
             isTruncated = true
             return []
         }
-        var fetched: CFArray?
-        guard AXUIElementCopyMultipleAttributeValues(element, Self.attributes as CFArray, [], &fetched) == .success,
-              let values = fetched as? [Any], values.count == Self.attributes.count
-        else { return [] }
+        guard let values = readAttributes(element, Self.attributes), values.count == Self.attributes.count else {
+            isTruncated = true
+            return []
+        }
         count += 1
+        // Optional attributes can be absent, but a failed read says nothing about their contents.
+        for index in [10, 11] {
+            if let error: AXError = Self.geometry(values[index], .axError), error != .attributeUnsupported, error != .noValue {
+                isTruncated = true
+            }
+        }
 
         let role = (values[0] as? String) ?? "AXUnknown"
         var part = ScreenPart(id: id, role: Self.plain(role))
+        part.identifier = (values[11] as? String).flatMap { $0.isEmpty ? nil : $0 }
         let (title, description) = (Self.text(values[1]), Self.text(values[2]))
         part.name = title ?? description
         part.description = title == nil ? nil : description
@@ -416,12 +430,14 @@ struct ScreenReader {
         }
 
         var children: [ScreenPart] = []
-        if depth > 0, let elements = values[10] as? [AXUIElement] {
-            if elements.count > Self.childLimit {
+        if let elements = values[10] as? [AXUIElement] {
+            if elements.count > Self.childLimit || depth == 0 && !elements.isEmpty {
                 isTruncated = true
             }
-            for (index, child) in elements.prefix(Self.childLimit).enumerated() {
-                children += describe(child, id: "\(id)/\(index)", depth: depth - 1, level: level + 1)
+            if depth > 0 {
+                for (index, child) in elements.prefix(Self.childLimit).enumerated() {
+                    children += describe(child, id: "\(id)/\(index)", depth: depth - 1, level: level + 1)
+                }
             }
         }
         part.children = children.isEmpty ? nil : children

@@ -20,7 +20,7 @@ public enum GuestProtocol {
     public static let maximumLineLength = 256 * 1024
     /// The version of the agent for macOS guests that is built from these sources, as it reports it
     /// when it connects. The agent for Linux keeps its own, in its script.
-    public static let macAgentVersion = "1.6"
+    public static let macAgentVersion = "1.7"
 
     /// The time on this Mac, in nanoseconds since 1970, as the agent takes it for setting the guest's clock.
     public static func currentTimeInNanoseconds() -> Int64 {
