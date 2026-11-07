@@ -14,6 +14,8 @@ struct DeskEntry: Sendable, Equatable {
     var frame: CGRect?
     /// What the guest's agent knows it by. `nil` for what was read off the screen's pixels.
     var elementID: String?
+    /// What the application's author calls it, unchanged for exact matching.
+    var identifier: String?
     var depth = 0
     /// What the nearest named thing that holds it calls itself, other than its window, whose title
     /// comes and goes: it tells apart the Delete buttons of two rows.
@@ -44,7 +46,7 @@ struct DeskEntry: Sendable, Equatable {
 
     /// Whether it shows as `other` does. What the guest's agent knows it by changes with every reading.
     func looksLike(_ other: DeskEntry) -> Bool {
-        role == other.role && name == other.name && value == other.value && states == other.states && frame == other.frame
+        role == other.role && name == other.name && value == other.value && states == other.states && frame == other.frame && identifier == other.identifier
     }
 }
 
@@ -78,7 +80,7 @@ enum DeskRoles {
         "rootpane", "glasspane", "internalframe", "desktopframe", "desktoppane", "autocomplete", "form", "landmark", "article", "browser", "header",
     ]
 
-    /// What is left out with all it holds: nothing in there is for anyone to read.
+    /// What is left out with all it holds, except parts explicitly named by their author.
     private static let skipped: Set<String> = ["scrollbar", "ruler", "separator", "grip", "thumb", "valueindicator", "growarea", "matte", "layoutarea", "layoutitem"]
 
     /// What takes a click or the keyboard, and is worth showing even if it has no name.
@@ -105,6 +107,7 @@ enum DeskRoles {
 struct DeskTree {
     struct Part: Decodable {
         var id: String
+        var identifier: String?
         var role: String
         var name: String?
         var description: String?
@@ -115,12 +118,13 @@ struct DeskTree {
         var children: [Part]?
 
         private enum CodingKeys: String, CodingKey {
-            case id, role, name, description, value, states, actions, bounds, children
+            case id, identifier, role, name, description, value, states, actions, bounds, children
         }
 
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(String.self, forKey: .id)
+            identifier = (try? container.decodeIfPresent(String.self, forKey: .identifier)).flatMap { $0.isEmpty ? nil : $0 }
             role = try container.decode(String.self, forKey: .role)
             name = try? container.decodeIfPresent(String.self, forKey: .name)
             description = try? container.decodeIfPresent(String.self, forKey: .description)
@@ -224,22 +228,22 @@ struct DeskTree {
         return entries
     }
 
-    private func add(_ part: Part, of application: String, holder: String?, depth: Int, requiresPlace: Bool, screen: CGRect, to entries: inout [DeskEntry]) {
-        guard !DeskRoles.isSkipped(part.role) else { return }
+    private func add(_ part: Part, of application: String, holder: String?, depth: Int, requiresPlace: Bool, screen: CGRect, to entries: inout [DeskEntry], identifiersOnly: Bool = false) {
+        let identifiersOnly = identifiersOnly || DeskRoles.isSkipped(part.role)
         let frame = part.frame
         // A closed menu has no place, and neither has anything in it.
         if requiresPlace, frame == nil, !DeskRoles.isWindow(part.role), part.role.lowercased().contains("menu") { return }
         var childDepth = depth
         var childHolder = holder
         let isOnScreen = frame.map { $0.width >= 4 && $0.height >= 4 && $0.intersects(screen) } ?? !requiresPlace
-        if isOnScreen, var entry = entry(for: part, of: application, frame: frame, depth: depth) {
+        if isOnScreen, !identifiersOnly || part.identifier != nil, var entry = entry(for: part, of: application, frame: frame, depth: depth) {
             entry.holder = holder
             // What a button says is often said a second time by the text inside it.
             let repeatsHolder = entries.last.map { holder in
-                holder.depth < depth && entry.role == "text" && holder.name == entry.name && holder.frame?.intersects(frame ?? .zero) != false
+                entry.identifier == nil && holder.depth < depth && entry.role == "text" && holder.name == entry.name && holder.frame?.intersects(frame ?? .zero) != false
             } ?? false
             // Windows tells a dialog twice: by itself, and in the window it belongs to.
-            let isTold = frame != nil && entries.contains { $0.role == entry.role && $0.name == entry.name && $0.frame == entry.frame && $0.value == entry.value }
+            let isTold = entry.identifier == nil && frame != nil && entries.contains { $0.role == entry.role && $0.name == entry.name && $0.frame == entry.frame && $0.value == entry.value }
             if !repeatsHolder, !isTold {
                 entries.append(entry)
                 childDepth = depth + 1
@@ -247,7 +251,7 @@ struct DeskTree {
             }
         }
         for child in part.children ?? [] {
-            add(child, of: application, holder: childHolder, depth: childDepth, requiresPlace: requiresPlace, screen: screen, to: &entries)
+            add(child, of: application, holder: childHolder, depth: childDepth, requiresPlace: requiresPlace, screen: screen, to: &entries, identifiersOnly: identifiersOnly)
         }
     }
 
@@ -268,14 +272,14 @@ struct DeskTree {
                 if value == "1", !states.contains("checked") { states.append("checked") }
                 value = nil
             }
-        } else if name != nil {
+        } else if name != nil || part.identifier != nil {
             role = "group"
         } else {
             return nil
         }
         // Nameless parts are only worth a line if they can be used, or have the keyboard.
-        guard name != nil || value != nil || DeskRoles.interactive.contains(role) || states.contains("focused") else { return nil }
-        return DeskEntry(application: application, role: role, name: name, value: value, states: states, frame: frame, elementID: part.id, depth: depth)
+        guard name != nil || value != nil || part.identifier != nil || DeskRoles.interactive.contains(role) || states.contains("focused") else { return nil }
+        return DeskEntry(application: application, role: role, name: name, value: value, states: states, frame: frame, elementID: part.id, identifier: part.identifier, depth: depth)
     }
 }
 

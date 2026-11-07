@@ -43,6 +43,15 @@ import VMControl
         #expect((answer["result"] as? [String: Any])?["isError"] as? Bool == true)
     }
 
+    @Test func identifiersWorkInToolsAndBatchedSteps() throws {
+        #expect(try MCP.Tools.step(.click, ["target": "#Save"]).target == .id("Save"))
+        #expect(try MCP.Tools.step(.drag, ["target": "#a", "to": "#b"]).to == .id("b"))
+        #expect(try MCP.Tools.step(.wait, ["id": "Save"]) == ControlStep(.wait, id: "Save"))
+        #expect(try MCP.Tools.step(.wait, ["idGone": "Save"]) == ControlStep(.wait, idGone: "Save"))
+        #expect(throws: MCP.Tools.Problem.self) { try MCP.Tools.step(.wait, ["id": "Save", "text": "Save"]) }
+        #expect(throws: MCP.Tools.Problem.self) { try MCP.Tools.step(.click, ["target": "#"]) }
+    }
+
     @Test func aStepIsReadFromATools() throws {
         let step = try MCP.Tools.step(.click, ["target": 12, "count": 2, "button": "right"])
         #expect(step == ControlStep(.click, target: .number(12), button: .right, count: 2))

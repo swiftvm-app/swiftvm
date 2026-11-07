@@ -295,7 +295,7 @@ public final class MachineController {
         func element(_ number: Int, _ entry: DeskEntry) -> ControlElement {
             ControlElement(
                 number: number, role: entry.role, name: entry.name, value: entry.value, states: entry.states.isEmpty ? nil : entry.states,
-                frame: entry.frame.map { Self.places($0, scale: scale) }, depth: entry.depth
+                frame: entry.frame.map { Self.places($0, scale: scale) }, depth: entry.depth, id: entry.identifier
             )
         }
         var look = ControlLook(
@@ -381,6 +381,9 @@ public final class MachineController {
         case .text(let text):
             let entry = try await find(text)
             return (entry.frame.map { CGPoint(x: $0.midX, y: $0.midY) }, entry)
+        case .id(let identifier):
+            let entry = try await find(identifier: identifier)
+            return (entry.frame.map { CGPoint(x: $0.midX, y: $0.midY) }, entry)
         }
     }
 
@@ -388,7 +391,8 @@ public final class MachineController {
         let located = try await locate(target)
         if let place = located.place { return (Int(place.x), Int(place.y)) }
         // Wayland doesn't tell applications where they are. If it says something, the pixels know.
-        if let name = located.entry?.name, let image = try await awakeFrame().image,
+        let isIdentifier: Bool = if case .id = target { true } else { false }
+        if !isIdentifier, let name = located.entry?.name, let image = try await awakeFrame().image,
            let found = try await ScreenText.find(name, in: image, within: CGRect(x: 0, y: 0, width: image.width, height: image.height)) {
             return (Int(found.midX), Int(found.midY))
         }
@@ -464,6 +468,27 @@ public final class MachineController {
         }
         if let found = try choose(text, among: DeskOCR.merged(lines, into: everything)) { return found }
         throw ControlFailure("Nothing on the screen says “\(text)”.")
+    }
+
+    /// An author id is exact, across all applications, and is never guessed from text or pixels.
+    private func find(identifier: String) async throws -> DeskEntry {
+        let frame = try await settle()
+        let screen = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
+        let reading = try await read(frame: frame)
+        let entries = reading.tree?.entries(screen: screen, all: true) ?? []
+        let matches = entries.filter { $0.identifier == identifier }
+        let shown = ShownText.line(identifier, limit: 240)
+        guard !matches.isEmpty else { throw ControlFailure("The id “\(shown)” isn't on the screen.") }
+        guard matches.count == 1 else {
+            let numbered = numbering.number(entries)
+            let listed = numbered.filter { $0.entry.identifier == identifier }.map { "[\($0.number)]" }
+            table.merge(numbered.map { ($0.number, $0.entry) }, uniquingKeysWith: { _, new in new })
+            throw ControlFailure("Several things have the id “\(shown)”: \(listed.joined(separator: ", ")). Use one's number.")
+        }
+        guard reading.tree?.isTruncated != true else {
+            throw ControlFailure("Whether the id “\(shown)” is unique can't be told: the guest tools didn't read the whole desktop.")
+        }
+        return matches[0]
     }
 
     private func choose(_ text: String, among entries: [DeskEntry]) throws -> DeskEntry? {
@@ -582,14 +607,18 @@ public final class MachineController {
 
     // MARK: Waiting
 
-    /// Waits for text to appear or go, or for the screen to settle. Looks only when the pixels changed,
-    /// so that a screen at rest costs next to nothing.
+    /// Waits for text or an id to appear or go, or for the screen to settle. Text is read only when
+    /// the pixels changed; ids are polled because they can change without anything looking different.
     ///
     /// While the screen is moving it only reads pixels, which nothing in the guest knows of. Asking a
     /// desktop what it shows while it is changing that is what brings it down: GNOME Shell has been seen to
     /// crash, taking the session with it, when its accessibility is read during the unlock animation.
     private func wait(_ step: ControlStep) async throws -> String? {
-        let settling = step.text == nil && step.gone == nil
+        guard [step.text, step.gone, step.id, step.idGone].compactMap({ $0 }).count <= 1 else {
+            throw ControlFailure("Wait for text or an id to show or go, one at a time.")
+        }
+        let waitsForIdentifier = step.id != nil || step.idGone != nil
+        let settling = step.text == nil && step.gone == nil && !waitsForIdentifier
         let seconds = min(max(step.timeout ?? (settling ? 10 : 30), 0), Self.longestWait)
         let start = clock.now
         let deadline = start + .seconds(seconds)
@@ -614,7 +643,12 @@ public final class MachineController {
             // A screen that keeps moving, such as one that shows a video or an animated lock screen,
             // is no failure: waiting for it to settle is only ever a courtesy.
             if settling { return "still changing after \(took())" }
-            let wanted = step.text.map { "“\($0)” to show" } ?? step.gone.map { "“\($0)” to go" } ?? ""
+            let wanted: String
+            if let id = step.id ?? step.idGone {
+                wanted = "id “\(ShownText.line(id, limit: 240))” to \(step.id == nil ? "go" : "show")"
+            } else {
+                wanted = step.text.map { "“\($0)” to show" } ?? step.gone.map { "“\($0)” to go" } ?? ""
+            }
             let time = seconds == seconds.rounded() ? String(Int(seconds)) : String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), seconds)
             throw ControlFailure("Waited \(time) seconds for \(wanted).", timedOut: true)
         }
@@ -642,8 +676,9 @@ public final class MachineController {
             if settling {
                 if clock.now - quietSince >= .milliseconds(400) { return "settled after \(took())" }
             } else {
-                let readsTree = isQuiet && treeIsOld && (lastTree.map { clock.now - $0 >= .milliseconds(200) } ?? true)
-                let readsPixels = pixelsAreOld && (lastPixels.map { clock.now - $0 >= .seconds(1) } ?? true)
+                // An id can change without any pixel changing. Only accessibility can tell of it.
+                let readsTree = isQuiet && (treeIsOld || waitsForIdentifier) && (lastTree.map { clock.now - $0 >= .milliseconds(200) } ?? true)
+                let readsPixels = !waitsForIdentifier && pixelsAreOld && (lastPixels.map { clock.now - $0 >= .seconds(1) } ?? true)
                 if readsTree {
                     treeIsOld = false
                     lastTree = clock.now
@@ -651,6 +686,12 @@ public final class MachineController {
                     let tree = try await read(frame: frame).tree
                     treeIsKnown = tree != nil
                     treeEntries = tree?.entries(screen: screen, all: true) ?? []
+                    if let id = step.id, treeEntries.contains(where: { $0.identifier == id }) {
+                        return "id “\(ShownText.line(id, limit: 240))” is on the screen after \(took())"
+                    }
+                    if let id = step.idGone, treeIsKnown, tree?.isTruncated != true, !treeEntries.contains(where: { $0.identifier == id }) {
+                        return "id “\(ShownText.line(id, limit: 240))” has gone after \(took())"
+                    }
                 }
                 if readsPixels {
                     pixelsAreOld = false

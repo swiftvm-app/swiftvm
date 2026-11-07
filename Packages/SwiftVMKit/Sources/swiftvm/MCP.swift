@@ -119,7 +119,7 @@ enum MCP {
         private static var machine: [String: Any] { ["type": "string", "description": "Name, SSH alias or UUID, from vm_list"] }
         private static var target: [String: Any] {
             [
-                "description": "A number from the last look, a text on the screen, or a place as [x, y] in the look's coordinates",
+                "description": "A number from the last look, a text on the screen, #<id> for an exact case-sensitive accessibility id, or a place as [x, y] in the look's coordinates",
                 "oneOf": [["type": "integer"], ["type": "string"], ["type": "array", "items": ["type": "integer"], "minItems": 2, "maxItems": 2]],
             ]
         }
@@ -156,7 +156,7 @@ enum MCP {
                 "all": ["type": "boolean", "description": "Every application, the Dock and the taskbar too"],
                 "ocr": ["type": "boolean", "description": "Also read text off the pixels. Done by itself when accessibility says little"],
             ], readOnly: true),
-            tool("vm_click", "Click on something: a number from the last look, what it says, or a place. Fails rather than click elsewhere if the element has gone.", [
+            tool("vm_click", "Click on something: a number from the last look, what it says, #<id>, or a place. Fails rather than click elsewhere if the element has gone.", [
                 "target": target,
                 "button": ["type": "string", "enum": ["left", "right", "middle"]],
                 "count": ["type": "integer", "minimum": 1, "maximum": 3, "description": "2 for a double click"],
@@ -172,7 +172,8 @@ enum MCP {
                 "amount": ["type": "integer", "minimum": 1, "maximum": 100, "description": "Notches, 3 by default"], "look": look,
             ], required: ["direction"]),
             tool("vm_drag", "Drag from one thing or place to another.", ["target": target, "to": target, "look": look], required: ["target", "to"]),
-            tool("vm_wait", "Wait until text is on the screen, or has gone, or without either until the screen has settled. Use this rather than sleeping.", [
+            tool("vm_wait", "Wait until text or an exact accessibility id is on the screen, or has gone, or without a condition until the screen has settled. Use this rather than sleeping.", [
+                "id": ["type": "string", "minLength": 1], "idGone": ["type": "string", "minLength": 1],
                 "text": ["type": "string"], "gone": ["type": "string"], "timeout": ["type": "number", "description": "Seconds, 30 by default"], "look": look,
             ], readOnly: true),
             tool("vm_open", "Open an application by name, a file or a URL in the guest.", ["what": ["type": "string"], "look": look], required: ["what"]),
@@ -250,6 +251,14 @@ enum MCP {
             step.to = try target(fields["to"])
             step.text = (fields["text"] as? String) ?? (fields["what"] as? String)
             step.gone = fields["gone"] as? String
+            step.id = fields["id"] as? String
+            step.idGone = fields["idGone"] as? String
+            if action == .wait {
+                guard [step.text, step.gone, step.id, step.idGone].compactMap({ $0 }).count <= 1 else {
+                    throw Problem("Wait for text or an id to show or go, one at a time.")
+                }
+                if step.id == "" || step.idGone == "" { throw Problem("An id must not be empty.") }
+            }
             step.keys = fields["keys"] as? [String]
             step.button = (fields["button"] as? String).flatMap(ControlStep.Button.init(rawValue:))
             step.count = fields["count"] as? Int
@@ -270,9 +279,14 @@ enum MCP {
             switch value {
             case nil, is NSNull: return nil
             case let number as Int: return .number(number)
-            case let text as String: return .text(text)
+            case let text as String:
+                if text.hasPrefix("#") {
+                    guard text.count > 1 else { throw Problem("An id must not be empty.") }
+                    return .id(String(text.dropFirst()))
+                }
+                return .text(text)
             case let place as [Int] where place.count == 2: return .point(x: place[0], y: place[1])
-            default: throw Problem("A target is a number from the last look, a text on the screen, or [x, y].")
+            default: throw Problem("A target is a number from the last look, a text on the screen, #<id>, or [x, y].")
             }
         }
 

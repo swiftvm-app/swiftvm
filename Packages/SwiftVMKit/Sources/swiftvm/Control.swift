@@ -13,25 +13,26 @@ enum Control {
 
     Look
       look [--changes] [--image[=<file>]] [--region <x> <y> <w> <h>] [--app <name>] [--all] [--ocr]
-          What is on the screen, one numbered line each:  [12] button "Save" 640,400 80x24
+          What is on the screen, one numbered line each:  [12] button "Save" #settings-save 640,400 80x24
+          Author-provided accessibility ids appear as #<id>, or as "id" in --json, omitted when empty.
           The numbers stay with an element from look to look. --changes says only what changed. --image
           also saves a JPEG, whose pixels are the places in the list (it prints where). --region shows that
           part as sharp as it is, for reading: only the list's places are for clicking. By default a look covers the application in front; --app and --all widen
           it. What accessibility doesn't tell is read off the pixels; --ocr does that always.
-      wait [--text <text> | --gone <text>] [--timeout <seconds>]
-          Until the text is on the screen or has left it (30 seconds by default, then ending with 124), or
-          without either until the screen has settled (10 seconds at most, then carrying on).
+      wait [--text <text> | --gone <text> | --id <id> | --id-gone <id>] [--timeout <seconds>]
+          Until the text or exact id is on the screen or has left it (30 seconds by default, then ending
+          with 124), or without a condition until the screen has settled (10 seconds at most, then carrying on).
       screenshot [<file> | -]
           The display as a PNG, at its own full size. Prefer look --image, unless pixels matter.
 
-    Act: <target> is a number from the last look, a text on the screen, or <x> <y>
+    Act: <target> is a number from the last look, a text on the screen, '#<id>', or <x> <y>
       click <target> [--right | --middle] [--double | --count <n>]
       move <target>
       drag <target> --to <target>
       scroll [<target>] up|down|left|right [<notches>]
       type <text>                 Any text. Characters a US keyboard lacks need guest tools
       key <key>...                One after the other: Return, Escape, Tab, cmd+s, ctrl+shift+t, F5, shift
-      set <number | text> <text>  Replace what a text field holds, as a person would. '' empties it
+      set <number | text | #id> <text>  Replace what a text field holds, as a person would. '' empties it
       focus <target>              Give it the keyboard
 
     In the guest's session
@@ -45,6 +46,9 @@ enum Control {
     Text in a target goes by what the element says, ignoring case; when several say it, nothing is done
     and the numbers are listed. A number is checked before it is used: one whose element has gone, or that
     can't be told apart from others like it any more, is an error, never a click somewhere else.
+    '#<id>' matches an accessibility id exactly and case-sensitively, never text. No match fails; several
+    matches fail and list their numbers. Quote # targets so the shell doesn't take them for comments.
+    Ids need current guest tools and an application that publishes them; OCR cannot supply them.
 
     Exit status: 0 done, 1 a step failed, 124 a wait ran out of time, 125 it couldn't be asked.
 
@@ -52,6 +56,7 @@ enum Control {
       swiftvm control desk look
       swiftvm control desk click 12 --then type 'hello' --then key Return --then look --changes
       swiftvm control desk click 'Sign In' --then wait --text 'Welcome' --timeout 60
+      swiftvm control desk click '#settings-save' --then wait --id-gone settings-save
       swiftvm control desk look --image=/tmp/screen.jpg
     """
 
@@ -252,8 +257,13 @@ enum Control {
         case .wait:
             step.text = try words.option("--text")
             step.gone = try words.option("--gone")
+            step.id = try words.option("--id")
+            step.idGone = try words.option("--id-gone")
             step.timeout = try words.seconds("--timeout")
-            if step.text != nil, step.gone != nil { throw ParseError.invalid("Wait for --text or for --gone, one at a time.") }
+            if [step.text, step.gone, step.id, step.idGone].compactMap({ $0 }).count > 1 {
+                throw ParseError.invalid("Wait for --text, --gone, --id or --id-gone, one at a time.")
+            }
+            if step.id == "" || step.idGone == "" { throw ParseError.invalid("An id must not be empty.") }
         case .screenshot:
             if let path = words.rest.first {
                 file = path
@@ -299,9 +309,9 @@ enum Control {
             words.rest = []
         case .set:
             // One word for what, and all the rest is the text: a number in it is no place.
-            guard words.rest.count >= 2 else { throw ParseError.invalid("Say what to set and to what: set <number | text> <text>. '' empties it.") }
-            let what = words.rest.removeFirst()
-            step.target = Int(what.hasPrefix("[") && what.hasSuffix("]") ? String(what.dropFirst().dropLast()) : what).map { .number($0) } ?? .text(what)
+            guard words.rest.count >= 2 else { throw ParseError.invalid("Say what to set and to what: set <number | text | #id> <text>. '' empties it.") }
+            var target = Words([words.rest.removeFirst()])
+            step.target = try target.target()
             step.text = words.rest.joined(separator: " ")
             words.rest = []
         case .open:
@@ -349,14 +359,18 @@ enum Control {
             return seconds
         }
 
-        /// Two numbers are a place, one is a number from a look, and anything else is what it says.
+        /// Two numbers are a place, one is a number from a look, # names an id, and the rest is text.
         mutating func target() throws -> ControlTarget {
-            guard let first = rest.first else { throw ParseError.invalid("Say what: a number from the last look, a text on the screen, or a place.") }
+            guard let first = rest.first else { throw ParseError.invalid("Say what: a number from the last look, a text on the screen, '#<id>', or a place.") }
             if rest.count >= 2, let x = Int(first), let y = Int(rest[1]) {
                 rest.removeFirst(2)
                 return .point(x: x, y: y)
             }
             rest.removeFirst()
+            if first.hasPrefix("#") {
+                guard first.count > 1 else { throw ParseError.invalid("An id must not be empty.") }
+                return .id(String(first.dropFirst()))
+            }
             if let number = Int(first.hasPrefix("[") && first.hasSuffix("]") ? String(first.dropFirst().dropLast()) : first) {
                 return .number(number)
             }

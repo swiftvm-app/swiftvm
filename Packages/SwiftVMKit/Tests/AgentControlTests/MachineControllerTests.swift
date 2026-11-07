@@ -237,6 +237,154 @@ private let editor = #"""
         #expect(machine.acted == [.init(action: .press, element: "1/0/0")])
     }
 
+    @Test func identifiersSurviveJSONAndChangesWithoutRenumbering() async throws {
+        let machine = FakeMachine()
+        machine.tree = editor
+        let controller = MachineController(machine: machine)
+        let before = try await look(controller)
+        machine.tree = editor.replacingOccurrences(of: #""id":"1/0/0""#, with: #""id":"1/0/0","identifier":"settings-save""#)
+        let changed = try await look(controller, ControlStep(.look, changes: true))
+        let save = try #require(changed.elements.first)
+        #expect(save.number == before.elements.first { $0.name == "Save" }?.number)
+        #expect(changed.changed == [save.number])
+        #expect(save.id == "settings-save")
+        #expect(save.line(indented: false).contains("#settings-save "))
+        let json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(save)) as? [String: Any])
+        #expect(json["id"] as? String == "settings-save")
+        for identifier in ["", nil] {
+            let element = ControlElement(number: 1, role: "button", id: identifier)
+            let json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(element)) as? [String: Any])
+            #expect(json["id"] == nil)
+        }
+    }
+
+    @Test func anIdentifierIsExactAndNeverFallsBackToTextOrAnInternalHandle() async throws {
+        let machine = FakeMachine()
+        machine.tree = editor.replacingOccurrences(of: #""id":"1/0/0""#, with: #""id":"1/0/0","identifier":"settings-Save""#)
+        let controller = MachineController(machine: machine, readText: reader { "#Save" })
+        for id in ["settings-save", "settings", "Save", "1/0/0"] {
+            let outcome = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id(id))]))
+            #expect(ControlExit.status(of: outcome) == 1)
+            #expect(outcome.failure?.error?.contains("isn't on the screen") == true)
+        }
+        #expect(machine.pointers.isEmpty && machine.acted.isEmpty)
+        let clicked = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id("settings-Save"), button: .right)]))
+        #expect(clicked.failure == nil)
+        #expect(machine.pointers.first?.x == 170 && machine.pointers.first?.button == .right)
+    }
+
+    @Test func duplicateIdentifiersAcrossApplicationsListTheirNumbersWithoutChoosing() async throws {
+        let machine = FakeMachine()
+        machine.tree = #"{"applications":[{"id":"1","role":"application","name":"A","states":["active"],"children":[{"id":"1/0","identifier":"save","role":"button","name":"Save","bounds":[10,10,80,30]}]},{"id":"2","role":"application","name":"B","children":[{"id":"2/0","identifier":"save","role":"button","name":"Save","bounds":[10,10,80,30]}]}]}"#
+        let controller = MachineController(machine: machine, readText: { _ in [] })
+        let found = try await look(controller, ControlStep(.look, all: true))
+        #expect(found.elements.count == 2)
+        let outcome = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id("save"))]))
+        #expect(ControlExit.status(of: outcome) == 1)
+        for element in found.elements {
+            #expect(outcome.failure?.error?.contains("[\(element.number)]") == true)
+        }
+        #expect(machine.pointers.isEmpty && machine.acted.isEmpty)
+    }
+
+    @Test func identifierOnlyPartsAreKeptAndWaylandActsOnTheirInternalHandle() async throws {
+        let machine = FakeMachine()
+        machine.tree = #"{"applications":[{"id":"1","role":"application","name":"Editor","children":[{"id":"1/0","identifier":"editor","role":"panel","children":[{"id":"1/0/0","identifier":"save","role":"push button"}]}]}]}"#
+        let controller = MachineController(machine: machine, readText: { _ in [] })
+        #expect(try await look(controller).elements.compactMap(\.id) == ["editor", "save"])
+        let outcome = await controller.perform(ControlCall(steps: [
+            ControlStep(.click, target: .id("save")), ControlStep(.focus, target: .id("save")),
+            ControlStep(.set, target: .id("editor"), text: "new"),
+        ]))
+        #expect(outcome.failure == nil)
+        #expect(machine.acted == [
+            .init(action: .press, element: "1/0/0"), .init(action: .focus, element: "1/0/0"),
+            .init(action: .set, element: "1/0", text: "new"),
+        ])
+        #expect(machine.pointers.isEmpty)
+    }
+
+    @Test func identifiersInsideSkippedContainersStillParticipateInEveryLookup() async throws {
+        let machine = FakeMachine()
+        machine.tree = editor
+            .replacingOccurrences(of: #""id":"1/0/5""#, with: #""id":"1/0/5","identifier":"scroll""#)
+            .replacingOccurrences(of: #""id":"1/0/5/0""#, with: #""id":"1/0/5/0","identifier":"scroll-up""#)
+        let controller = MachineController(machine: machine, readText: { _ in [] })
+        #expect(try await look(controller).elements.compactMap(\.id) == ["scroll", "scroll-up"])
+        let clicked = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id("scroll-up"))]))
+        #expect(clicked.failure == nil)
+        #expect(machine.pointers.first?.x == 1095)
+        let present = await controller.perform(ControlCall(steps: [ControlStep(.wait, timeout: 1, id: "scroll-up")]))
+        #expect(present.failure == nil)
+        let gone = await controller.perform(ControlCall(steps: [ControlStep(.wait, timeout: 0.4, idGone: "scroll-up")]))
+        #expect(ControlExit.status(of: gone) == 124)
+        machine.tree = machine.tree?.replacingOccurrences(of: #""id":"1/0/0""#, with: #""id":"1/0/0","identifier":"scroll-up""#)
+        let found = try await look(controller).elements.filter { $0.id == "scroll-up" }
+        #expect(found.count == 2)
+        let duplicate = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id("scroll-up"))]))
+        #expect(ControlExit.status(of: duplicate) == 1)
+        for element in found { #expect(duplicate.failure?.error?.contains("[\(element.number)]") == true) }
+        #expect(machine.pointers.count == 1)
+    }
+
+    @Test func identifierWaitsNoticeChangesWithoutPixelsChanging() async throws {
+        let machine = FakeMachine()
+        machine.width = 64
+        machine.height = 64
+        let absent = #"{"applications":[]}"#
+        let present = #"{"applications":[{"id":"1","role":"application","children":[{"id":"1/0","role":"button","identifier":"ready"}]}]}"#
+        machine.tree = absent
+        let controller = MachineController(machine: machine, readText: { _ in
+            Issue.record("An identifier wait must not read pixels for text.")
+            return []
+        })
+        for appears in [true, false] {
+            let waiting = Task { await controller.perform(ControlCall(steps: [
+                ControlStep(.wait, timeout: 3, id: appears ? "ready" : nil, idGone: appears ? nil : "ready"),
+            ])) }
+            let reads = machine.treeReads
+            while machine.treeReads == reads { try await Task.sleep(for: .milliseconds(20)) }
+            machine.tree = appears ? present : absent
+            #expect(await waiting.value.failure == nil)
+        }
+    }
+
+    @Test func anUnreadableOrTruncatedTreeDoesNotProveAnIdentifierHasGone() async throws {
+        let machine = FakeMachine()
+        machine.width = 64
+        machine.height = 64
+        let controller = MachineController(machine: machine, readText: reader { "unrelated" })
+        for tree in [nil, #"{"applications":[],"truncated":true}"#] {
+            machine.tree = tree
+            let outcome = await controller.perform(ControlCall(steps: [ControlStep(.wait, timeout: 0.4, idGone: "save")]))
+            #expect(ControlExit.status(of: outcome) == 124)
+        }
+        machine.tree = #"{"applications":[{"id":"1","role":"application","children":[{"id":"1/0","role":"button","name":"save","identifier":"Save"}]}]}"#
+        let wrongCase = await controller.perform(ControlCall(steps: [ControlStep(.wait, timeout: 0.4, id: "save")]))
+        #expect(ControlExit.status(of: wrongCase) == 124)
+        machine.tree = machine.tree?.replacingOccurrences(of: #"{"applications":"#, with: #"{"truncated":true,"applications":"#)
+        let uncertain = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id("Save"))]))
+        #expect(ControlExit.status(of: uncertain) == 1)
+        #expect(uncertain.failure?.error?.contains("unique can't be told") == true)
+        #expect(machine.pointers.isEmpty && machine.acted.isEmpty)
+    }
+
+    @Test func identifiersAreUnabridgedInJSONButSafeToPrint() async throws {
+        let id = "  \u{1B}]52;c;x\u{07}\n" + String(repeating: "x", count: 300)
+        let part: [String: Any] = ["id": "1/0", "role": "button", "identifier": id]
+        let machine = FakeMachine()
+        machine.tree = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "applications": [["id": "1", "role": "application", "children": [part]]],
+        ]), as: UTF8.self)
+        let controller = MachineController(machine: machine, readText: { _ in [] })
+        let found = try await look(controller)
+        #expect(found.elements.first?.id == id)
+        #expect(!found.elements[0].line(indented: false).unicodeScalars.contains { $0.value < 0x20 })
+        let outcome = await controller.perform(ControlCall(steps: [ControlStep(.click, target: .id(id))]))
+        #expect(outcome.failure == nil)
+        #expect(machine.acted.first?.element == "1/0")
+    }
+
     @Test func aDisplayThatIsOffIsWokenWithAKey() async throws {
         let machine = FakeMachine()
         machine.tree = editor

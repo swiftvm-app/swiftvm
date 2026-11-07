@@ -1,4 +1,5 @@
 import Foundation
+import GuestChannel
 
 /// What `swiftvm control` and `swiftvm mcp` ask of a machine's desktop: one or more steps, done in order
 /// by the app, which stops at the first that fails.
@@ -10,10 +11,11 @@ public struct ControlCall: Codable, Sendable, Equatable {
     }
 }
 
-/// What a step acts on: a number from the last look, what something on the screen says, or a place.
+/// What a step acts on: a number from the last look, what it says, an author id, or a place.
 public enum ControlTarget: Codable, Sendable, Equatable {
     case number(Int)
     case text(String)
+    case id(String)
     case point(x: Int, y: Int)
 }
 
@@ -39,6 +41,9 @@ public struct ControlStep: Codable, Sendable, Equatable {
     public var text: String?
     /// What to wait to go away.
     public var gone: String?
+    /// The author-provided accessibility identifier to wait for, or to wait to go away.
+    public var id: String?
+    public var idGone: String?
     public var keys: [String]?
     public var button: Button?
     public var count: Int?
@@ -64,13 +69,15 @@ public struct ControlStep: Codable, Sendable, Equatable {
         _ action: Action, target: ControlTarget? = nil, to: ControlTarget? = nil, text: String? = nil, gone: String? = nil,
         keys: [String]? = nil, button: Button? = nil, count: Int? = nil, direction: Direction? = nil, amount: Int? = nil,
         timeout: Double? = nil, image: Bool? = nil, region: [Int]? = nil, all: Bool? = nil, application: String? = nil,
-        ocr: Bool? = nil, changes: Bool? = nil
+        ocr: Bool? = nil, changes: Bool? = nil, id: String? = nil, idGone: String? = nil
     ) {
         self.action = action
         self.target = target
         self.to = to
         self.text = text
         self.gone = gone
+        self.id = id
+        self.idGone = idGone
         self.keys = keys
         self.button = button
         self.count = count
@@ -220,8 +227,10 @@ public struct ControlElement: Codable, Sendable, Equatable {
     /// Left, top, width and height. Some Wayland applications aren't told where they are, and have none.
     public var frame: [Int]?
     public var depth: Int
+    /// The author-provided accessibility identifier, not the guest agent's temporary handle.
+    public var id: String?
 
-    public init(number: Int, role: String, name: String? = nil, value: String? = nil, states: [String]? = nil, frame: [Int]? = nil, depth: Int = 0) {
+    public init(number: Int, role: String, name: String? = nil, value: String? = nil, states: [String]? = nil, frame: [Int]? = nil, depth: Int = 0, id: String? = nil) {
         self.number = number
         self.role = role
         self.name = name
@@ -229,6 +238,7 @@ public struct ControlElement: Codable, Sendable, Equatable {
         self.states = states
         self.frame = frame
         self.depth = depth
+        self.id = id.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     public func line(indented: Bool) -> String {
@@ -236,6 +246,7 @@ public struct ControlElement: Codable, Sendable, Equatable {
         if let name, !name.isEmpty { line += " \"\(name)\"" }
         if let value, !value.isEmpty { line += " =\"\(value)\"" }
         if let states, !states.isEmpty { line += " " + states.joined(separator: " ") }
+        if let id, !id.isEmpty { line += " #\(ShownText.line(id, limit: 240))" }
         if let frame, frame.count == 4 { line += " \(frame[0]),\(frame[1]) \(frame[2])x\(frame[3])" }
         return line
     }

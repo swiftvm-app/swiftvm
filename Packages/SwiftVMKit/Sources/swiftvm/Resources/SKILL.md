@@ -49,11 +49,12 @@ swiftvm control box look
 box · Ubuntu 24.04 · screen 1280x800 · look 1
 apps: Text Editor*, gnome-shell
 [1] window "Untitled" 0,27 1280x773
- [2] button "Open" 8,32 60x30
+ [2] button "Open" #open-file 8,32 60x30
  [3] textfield focused 0,80 1280x700
 ```
 
-- Each line has a number, a role, what it says, states, and left,top width×height.
+- Each line has a number, a role, what it says, states, an optional `#id`, and left,top width×height.
+  `look --json` includes `"id"` when the application publishes a nonempty accessibility identifier.
 - **Numbers stay with an element from look to look.** Re-reading the list is rarely needed: `--changes` says
   only what changed (`+` new, `~` different, `-` gone).
 - Everything counts in one space: the list, the picture of `look --image`, and places you click on.
@@ -67,21 +68,26 @@ between them, so a whole task can be one call. A look after an action waits for 
 ```bash
 swiftvm control box click 3 --then type 'hello' --then key cmd+s --then look --changes
 swiftvm control box click 'Sign In' --then wait --text 'Welcome' --timeout 60
+swiftvm control box click '#settings-save' --then wait --id-gone settings-save
 swiftvm control box set 'Search' 'cats' --then key Return --then wait --then look
 ```
 
 | Step | What it does |
 | --- | --- |
 | `look [--changes] [--image[=<file>]] [--region x y w h] [--app <name>] [--all] [--ocr]` | What is on the screen |
-| `wait [--text <t> \| --gone <t>] [--timeout <s>]` | Instead of `sleep`. Pick text that is not what you just typed. Without text, until the screen settles, and it carries on if it never does |
-| `click <target> [--right] [--double]` | `<target>` is a number, a text on the screen, or `x y` |
+| `wait [--text <t> \| --gone <t> \| --id <id> \| --id-gone <id>] [--timeout <s>]` | Instead of `sleep`. Wait for text or an exact id to appear or disappear. Without a condition, until the screen settles, and it carries on if it never does |
+| `click <target> [--right] [--double]` | `<target>` is a number, a text on the screen, `'#<id>'`, or `x y` |
 | `type <text>` / `key <key>...` | Keys: `Return`, `Escape`, `Tab`, `cmd+s`, `ctrl+shift+t`, `F5` |
-| `set <number \| text> <text>` / `focus <target>` | Replace a field's text as a person would, or give it the keyboard |
+| `set <number \| text \| #id> <text>` / `focus <target>` | Replace a field's text as a person would, or give it the keyboard |
 | `scroll [<target>] up\|down\|left\|right [<n>]` / `drag <target> --to <target>` / `move <target>` | The mouse |
 | `open <app \| file \| URL>` / `clipboard [<text>]` | In the guest's session |
 | `screenshot [<file> \| -]` | The display as a full-size PNG, when pixels matter |
 
 - Text in a target ignores case. If several things say it, nothing is done and their numbers are listed.
+- `'#<id>'` works wherever a target does, matches exactly and case-sensitively, and never falls back to text.
+  No match fails with status 1; duplicates fail and list their numbers. Quote `#` targets for the shell.
+  Ids need current guest tools and an application that publishes them; OCR cannot supply them.
+  For `wait --id` and `--id-gone`, pass the id without the `#` prefix; time-outs end with status 124.
 - A number is checked before it is used. If its element has gone, or several alike have changed, that is an
   error, never a click somewhere else. Then look again.
 - After a failure or a time-out, **look before you repeat**: the action may have happened.

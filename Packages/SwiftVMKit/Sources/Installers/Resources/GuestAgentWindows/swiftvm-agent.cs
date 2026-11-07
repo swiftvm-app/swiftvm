@@ -38,7 +38,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.6";
+        public const string Version = "1.7";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -2344,7 +2344,8 @@ namespace SwiftVM
             request.TreeScope = withWhatIsInIt ? TreeScope.Element | TreeScope.Descendants : TreeScope.Element;
             foreach (var property in new AutomationProperty[]
             {
-                AutomationElement.NameProperty, AutomationElement.ControlTypeProperty, AutomationElement.BoundingRectangleProperty,
+                AutomationElement.NameProperty, AutomationElement.AutomationIdProperty, AutomationElement.RuntimeIdProperty,
+                AutomationElement.ControlTypeProperty, AutomationElement.BoundingRectangleProperty,
                 AutomationElement.IsEnabledProperty, AutomationElement.HasKeyboardFocusProperty, AutomationElement.IsOffscreenProperty,
                 AutomationElement.HelpTextProperty, AutomationElement.IsInvokePatternAvailableProperty,
                 AutomationElement.IsValuePatternAvailableProperty, ValuePattern.ValueProperty, TogglePattern.ToggleStateProperty,
@@ -2361,6 +2362,7 @@ namespace SwiftVM
             public int Count;
             public bool Truncated;
             public readonly Dictionary<string, AutomationElement> Parts = new Dictionary<string, AutomationElement>();
+            public readonly HashSet<string> Seen = new HashSet<string>();
         }
 
         /// What is on the screen, in the same form as the agents of the other systems give it. The window
@@ -2405,7 +2407,9 @@ namespace SwiftVM
                 bool isFront = window == foreground;
                 bool withWhatIsInIt = isFront || !frontOnly;
                 int patience = Math.Min(isFront ? FrontPatience : WindowPatience, TreePatience - (int)clock.ElapsedMilliseconds);
-                var part = patience > 0 ? ReadWindow(window, reading, (int)Math.Min(depth, DepthLimit), withWhatIsInIt, patience) : null;
+                bool repeated = false;
+                var part = patience > 0 ? ReadWindow(window, reading, (int)Math.Min(depth, DepthLimit), withWhatIsInIt, patience, out repeated) : null;
+                if (repeated) continue;
                 if (part == null)
                 {
                     // A window is there even if what is in it can't be had. Saying nothing of it would make
@@ -2490,8 +2494,9 @@ namespace SwiftVM
 
         /// The tree of one window. On a thread of its own, as a program that doesn't answer holds up
         /// whoever asks it for as long as it likes.
-        static Dictionary<string, object> ReadWindow(IntPtr window, Reading reading, int depth, bool withWhatIsInIt, int patience)
+        static Dictionary<string, object> ReadWindow(IntPtr window, Reading reading, int depth, bool withWhatIsInIt, int patience, out bool repeated)
         {
+            repeated = false;
             AutomationElement cached = null;
             var thread = new Thread(delegate()
             {
@@ -2507,7 +2512,7 @@ namespace SwiftVM
             thread.SetApartmentState(ApartmentState.MTA);
             thread.Start();
             if (!thread.Join(patience) || cached == null) return null;
-            return Describe(cached, reading, withWhatIsInIt ? depth : 0);
+            return Describe(cached, reading, withWhatIsInIt ? depth : 0, out repeated, !withWhatIsInIt);
         }
 
         /// What Windows itself knows of a window whose program doesn't answer.
@@ -2525,8 +2530,9 @@ namespace SwiftVM
             return part;
         }
 
-        static Dictionary<string, object> Describe(AutomationElement element, Reading reading, int depth)
+        static Dictionary<string, object> Describe(AutomationElement element, Reading reading, int depth, out bool repeated, bool shallow = false)
         {
+            repeated = false;
             if (reading.Count >= NodeLimit)
             {
                 reading.Truncated = true;
@@ -2535,6 +2541,14 @@ namespace SwiftVM
             try
             {
                 if (Equals(element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty), true)) return null;
+                // A dialog can be read both by itself and through its owner. Its author id isn't unique
+                // to the native element: only the runtime id tells a repeated view from another control.
+                var runtime = element.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty, true) as int[];
+                if (runtime != null && runtime.Length > 0 && !reading.Seen.Add(string.Join(",", runtime)))
+                {
+                    repeated = true;
+                    return null;
+                }
                 reading.Count++;
                 var part = new Dictionary<string, object>();
                 string id = "p" + Interlocked.Increment(ref nextPart);
@@ -2545,6 +2559,8 @@ namespace SwiftVM
                 part["role"] = role.Substring(role.LastIndexOf('.') + 1);
                 string name = Shown(element.GetCachedPropertyValue(AutomationElement.NameProperty) as string);
                 if (name != null) part["name"] = name;
+                string identifier = element.GetCachedPropertyValue(AutomationElement.AutomationIdProperty, true) as string;
+                if (!string.IsNullOrEmpty(identifier)) part["identifier"] = identifier;
                 string help = Shown(element.GetCachedPropertyValue(AutomationElement.HelpTextProperty) as string);
                 if (help != null) part["description"] = help;
                 string value = Shown(element.GetCachedPropertyValue(ValuePattern.ValueProperty, true) as string);
@@ -2579,16 +2595,19 @@ namespace SwiftVM
                             reading.Truncated = true;
                             break;
                         }
-                        var described = Describe(child, reading, depth - 1);
+                        bool childRepeated;
+                        var described = Describe(child, reading, depth - 1, out childRepeated);
                         if (described != null) children.Add(described);
                     }
                     if (children.Count > 0) part["children"] = children;
                 }
+                else if (!shallow && element.CachedChildren.Count > 0) reading.Truncated = true;
                 return part;
             }
             catch (Exception)
             {
-                // A part that went away while it was read.
+                // It may have gone away, or merely failed to answer.
+                reading.Truncated = true;
                 return null;
             }
         }
