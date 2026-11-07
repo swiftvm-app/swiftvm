@@ -111,6 +111,24 @@ if (Test-Path $webClient) {
     Set-ItemProperty -Path $webClient -Name FileSizeLimitInBytes -Value 0xFFFFFFFF -Type DWord
 }
 
+# OpenGL, which the 3D driver doesn't bring, from the Microsoft Store, once the agent is in place: the
+# Store may take a while. A new machine's setup sees to it when the account first logs in; it has none
+# yet. SYSTEM can't install from the Store, so the account that is logged in gets it from the task,
+# which runs at every sign-in.
+$opengl = Join-Path $Source 'opengl.ps1'
+if ($hasGraphicsDriver -and -not $NewMachine -and (Test-Path $opengl)) {
+    try {
+        & $opengl -Register
+        if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
+            Start-ScheduledTask -TaskName 'SwiftVM OpenGL'
+        } else {
+            & $opengl
+        }
+    } catch {
+        Write-Warning "OpenGL couldn't be set up: $_"
+    }
+}
+
 # The service starts the agent's half in the session of whoever is logged in, and of whoever logs in
 # later.
 Write-Output 'The SwiftVM guest tools are installed.'

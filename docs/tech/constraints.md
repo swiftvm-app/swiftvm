@@ -47,6 +47,13 @@ See [Networking](../features/networking.md) for addresses and port forwarding.
 - Linux and Windows guests with graphics acceleration cannot suspend or take
   live snapshots. Windows acceleration is experimental and off by default
   for new guests; graphics load can cause rendering failures or Windows crashes.
+  Windows has Direct3D 11 through DXMT. Direct3D 12, and OpenGL on top of it,
+  require Apple's D3DMetal from the Game Porting Toolkit, which you install
+  yourself, and Rosetta: D3DMetal is x86-64 code, which runs under Rosetta.
+  OpenGL comes from Microsoft's compatibility pack, which needs the Microsoft
+  Store, and is version 4.2 with D3DMetal from Game Porting Toolkit 4.0 beta 3;
+  without Direct3D 12, apps get only Windows' OpenGL 1.1, in software. macOS
+  27 warns that the part of SwiftVM that runs D3DMetal won't open in macOS 28.
   Shut accelerated guests down before taking a snapshot or quitting SwiftVM.
   See [Linux graphics](../features/linux-guests.md#graphics-acceleration)
   and [Windows graphics](../features/windows-guests.md#graphics-acceleration).

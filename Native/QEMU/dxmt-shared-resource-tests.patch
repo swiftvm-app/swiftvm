@@ -21,12 +21,10 @@ and RGBA textures must preserve those writes, with and without initial data.
  
  static FILE *g_out = nullptr;
  static int g_fails = 0;
-@@ -317,6 +312,49 @@
-   c.ctx->CopySubresourceRegion(half, 0, 0, 0, 0, buf, 0, &box);
-   rb = readback_buffer(c, half);
+@@ -319,6 +314,49 @@ test_buffer_roundtrip(Ctx &c) {
    CHECK(T, rb.size() == N / 2 && memcmp(rb.data(), pattern.data() + N / 4, N / 2) == 0);
-+}
-+
+ }
+ 
 +static void
 +test_shared_initialization(Ctx &c) {
 +  const char *T = "shared_initialization";
@@ -50,8 +48,8 @@ and RGBA textures must preserve those writes, with and without initial data.
 +      CHECK_HR(T, texture->QueryInterface(__uuidof(IDXGIResource), (void **)&resource));
 +      HANDLE handle = nullptr;
 +      CHECK_HR(T, resource->GetSharedHandle(&handle));
-+      auto shared = static_cast<const dxmt_shared_texture_handle *>(handle);
-+      CHECK(T, shared->magic == DXMT_SHARED_TEXTURE_MAGIC, return);
++      auto shared = static_cast<const dxn_shared_texture *>(handle);
++      CHECK(T, shared->magic == DXN_SHARED_TEXTURE_MAGIC, return);
 +      int fd = shared->fd;
 +      struct stat info = {};
 +      CHECK(T, fstat(fd, &info) == 0, return);
@@ -68,10 +66,12 @@ and RGBA textures must preserve those writes, with and without initial data.
 +      munmap(mapping, info.st_size);
 +    }
 +  }
- }
- 
++}
++
  static void
-@@ -1528,6 +1566,7 @@
+ test_texture_roundtrip(Ctx &c) {
+   const char *T = "texture_roundtrip";
+@@ -1528,6 +1566,7 @@ main(int argc, char **argv) {
    test_format_support(c);
    test_buffer_roundtrip(c);
    test_dynamic_external(c);

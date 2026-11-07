@@ -8,10 +8,16 @@ public final class QEMUBackendProvider: VMBackendProvider {
     private let networkManager: NetworkManager
     /// The QEMU inside the app. `nil` in a copy of the app that was built without it.
     private let installation: QEMUInstallation?
+    /// What on this Mac decides where Windows' Direct3D is drawn, as it is when a machine starts.
+    public var directXHost: @MainActor () -> DirectXHost
 
-    public init(networkManager: NetworkManager, installation: QEMUInstallation?) {
+    public init(
+        networkManager: NetworkManager, installation: QEMUInstallation?,
+        directXHost: @escaping @MainActor () -> DirectXHost = { DirectXHost() }
+    ) {
         self.networkManager = networkManager
         self.installation = installation
+        self.directXHost = directXHost
     }
 
     /// Whether this copy of the app can run machines on QEMU.
@@ -21,6 +27,15 @@ public final class QEMUBackendProvider: VMBackendProvider {
     public var canAccelerateGraphics: Bool { installation?.acceleratesGraphics ?? false }
     /// Whether it lets a Windows guest do so, which takes Direct3D besides.
     public var canAccelerateWindowsGraphics: Bool { canAccelerateGraphics && installation?.supportsDirect3D == true }
+    /// Whether it can run Windows' Direct3D on D3DMetal, once that and Rosetta are installed.
+    public var canUseD3DMetal: Bool { canAccelerateWindowsGraphics && installation?.supportsD3DMetal == true }
+
+    /// What a Windows guest would draw its Direct3D with on `host`, or `nil` if it can't use the Mac's
+    /// GPU at all.
+    public func directXBackend(on host: DirectXHost) -> DirectXBackend? {
+        guard canAccelerateWindowsGraphics, let installation else { return nil }
+        return installation.directXBackend(on: host)
+    }
 
     public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
         guard machine.configuration.engine == .qemu else { throw VMError.unsupportedEngine(machine.configuration.engine) }
@@ -55,12 +70,15 @@ public final class QEMUBackendProvider: VMBackendProvider {
         }
 
         let configuration = machine.configuration
+        // Linux draws OpenGL, which needs neither backend.
+        let directX = adapter == .virtioGPU3D && configuration.os.family == .windows
+            ? installation.directXBackend(on: directXHost()) : .dxmt
         let network = configuration.networkInterfaces.contains(where: \.usesSharedNetwork)
             ? try await networkManager.acquireDefaultNetwork(for: machine.id) : nil
         do {
             return try QEMUBackend(
                 configuration: configuration, bundle: machine.bundle, installation: installation, adapter: adapter,
-                network: network, console: console,
+                directX: directX, network: network, console: console,
                 pressesKeyToBootInstaller: Self.bootsInstaller(configuration, bundle: machine.bundle)
             )
         } catch {

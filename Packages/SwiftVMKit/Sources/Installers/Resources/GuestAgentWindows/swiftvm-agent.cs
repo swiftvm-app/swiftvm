@@ -38,7 +38,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.7";
+        public const string Version = "1.8";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
