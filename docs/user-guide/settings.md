@@ -12,6 +12,7 @@ sidebar on the left.
 | General | Check for updates, and whether to install them automatically. **Delete virtual machines immediately** |
 | Storage | Where new virtual machines, templates, and downloaded images are kept. **Change** picks another folder for each, on another disk if you like |
 | Network | The address range of the shared network, and this Mac's address on it (see [Networking](../features/networking.md)). **Add machines to ~/.ssh/config**, to reach every machine with plain `ssh <machine>` (see [SSH](../features/ssh.md)) |
+| Graphics | D3DMetal and Rosetta for Direct3D 12 and OpenGL in Windows machines, which backend they use, and **Always use DXMT** (see [Windows graphics](../features/windows-guests.md#direct3d-and-opengl)). Shown when SwiftVM's QEMU has Direct3D |
 | Command Line | Install or uninstall the [`swiftvm`](../features/command-line.md) command |
 
 ## Updates

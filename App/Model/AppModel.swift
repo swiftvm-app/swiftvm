@@ -41,6 +41,8 @@ final class AppModel {
     private(set) var backendProvider: BackendRouter?
     /// Runs Windows guests, with the QEMU inside the app.
     private(set) var qemuProvider: QEMUBackendProvider?
+    /// Where Windows machines that draw with the Mac's GPU replay their Direct3D.
+    let windowsGraphics: WindowsGraphics
 
     /// Machines that are still being downloaded or prepared.
     var creations: [MachineCreation] = []
@@ -127,6 +129,7 @@ final class AppModel {
                 .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? ImageDownloader.defaultCacheDirectory
         )
         sshWriter = SSHConfigWriter(generatedConfigURL: library.rootDirectory.appending(path: "ssh_config"))
+        windowsGraphics = WindowsGraphics(directory: library.rootDirectory.appending(path: "D3DMetal", directoryHint: .isDirectory))
         isSSHIncludeInstalled = sshWriter.isIncludeInstalled
 
         do {
@@ -135,7 +138,11 @@ final class AppModel {
             networkManager.onDefaultSubnetChange = { [weak self] previous, current in
                 self?.remapReservedAddresses(from: previous, to: current)
             }
-            let qemu = QEMUBackendProvider(networkManager: networkManager, installation: QEMUInstallation.inApp())
+            let graphics = windowsGraphics
+            let qemu = QEMUBackendProvider(
+                networkManager: networkManager, installation: QEMUInstallation.inApp(),
+                directXHost: { graphics.currentHost() }
+            )
             let router = BackendRouter(providers: [
                 .virtualization: VZBackendProvider(networkManager: networkManager, usbAccessories: usbAccessories),
                 .qemu: qemu,

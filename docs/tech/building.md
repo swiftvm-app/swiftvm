@@ -27,7 +27,13 @@ build takes several minutes; later ones reuse `.build/qemu`. Set
 
 Windows' Direct3D support is **experimental and included by default**, including
 in release builds. It adds DXMT and the signed Windows 3D driver and compiles
-LLVM 15, making the first build much longer. New Windows guests install the
+LLVM 15, making the first build much longer. It also adds d3dmetal-native,
+which runs Direct3D 11 and 12 on Apple's D3DMetal, and an x86-64 half of
+virglrenderer's render server to load it in: D3DMetal is x86-64 code, which
+runs under Rosetta. Both are built for x86-64 without running anything, so the
+build doesn't need Rosetta.
+D3DMetal itself isn't built or included; users install it from the Game Porting
+Toolkit in **Settings → Graphics**. New Windows guests install the
 driver only when graphics acceleration is selected at creation, and use it on
 the next cold boot after the guest tools report it installed. Existing guests
 are not upgraded unless you update their guest tools.

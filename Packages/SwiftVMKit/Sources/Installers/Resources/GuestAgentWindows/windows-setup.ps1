@@ -79,6 +79,22 @@ try {
     $ErrorActionPreference = 'Continue'
 }
 
+# OpenGL, for a machine with the 3D driver, from the Microsoft Store. Like SSH, it takes the internet.
+if (Test-Path (Join-Path $env:WINDIR 'System32\DriverStore\FileRepository\viogpu3d.inf_*')) {
+    Set-Status 'running' 'Setting up OpenGL'
+    try {
+        & (Join-Path $data 'opengl.ps1')
+    } catch {
+        Write-Log "OpenGL couldn't be set up: $_"
+    }
+    # It is tried again at each sign-in, until it is there.
+    try {
+        & (Join-Path $data 'opengl.ps1') -Register
+    } catch {
+        Write-Log "OpenGL couldn't be set up for later: $_"
+    }
+}
+
 Set-Status 'finished'
 # Windows starts again, and the Mac with it: its display then follows the window, with the driver
 # that was installed before.

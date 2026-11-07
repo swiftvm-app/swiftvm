@@ -11,9 +11,13 @@
 # patches in Native/QEMU carry what that takes on macOS, after UTM's. Windows guests get a TPM 2.0 from
 # swtpm, with libtpms, which runs next to QEMU.
 #
-# Experimental Direct3D for Windows guests is included by default: DXMT turns it into Metal, and its
-# shader translator is built with LLVM 15, which makes the first build far longer. Set
-# SWIFTVM_QEMU_DIRECT3D=0 to leave it out while keeping Linux graphics acceleration.
+# Experimental Direct3D for Windows guests is included by default. Windows' driver hands its Direct3D
+# calls to virglrenderer's render server, which replays them on one of two backends. DXMT turns
+# Direct3D 11 into Metal; its shader translator is built with LLVM 15, which makes the first build far
+# longer. d3dmetal-native runs them on Apple's D3DMetal, from the Game Porting Toolkit, which has
+# Direct3D 12 besides. D3DMetal isn't built or brought here: the user installs it. Its code is for Intel
+# processors, so the render server has an Intel half for it, which Rosetta runs. Set
+# SWIFTVM_QEMU_DIRECT3D=0 to leave Direct3D out while keeping Linux graphics acceleration.
 #
 # Every source is pinned in Native/QEMU/sources.tsv by its checksum. The libraries the build doesn't
 # make itself are Homebrew's, and so are the tools to build with:
@@ -76,6 +80,9 @@ fi
 # The sources stay, unpacked, and the libraries made from them, for the next build to go faster. The
 # rest of a build goes when it ends.
 sources=$cache/sources prefix=$cache/prefix
+# What is built for Intel Macs, for the render server's half that runs D3DMetal. Not named with a
+# hyphen, which earlier results are, and are deleted by.
+intel_prefix=$cache/intel intel_cross=$cache/intel.cross
 mkdir -p "$sources" "$prefix"
 work=$(mktemp -d "$cache/work.XXXXXX")
 log=$cache/build.log
@@ -140,6 +147,28 @@ meson_build() {
     meson setup $reconfigure "$directory/build" "$directory" --prefix="$prefix" --libdir=lib --buildtype=release -Dauto_features=disabled "$@"
     meson compile -C "$directory/build"
     meson install -C "$directory/build"
+}
+
+# Builds the Meson project in $1 for Intel Macs, as meson_build does for this one, in a folder of its
+# own. pkg-config finds only what was built for Intel, and nothing that is built is run: this Mac
+# needn't have Rosetta to build it.
+intel_meson_build() {
+    local directory=$1
+    shift
+    local reconfigure=()
+    [[ ! -f $directory/build-x86_64/build.ninja ]] || reconfigure=(--reconfigure --clearcache)
+    PKG_CONFIG_PATH=$intel_prefix/lib/pkgconfig PKG_CONFIG_LIBDIR=$intel_prefix/lib/pkgconfig \
+        meson setup $reconfigure "$directory/build-x86_64" "$directory" --cross-file "$intel_cross" --prefix="$intel_prefix" \
+        --libdir=lib --buildtype=release -Dauto_features=disabled "-Dpkg_config_path=$intel_prefix/lib/pkgconfig" "$@"
+    meson compile -C "$directory/build-x86_64"
+    meson install -C "$directory/build-x86_64"
+}
+
+# Puts the directx-native unpacked as $1 where the Meson project in $2 looks for its subproject, so that
+# the build fetches nothing. Each project takes the one it was pinned with, as its own.
+provide_directx_native() {
+    mkdir -p "$2/subprojects"
+    ln -sfn "$sources/$1" "$2/subprojects/directx-native"
 }
 
 # Configures the autotools project in $1, in its own folder, with the options after it. Its scripts are
@@ -229,8 +258,11 @@ build_libraries() {
     unpack epoxy.tar.gz epoxy "$native/epoxy-dylibs.patch"
     meson_build "$sources/epoxy" -Dtests=false -Dglx=no -Degl=yes -Dx11=false "-Dc_args=-I$prefix/include"
     unpack virglrenderer.tar.gz virglrenderer
-    meson_build "$sources/virglrenderer" -Dtests=false -Dvtest=false -Dvenus=false -Dneptune=true -Dcheck-gl-errors=false \
-        -Drender-server-mode=process "-Dc_args=-I$prefix/include"
+    unpack directx-native-virglrenderer.tar.gz directx-native-virglrenderer
+    provide_directx_native directx-native-virglrenderer "$sources/virglrenderer"
+    local virglrenderer_options=(-Dtests=false -Dvtest=false -Dvenus=false -Dneptune=true -Dcheck-gl-errors=false
+        -Drender-server-mode=process --wrap-mode=nodownload --force-fallback-for=directx-native "-Dc_args=-I$prefix/include")
+    meson_build "$sources/virglrenderer" $virglrenderer_options
 
     [[ $direct3d == yes ]] || return 0
     # DXMT's shader translator takes LLVM 15: its libraries alone, apart from any LLVM on this Mac.
@@ -246,7 +278,46 @@ build_libraries() {
         rmdir "$sources/dxmt/include/native/directx"
         ln -s ../../../directx-headers "$sources/dxmt/include/native/directx"
     fi
-    meson_build "$sources/dxmt" -Dnative_llvm_path="$prefix/llvm15"
+    unpack directx-native.tar.gz directx-native
+    provide_directx_native directx-native "$sources/dxmt"
+    # directx-native's headers stay out of the prefix, where they would stand in for the ones
+    # virglrenderer was pinned with.
+    meson_build "$sources/dxmt" -Dnative_llvm_path="$prefix/llvm15" --wrap-mode=nodownload --force-fallback-for=directx-native \
+        -Ddirectx-native:install_headers=false
+
+    # The render server's half for Intel, which Rosetta runs for D3DMetal. virglrenderer won't be set
+    # up without an epoxy for the same processor, although that half draws no OpenGL and loads none:
+    # Linux's OpenGL is drawn by the half for this Mac.
+    cat > "$intel_cross" <<'EOF'
+[binaries]
+c = ['clang', '-arch', 'x86_64']
+cpp = ['clang++', '-arch', 'x86_64']
+objc = ['clang', '-arch', 'x86_64']
+objcpp = ['clang++', '-arch', 'x86_64']
+ar = 'ar'
+strip = 'strip'
+pkg-config = 'pkg-config'
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'darwin'
+subsystem = 'macos'
+kernel = 'xnu'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+EOF
+    mkdir -p "$intel_prefix"
+    intel_meson_build "$sources/epoxy" -Dtests=false -Dglx=no -Degl=yes -Dx11=false "-Dc_args=-I$prefix/include"
+    intel_meson_build "$sources/virglrenderer" $virglrenderer_options
+    # D3DMetal's host, for Intel processors, as D3DMetal's code is. It finds D3DMetal where the app says; the place
+    # it would look otherwise, in its own sources, is one that can't be.
+    unpack d3dmetal-native.tar.gz d3dmetal-native
+    provide_directx_native directx-native "$sources/d3dmetal-native"
+    intel_meson_build "$sources/d3dmetal-native" -Dtests=disabled --wrap-mode=nodownload --force-fallback-for=directx-native \
+        -Ddirectx-native:install_headers=false -Ddev_framework_path=/dev/null/D3DMetal.framework/Versions/A/D3DMetal
 }
 
 # The library the app shows a machine's screen with: CocoaSpice, UTM's SPICE client for Metal, and
@@ -291,7 +362,8 @@ typeset -A copied
 # in turn. Each is found by its name next to the others, wherever the result goes.
 copy_libraries() {
     local file=$1 reference original name
-    for reference in $(otool -L "$file" | tail -n +2 | awk '{ print $1 }'); do
+    # otool heads what each half of a universal file loads with the half's name, ending in a colon.
+    for reference in $(otool -L "$file" | awk '!/:$/ { print $1 }'); do
         [[ $reference == /usr/lib/* || $reference == /System/* ]] && continue
         name=${reference:t}
         [[ $name == ${file:t} ]] && continue
@@ -314,14 +386,28 @@ package() {
     out=$work/QEMU
     mkdir -p "$out/bin" "$out/lib" "$out/share/keymaps" "$out/licenses"
     cp "$source_dir/build/qemu-system-aarch64" "$out/bin/"
-    cp "$prefix/libexec/virgl_render_server" "$out/bin/"
+    if [[ $direct3d == yes ]]; then
+        # One render server with both halves. QEMU starts the Intel one for D3DMetal.
+        lipo -create "$prefix/libexec/virgl_render_server" "$intel_prefix/libexec/virgl_render_server" -output "$out/bin/virgl_render_server"
+        # That half has nothing of this Mac's to load.
+        if otool -arch x86_64 -L "$out/bin/virgl_render_server" | awk '!/:$/ { print $1 }' | grep -q -v -e '^/usr/lib/' -e '^/System/'; then
+            fail "The render server's half for Intel loads more than the system's libraries."
+        fi
+    else
+        cp "$prefix/libexec/virgl_render_server" "$out/bin/"
+    fi
     cp "$prefix/bin/swtpm" "$out/bin/"
-    # What nothing links, as these are opened while QEMU runs: ANGLE by epoxy, and DXMT by virglrenderer.
+    # What nothing links, as these are opened while QEMU runs: ANGLE by epoxy, and DXMT and
+    # d3dmetal-native by virglrenderer.
     local name file search_path minimum
     local opened=(libSwiftVMDisplay.dylib libEGL.dylib libGLESv2.dylib)
-    [[ $direct3d != yes ]] || opened+=(libdxmt-native.dylib)
+    [[ $direct3d != yes ]] || opened+=(libdxmt-native.dylib libd3dmetal-native.dylib)
     for name in $opened; do
-        cp -L "$prefix/lib/$name" "$out/lib/$name"
+        if [[ $name == libd3dmetal-native.dylib ]]; then
+            cp -L "$intel_prefix/lib/$name" "$out/lib/$name"
+        else
+            cp -L "$prefix/lib/$name" "$out/lib/$name"
+        fi
         chmod u+w "$out/lib/$name"
         copied[$name]=1
         install_name_tool -id "@rpath/$name" "$out/lib/$name"
@@ -339,7 +425,7 @@ package() {
         else
             install_name_tool -add_rpath @loader_path "$file" 2> /dev/null
         fi
-        if otool -L "$file" | tail -n +2 | awk '{ print $1 }' | grep -q -e "^$brew_prefix" -e "^$cache"; then
+        if otool -L "$file" | awk '!/:$/ { print $1 }' | grep -q -e "^$brew_prefix" -e "^$cache"; then
             fail "${file:t} still looks for a library in Homebrew's folder or the build's."
         fi
         # Homebrew builds its libraries for the macOS it runs on, which may be later than the app's.
@@ -381,7 +467,7 @@ direct3d = sys.argv[3] == 'yes'
 for component in source.iterdir():
     if not component.is_dir() or component.name in ('WebKit', 'llvm-project', 'qemu'):
         continue
-    if not direct3d and component.name in ('dxmt', 'directx-headers'):
+    if not direct3d and component.name in ('dxmt', 'directx-headers', 'directx-native', 'd3dmetal-native'):
         continue
     for pattern in ('COPYING*', 'LICENSE*', 'LICENCE*'):
         for path in component.glob(pattern):
@@ -428,15 +514,19 @@ refresh timing for a local display.
 bin/swtpm is swtpm (BSD 3-Clause), the TPM 2.0 of Windows guests, on libtpms (BSD 3-Clause).
 
 The libraries in lib/ are SPICE, GStreamer, json-glib, libjpeg-turbo, libepoxy,
-virglrenderer, ANGLE, libtpms and swtpm's own, built from those sources, and Homebrew's builds of glib $(pkg-config --modversion glib-2.0),
+virglrenderer (with directx-native's headers, Apache 2.0), ANGLE, libtpms and swtpm's own, built from those sources, and Homebrew's builds of glib $(pkg-config --modversion glib-2.0),
 pixman $(pkg-config --modversion pixman-1), OpenSSL, PCRE2 and gettext's libintl. SPICE, GStreamer, glib and
 libintl are under the GNU Lesser General Public License 2.1 or later. libSwiftVMDisplay is
 CocoaSpice (Apache 2.0) with SwiftVM's display code. The firmware in share/ is EDK II, as it
 comes with QEMU's source. The licences are in licenses/.
 EOF
     [[ $direct3d != yes ]] || print -r -- "
-lib/libdxmt-native.dylib is DXMT (LGPL 2.1), built with LLVM 15. share/viogpu3d-arm64x-signed.zip
-is the Windows driver from github.com/osy/kvm-guest-drivers-windows v0.3." >> "$out/README.txt"
+lib/libdxmt-native.dylib is DXMT (LGPL 2.1), built with LLVM 15. lib/libd3dmetal-native.dylib is
+d3dmetal-native (MIT), for Intel Macs, which the Intel half of bin/virgl_render_server loads under
+Rosetta. Both carry directx-native (Apache 2.0). d3dmetal-native runs Apple's D3DMetal.framework, from
+the Game Porting Toolkit, which is not included: whoever uses it installs it under Apple's licence.
+share/viogpu3d-arm64x-signed.zip is the Windows driver from
+github.com/osy/kvm-guest-drivers-windows v0.5." >> "$out/README.txt"
 
     # Signed to run on this Mac, so that it does so by itself. In the app it is signed again.
     for file in "$out"/lib/*.dylib "$out/bin/virgl_render_server" "$out/bin/swtpm"; do
@@ -451,6 +541,10 @@ is the Windows driver from github.com/osy/kvm-guest-drivers-windows v0.3." >> "$
     local devices=$("$out/bin/qemu-system-aarch64" -device help 2>&1 || true)
     [[ $devices == *'"tpm-crb-device"'* ]] || fail "The QEMU that was built has no TPM CRB device."
     "$out/bin/swtpm" socket --print-capabilities > /dev/null || fail "The swtpm that was built doesn't run."
+    if [[ $direct3d == yes ]]; then
+        [[ $(lipo -archs "$out/bin/virgl_render_server") == *x86_64* && $(lipo -archs "$out/lib/libd3dmetal-native.dylib") == x86_64 ]] \
+            || fail "The render server has no half for D3DMetal."
+    fi
 }
 
 print -u2 "Building QEMU $qemu_version and its graphics (the first build takes a while)…"

@@ -32,10 +32,10 @@ by it.
  4 files changed, 29 insertions(+), 6 deletions(-)
 
 diff --git a/src/d3d11/d3d11_buffer.cpp b/src/d3d11/d3d11_buffer.cpp
-index 8ed8a4e6b..850549feb 100644
+index 8ed8a4e..850549f 100644
 --- a/src/d3d11/d3d11_buffer.cpp
 +++ b/src/d3d11/d3d11_buffer.cpp
-@@ -94,7 +94,9 @@ class D3D11Buffer : public TResourceBase<tag_buffer> {
+@@ -94,7 +94,9 @@ public:
      if (!m_parent->IsTraced() && pDesc->Usage == D3D11_USAGE_DYNAMIC)
        flags.set(BufferAllocationFlag::CpuWriteCombined);
      // if (pDesc->Usage != D3D11_USAGE_DEFAULT)
@@ -47,7 +47,7 @@ index 8ed8a4e6b..850549feb 100644
      if (pDesc->Usage != D3D11_USAGE_DYNAMIC) {
        if (pInitialData)
 diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
-index b76df64a5..2abdb0257 100644
+index 85ae23e..7f1a575 100644
 --- a/src/d3d11/d3d11_texture_device.cpp
 +++ b/src/d3d11/d3d11_texture_device.cpp
 @@ -439,7 +439,21 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
@@ -67,7 +67,7 @@ index b76df64a5..2abdb0257 100644
 +        auto src = reinterpret_cast<const uint8_t *>(data.pSysMem);
 +        size_t row_bytes = std::min<size_t>((size_t)finalDesc.Width * format_desc.BytesPerTexel, data.SysMemPitch);
 +        for (unsigned row = 0; dst && src && row < finalDesc.Height; row++)
-+          memcpy(dst + row * pod.stride, src + (size_t)row * data.SysMemPitch, row_bytes);
++          memcpy(dst + row * pod.planes[0].pitch, src + (size_t)row * data.SysMemPitch, row_bytes);
 +      }
 +      texture->rename(std::move(shm_allocation));
        *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
@@ -87,7 +87,7 @@ index b76df64a5..2abdb0257 100644
    if (single_subresource && (finalDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL)) {
      Rc<RenamableTexturePool> renamable = new RenamableTexturePool(texture.ptr(), 32, flags);
 diff --git a/src/d3d11/d3d11_texture_linear.cpp b/src/d3d11/d3d11_texture_linear.cpp
-index e250d6e05..7c46b5da5 100644
+index e250d6e..7c46b5d 100644
 --- a/src/d3d11/d3d11_texture_linear.cpp
 +++ b/src/d3d11/d3d11_texture_linear.cpp
 @@ -51,7 +51,9 @@ TDynamicLinearTexture(
@@ -102,10 +102,10 @@ index e250d6e05..7c46b5da5 100644
      if (pDesc->Usage != D3D11_USAGE_DYNAMIC)
        flags.set(TextureAllocationFlag::GpuManaged);
 diff --git a/src/d3d11/d3d11_texture_shared_native.cpp b/src/d3d11/d3d11_texture_shared_native.cpp
-index 94cdad354..9a049c6cc 100644
+index bcb2c83..ae71fb4 100644
 --- a/src/d3d11/d3d11_texture_shared_native.cpp
 +++ b/src/d3d11/d3d11_texture_shared_native.cpp
-@@ -182,10 +182,11 @@ AllocateShmLinearTexture2D(
+@@ -122,10 +122,11 @@ AllocateShmLinearTexture2D(
    linear_info.mach_port = 0;
    linear_info.options = WMTResourceHazardTrackingModeUntracked;
  

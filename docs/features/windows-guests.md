@@ -52,10 +52,67 @@ finishes, and SwiftVM removes the installation discs.
 
 GPU acceleration is **experimental and off by default for new Windows
 machines**. Turn it on when creating the machine, or pass `--gpu` to
-`swiftvm create windows`, to install the signed Direct3D driver. Once the
-guest tools report that it is installed, the next cold boot uses your Mac's
-GPU through DXMT and Metal. Windows Setup uses the firmware framebuffer before
-the driver is available.
+`swiftvm create windows`, to install the signed 3D driver. Once the guest
+tools report that it is installed, the next cold boot uses your Mac's GPU.
+Windows Setup uses the firmware framebuffer before the driver is available.
+
+### Direct3D and OpenGL
+
+The 3D driver hands Windows' Direct3D to your Mac, which draws it with one of
+two backends:
+
+| | DXMT | D3DMetal |
+| --- | --- | --- |
+| Direct3D 10 and 11 | Yes | Yes |
+| Direct3D 12 | No | Yes |
+| OpenGL | Windows' own, version 1.1, in software | 4.2, through Microsoft's compatibility pack, on Direct3D 12 |
+| What it takes | Nothing: it comes with SwiftVM | Apple's Game Porting Toolkit, and Rosetta |
+
+Machines use D3DMetal when it and Rosetta are installed, and DXMT otherwise.
+**Settings → Graphics** shows which one machines use. A machine picks up a
+change the next time it starts.
+
+To use D3DMetal:
+
+1. Download the Game Porting Toolkit from
+   [Apple's developer site](https://developer.apple.com/games/game-porting-toolkit/)
+   (an Apple Account is enough). Open its disk image, then the **Evaluation
+   environment for Windows games** disk image inside it. SwiftVM can't include
+   D3DMetal: Apple's licence covers it, and you accept that licence yourself.
+2. In SwiftVM, open **Settings → Graphics**, choose **Choose…** next to
+   **D3DMetal**, and select the **Evaluation environment for Windows games**
+   volume, or the `D3DMetal.framework` in its `redist/lib/external` folder.
+   SwiftVM keeps a copy, so you can eject the images afterwards.
+3. If Rosetta isn't installed, choose **Install…** next to **Rosetta**.
+   D3DMetal is x86-64 code, which SwiftVM runs under Rosetta.
+4. Shut the Windows machine down and start it again.
+
+Shut Windows machines down before you remove or replace D3DMetal: a running
+machine loads it again for each app that starts drawing.
+
+To keep every machine on DXMT, turn on **Always use DXMT**, for example if an
+app draws incorrectly with D3DMetal.
+
+The 3D driver doesn't bring OpenGL. Machines that have it install Microsoft's
+**OpenCL, OpenGL, and Vulkan Compatibility Pack** from the Microsoft Store when
+the account first signs in, and try again at each sign-in until it is there.
+The pack draws OpenGL with Direct3D 12, and the version apps get depends on
+what that Direct3D 12 supports: with D3DMetal from Game Porting Toolkit 4.0
+beta 3, it is OpenGL 4.2, in the core and the compatibility profile. Apps that
+need a later version don't start. With DXMT there is no Direct3D 12 for it to
+draw with, and apps get only Windows' own OpenGL 1.1, drawn in software.
+
+Direct3D 12 through D3DMetal is newer and less tested than Direct3D 11.
+
+The first time a machine uses D3DMetal, macOS may say that SwiftVM includes a
+component that won't open in macOS 28. That component is the part of SwiftVM
+that runs D3DMetal under Rosetta: D3DMetal's code is for Intel processors. If a
+later macOS doesn't run it, machines use DXMT, with Direct3D 11.
+
+Machines whose 3D driver came with guest tools older than 1.8 need their
+[guest tools updated](guest-tools.md#windows): the driver and SwiftVM have to
+match, and an older driver may draw without acceleration, or not at all, until
+then.
 
 ### Window size and sharpness
 

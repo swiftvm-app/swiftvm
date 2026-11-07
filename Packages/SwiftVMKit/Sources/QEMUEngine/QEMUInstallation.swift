@@ -23,7 +23,20 @@ public struct QEMUInstallation: Sendable, Hashable {
 
     /// Whether it has DXMT, which Windows' Direct3D goes through. Custom builds can leave it out.
     public var supportsDirect3D: Bool {
-        FileManager.default.fileExists(atPath: libraryDirectory.appending(path: "libdxmt-native.dylib").path)
+        FileManager.default.fileExists(atPath: dxmtLibrary.path)
+    }
+
+    /// Whether it has d3dmetal-native, with which the render server's Intel half runs Windows' Direct3D
+    /// on D3DMetal, once the user has installed that. It comes with Direct3D.
+    public var supportsD3DMetal: Bool {
+        FileManager.default.fileExists(atPath: d3dMetalLibrary.path)
+    }
+
+    /// What a Windows guest that draws with the Mac's GPU replays its Direct3D on: D3DMetal, which has
+    /// Direct3D 12, wherever it can run, and DXMT otherwise.
+    public func directXBackend(on host: DirectXHost) -> DirectXBackend {
+        guard !host.prefersDXMT, supportsD3DMetal, host.hasRosetta, let framework = host.d3dMetalFramework else { return .dxmt }
+        return .d3dMetal(framework: framework)
     }
 
     /// `swtpm`, the TPM 2.0 that Windows guests get, which runs next to QEMU. Custom builds can leave it out.
@@ -36,16 +49,35 @@ public struct QEMUInstallation: Sendable, Hashable {
 
     var libraryDirectory: URL { program.deletingLastPathComponent().deletingLastPathComponent().appending(path: "lib") }
     var displayLibrary: URL { libraryDirectory.appending(path: "libSwiftVMDisplay.dylib") }
+    var dxmtLibrary: URL { libraryDirectory.appending(path: "libdxmt-native.dylib") }
+    var d3dMetalLibrary: URL { libraryDirectory.appending(path: "libd3dmetal-native.dylib") }
 
-    func environment(in directory: URL) -> [String: String] {
+    /// What QEMU runs with, and its render server after it, for a guest whose Direct3D goes to `directX`.
+    func environment(in directory: URL, directX: DirectXBackend = .dxmt) -> [String: String] {
         guard acceleratesGraphics else { return [:] }
-        let dxmt = libraryDirectory.appending(path: "libdxmt-native.dylib").path
-        return [
-            "ANGLE_DEFAULT_PLATFORM": "metal", "NPT_BACKEND": "dxmt",
-            "NPT_D3D11_LIBRARY_PATH": dxmt, "NPT_D3D12_LIBRARY_PATH": dxmt, "NPT_DXGI_LIBRARY_PATH": dxmt,
+        var environment = [
+            "ANGLE_DEFAULT_PLATFORM": "metal",
             "RENDER_SERVER_EXEC_PATH": program.deletingLastPathComponent().appending(path: "virgl_render_server").path,
             "XDG_RUNTIME_DIR": directory.path,
         ]
+        // The render server takes its half for the backend's library: the Intel one for D3DMetal.
+        let library: URL
+        switch directX {
+        case .dxmt:
+            environment["NPT_BACKEND"] = "dxmt"
+            library = dxmtLibrary
+        case .d3dMetal(let framework):
+            environment["NPT_BACKEND"] = "d3dmetal"
+            environment["D3DMETAL_FRAMEWORK_PATH"] = framework.path
+            // QEMU tells the guest what the backend has before any render server runs. It looks for
+            // Direct3D 12 by loading the library itself, which it can't: the library is for Intel.
+            environment["NPT_CAPSET_D3D12"] = "1"
+            library = d3dMetalLibrary
+        }
+        for name in ["NPT_D3D11_LIBRARY_PATH", "NPT_D3D12_LIBRARY_PATH", "NPT_DXGI_LIBRARY_PATH"] {
+            environment[name] = library.path
+        }
+        return environment
     }
 
     /// The UEFI firmware, without the padding of the machine's flash.

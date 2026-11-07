@@ -20,6 +20,8 @@ public final class QEMUBackend: VMBackend {
     private let bundle: VMBundle
     private let installation: QEMUInstallation
     private let adapter: DisplayAdapter
+    /// Where a Windows guest's Direct3D is drawn, with the GPU.
+    private let directX: DirectXBackend
     private let network: VmnetNetwork?
     private let console: SerialConsole.GuestEnd
     /// The guest's disk is still empty and an installer disc is plugged in: the disc only starts when a
@@ -73,12 +75,13 @@ public final class QEMUBackend: VMBackend {
 
     init(
         configuration: VMConfiguration, bundle: VMBundle, installation: QEMUInstallation, adapter: DisplayAdapter,
-        network: VmnetNetwork?, console: SerialConsole.GuestEnd, pressesKeyToBootInstaller: Bool
+        directX: DirectXBackend = .dxmt, network: VmnetNetwork?, console: SerialConsole.GuestEnd, pressesKeyToBootInstaller: Bool
     ) throws {
         self.configuration = configuration
         self.bundle = bundle
         self.installation = installation
         self.adapter = adapter
+        self.directX = directX
         self.network = network
         self.console = console
         self.pressesKeyToBootInstaller = pressesKeyToBootInstaller
@@ -320,7 +323,7 @@ public final class QEMUBackend: VMBackend {
             process = try QEMUProcess.launch(
                 program: installation.program, arguments: arguments, descriptors: engineEnds,
                 log: bundle.logsDirectory.appending(path: "qemu.log"), pidFile: Self.pidFile(in: bundle),
-                environment: spice.map { installation.environment(in: $0.directory) } ?? [:]
+                environment: spice.map { installation.environment(in: $0.directory, directX: directX) } ?? [:]
             )
         } catch {
             (engineEnds + appEnds).forEach { close($0) }

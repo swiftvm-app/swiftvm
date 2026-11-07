@@ -258,18 +258,20 @@ if [[ -n $qemu ]]; then
         /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/qemu-entitlements.plist"
     fi
     sign --identifier com.swiftvm.app.qemu --entitlements "$stage/qemu-entitlements.plist" "$contents/Helpers/QEMU/bin/qemu-system-aarch64"
-    # virglrenderer's render server, which QEMU starts for Windows' Direct3D, loads the same libraries
-    # and needs nothing else.
-    print '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict></dict></plist>' > "$stage/renderer-entitlements.plist"
+    # swtpm, the TPM of Windows guests, loads the same libraries and needs nothing else. A QEMU built
+    # before it was there comes without.
+    print '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict></dict></plist>' > "$stage/tpm-entitlements.plist"
     if [[ $identity == - ]]; then
-        /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/renderer-entitlements.plist"
+        /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$stage/tpm-entitlements.plist"
     fi
-    sign --identifier com.swiftvm.app.qemu.renderer --entitlements "$stage/renderer-entitlements.plist" "$contents/Helpers/QEMU/bin/virgl_render_server"
-    # swtpm, the TPM of Windows guests, needs no more than the renderer. A QEMU built before it was there
-    # comes without.
     if [[ -f $contents/Helpers/QEMU/bin/swtpm ]]; then
-        sign --identifier com.swiftvm.app.qemu.tpm --entitlements "$stage/renderer-entitlements.plist" "$contents/Helpers/QEMU/bin/swtpm"
+        sign --identifier com.swiftvm.app.qemu.tpm --entitlements "$stage/tpm-entitlements.plist" "$contents/Helpers/QEMU/bin/swtpm"
     fi
+    # virglrenderer's render server, which QEMU starts for Windows' Direct3D. Its Intel half loads
+    # D3DMetal, which the user installed from Apple's Game Porting Toolkit: Apple signed it, not the
+    # app's team, so this one loads libraries whoever signed them.
+    print '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>' > "$stage/renderer-entitlements.plist"
+    sign --identifier com.swiftvm.app.qemu.renderer --entitlements "$stage/renderer-entitlements.plist" "$contents/Helpers/QEMU/bin/virgl_render_server"
 fi
 sign --entitlements "$stage/entitlements.plist" "$app"
 codesign --verify --deep --strict "$app" || fail "The signature of $app doesn't hold."

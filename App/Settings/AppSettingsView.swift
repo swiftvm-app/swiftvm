@@ -1,16 +1,18 @@
+import QEMUEngine
 import SwiftUI
 import VMControl
 import VMCore
 
 /// The panes of the app's settings.
 nonisolated enum AppSettingsPane: String, SettingsPane {
-    case general, storage, network, commandLine
+    case general, storage, network, graphics, commandLine
 
     var title: String {
         switch self {
         case .general: "General"
         case .storage: "Storage"
         case .network: "Network"
+        case .graphics: "Graphics"
         case .commandLine: "Command Line"
         }
     }
@@ -20,6 +22,7 @@ nonisolated enum AppSettingsPane: String, SettingsPane {
         case .general: "gearshape.fill"
         case .storage: "externaldrive.fill"
         case .network: "network"
+        case .graphics: "square.stack.3d.up.fill"
         case .commandLine: "apple.terminal.fill"
         }
     }
@@ -29,6 +32,7 @@ nonisolated enum AppSettingsPane: String, SettingsPane {
         case .general: .gray
         case .storage: .blue
         case .network: .green
+        case .graphics: .purple
         case .commandLine: Color(white: 0.22)
         }
     }
@@ -38,6 +42,7 @@ nonisolated enum AppSettingsPane: String, SettingsPane {
         case .general: "Updates, and what happens to virtual machines that are deleted."
         case .storage: "Where virtual machines, templates and downloaded images are kept."
         case .network: "The network virtual machines share, and reaching them with ssh."
+        case .graphics: "Direct3D and OpenGL in Windows machines that draw with your Mac's GPU."
         case .commandLine: "Create, start and connect to virtual machines from Terminal."
         }
     }
@@ -53,9 +58,20 @@ struct AppSettingsView: View {
     @State private var toolProblem: String?
     /// Why a folder that was chosen for machines, templates or downloads can't be used.
     @State private var storageProblem: String?
+    /// Why D3DMetal or Rosetta couldn't be installed or removed.
+    @State private var graphicsProblem: String?
+    /// D3DMetal is being copied, or Rosetta installed.
+    @State private var isChangingGraphics = false
 
     private var panes: [AppSettingsPane] {
-        model.commandLineToolLink == nil ? [.general, .storage, .network] : [.general, .storage, .network, .commandLine]
+        var panes: [AppSettingsPane] = [.general, .storage, .network]
+        if model.qemuProvider?.canAccelerateWindowsGraphics == true {
+            panes.append(.graphics)
+        }
+        if model.commandLineToolLink != nil {
+            panes.append(.commandLine)
+        }
+        return panes
     }
 
     var body: some View {
@@ -65,10 +81,14 @@ struct AppSettingsView: View {
             }
         }
         .frame(width: 720, height: 500)
-        .onAppear { toolStatus = model.commandLineToolLink?.status ?? .notInstalled }
-        // The link may have been changed from Terminal in the meantime.
+        .onAppear {
+            toolStatus = model.commandLineToolLink?.status ?? .notInstalled
+            model.windowsGraphics.refresh()
+        }
+        // The link may have been changed from Terminal in the meantime, and Rosetta installed.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             toolStatus = model.commandLineToolLink?.status ?? .notInstalled
+            model.windowsGraphics.refresh()
         }
     }
 
@@ -85,6 +105,9 @@ struct AppSettingsView: View {
         case .network:
             networkSection
             sshSection
+        case .graphics:
+            direct3D12Section
+            direct3DSection
         case .commandLine:
             if let link = model.commandLineToolLink {
                 commandLineSection(link)
@@ -126,6 +149,110 @@ struct AppSettingsView: View {
             Text("SSH")
         } footer: {
             Text("Adds one Include line to your SSH configuration so every virtual machine is reachable by name, for example “ssh ubuntu-26-04”. Nothing else in the file is changed.")
+        }
+    }
+
+    // MARK: Graphics
+
+    private var graphics: WindowsGraphics { model.windowsGraphics }
+    /// Whether this copy of the app's QEMU can run D3DMetal at all.
+    private var canUseD3DMetal: Bool { model.qemuProvider?.canUseD3DMetal == true }
+
+    private var direct3D12Section: some View {
+        Section {
+            LabeledContent("D3DMetal") {
+                HStack {
+                    Text(d3dMetalStatus).foregroundStyle(.secondary)
+                    if graphics.d3dMetal == nil {
+                        Button("Choose…", action: chooseD3DMetal)
+                    } else {
+                        Menu("Change") {
+                            Button("Choose D3DMetal…", action: chooseD3DMetal)
+                            Button("Remove") { changeGraphics { try graphics.removeD3DMetal() } }
+                        }
+                        .fixedSize()
+                        .accessibilityLabel("Change D3DMetal")
+                    }
+                }
+                .disabled(isChangingGraphics || !canUseD3DMetal)
+            }
+            LabeledContent("Rosetta") {
+                HStack {
+                    Text(graphics.hasRosetta ? "Installed" : "Not installed").foregroundStyle(.secondary)
+                    if !graphics.hasRosetta {
+                        Button("Install…", action: installRosetta)
+                            .disabled(isChangingGraphics || !canUseD3DMetal)
+                    }
+                }
+            }
+        } header: {
+            Text("Direct3D 12 and OpenGL")
+        } footer: {
+            if let graphicsProblem {
+                Text(graphicsProblem).foregroundStyle(.red)
+            } else if !canUseD3DMetal {
+                Text("This copy of SwiftVM was built without what runs D3DMetal, so Windows machines have Direct3D 11 only.")
+            } else {
+                Text("Windows machines get Direct3D 12, and OpenGL on top of it, from Apple's D3DMetal, which comes with the Game Porting Toolkit. Download the toolkit from developer.apple.com, open its disk image and the “Evaluation environment for Windows games” image inside it, and choose that one here: SwiftVM keeps a copy. D3DMetal runs under Rosetta. Machines use D3DMetal the next time they start; shut them down before you remove or replace it.")
+            }
+        }
+    }
+
+    private var direct3DSection: some View {
+        Section {
+            LabeledContent("Windows Machines Use", value: backendDescription)
+            Toggle("Always use DXMT", isOn: Binding(
+                get: { graphics.prefersDXMT },
+                set: { graphics.prefersDXMT = $0 }
+            ))
+        } header: {
+            Text("Direct3D")
+        } footer: {
+            Text("DXMT runs natively and has Direct3D 11 only. Turn this on if an app draws incorrectly with D3DMetal.")
+        }
+    }
+
+    private var d3dMetalStatus: String {
+        guard graphics.d3dMetal != nil else { return "Not installed" }
+        return graphics.d3dMetalVersion.map { "Version \($0)" } ?? "Installed"
+    }
+
+    private var backendDescription: String {
+        switch model.qemuProvider?.directXBackend(on: graphics.host) {
+        case .d3dMetal?: "D3DMetal: Direct3D 11 and 12"
+        case .dxmt?: "DXMT: Direct3D 11"
+        case nil: "No Direct3D"
+        }
+    }
+
+    private func chooseD3DMetal() {
+        guard let chosen = FolderPanel.choose(
+            message: "Choose the Game Porting Toolkit's “Evaluation environment for Windows games” disk image, or the D3DMetal.framework in it.",
+            startingAt: URL(fileURLWithPath: "/Volumes", isDirectory: true)
+        ) else { return }
+        changeGraphics { try await graphics.installD3DMetal(from: chosen) }
+    }
+
+    private func installRosetta() {
+        let alert = NSAlert()
+        alert.messageText = "Install Rosetta?"
+        alert.informativeText = "Rosetta lets your Mac run D3DMetal, whose code is for Intel processors. Installing it means you agree to Apple's software license agreement for Rosetta. macOS asks for an administrator's password."
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        changeGraphics { try await graphics.installRosetta() }
+    }
+
+    private func changeGraphics(_ change: @escaping @MainActor () async throws -> Void) {
+        isChangingGraphics = true
+        graphicsProblem = nil
+        Task {
+            do {
+                try await change()
+            } catch {
+                graphicsProblem = error.localizedDescription
+            }
+            isChangingGraphics = false
         }
     }
 

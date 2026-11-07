@@ -103,6 +103,11 @@ In Windows, open the **SWIFTVM** disc in File Explorer and run `install.cmd`.
 Approve the administrator prompt and restart Windows afterwards. SwiftVM also
 attaches the drivers disc needed by the installer.
 
+On a machine with the 3D driver, the guest tools also update that driver, and
+install Microsoft's OpenCL, OpenGL, and Vulkan Compatibility Pack from the
+Microsoft Store for the account that is signed in, now or when it next signs in.
+See [Direct3D and OpenGL](windows-guests.md#direct3d-and-opengl).
+
 ## Removing
 
 In the guest, Linux or macOS:
@@ -117,6 +122,7 @@ In a Windows guest, run these commands in PowerShell as administrator:
 Stop-Service SwiftVMAgent
 Get-Process swiftvm-agent -ErrorAction SilentlyContinue | Stop-Process -Force
 sc.exe delete SwiftVMAgent
+Unregister-ScheduledTask -TaskName 'SwiftVM OpenGL' -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$env:ProgramFiles\SwiftVM"
 ```
 
@@ -128,6 +134,6 @@ The device drivers remain installed.
 | --- | --- |
 | Linux | One Python script and its systemd units |
 | macOS | One program, `swiftvm-agent`, and two launchd jobs: one runs as root, one in the session of whoever is logged in, for the clipboard and for reading the screen as a tree |
-| Windows | The SwiftVM guest agent in `C:\Program Files\SwiftVM`, its background service, and device drivers |
+| Windows | The SwiftVM guest agent in `C:\Program Files\SwiftVM`, its background service, and device drivers. With the 3D driver, also the **SwiftVM OpenGL** task, which installs Microsoft's compatibility pack at sign-in until it is there |
 
 You can [turn off automation](automation.md#turning-it-off) for each machine.

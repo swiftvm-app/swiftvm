@@ -20,7 +20,8 @@ Usage: swiftvm <command> [arguments]
                                     backend without GPU acceleration. Needs an M3 or later
       --gpu                         Linux: draw with this Mac's GPU (off by default, including Omarchy).
                                     The machine runs on QEMU, so it can't be suspended or use Rosetta or --nested-virt.
-                                    Windows: install the experimental 3D driver (off by default).
+                                    Windows: install the experimental 3D driver (off by default), with Direct3D 11.
+                                    Direct3D 12 and OpenGL take D3DMetal, installed in the app's Graphics settings.
                                     Windows is sharp at the size it starts at; a new window size takes a restart
       --no-gpu                      Linux: use Apple's backend without GPU acceleration, with suspend support.
                                     Windows: a driver for a display only, sharp at any window size but slower

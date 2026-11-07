@@ -18,6 +18,7 @@ public enum WindowsGuestAgent {
     static let files: [(name: String, resource: String)] = [
         ("swiftvm-agent.cs", "swiftvm-agent.cs"),
         ("install.ps1", "windows-install.ps1"),
+        ("opengl.ps1", "windows-opengl.ps1"),
     ]
 
     static func resource(_ name: String) throws -> String {

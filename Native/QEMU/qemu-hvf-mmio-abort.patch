@@ -1,0 +1,43 @@
+hvf: give the guest a data abort for an MMIO access QEMU can't emulate
+
+A data abort without a valid ISV (a load or store pair, SIMD or SVE, or a
+write-back access) to an address that isn't RAM asserted, and QEMU ended.
+Windows' 3D driver makes such an access to the GPU's memory window, in the
+PCI MMIO window, as Windows shuts down, so a machine with graphics
+acceleration ended QEMU on a graceful stop. The guest now gets the
+synchronous external abort that an access to a missing device gives.
+
+--- a/target/arm/hvf/hvf.c	2026-11-07 23:19:27
++++ b/target/arm/hvf/hvf.c	2026-11-07 23:19:27
+@@ -2457,12 +2457,26 @@
+          */
+         assert(!s1ptw);
+ 
+-        /*
+-         * TODO: ISV will be 0 for SIMD or SVE accesses.
+-         * Inject the exception into the guest.
+-         */
+-        assert(isv);
++        if (!isv) {
++            /*
++             * A pair, SIMD or SVE access, or one that writes its address
++             * back, gives no register or size to emulate it with. The guest
++             * gets the abort a device that isn't there gives, rather than
++             * QEMU ending: Windows' 3D driver makes such an access to the
++             * GPU's memory window as Windows shuts down, and the process
++             * that made it ends instead of the machine.
++             */
++            int target_el = 1;
+ 
++            cpu_synchronize_state(cpu);
++            env->exception.vaddress = excp->virtual_address;
++            hvf_raise_exception(cpu, EXCP_DATA_ABORT,
++                                syn_data_abort_no_iss(arm_current_el(env) == target_el,
++                                                      0, 0, 0, 0, iswrite, 0x10),
++                                target_el);
++            break;
++        }
++
+         /*
+          * Emulate MMIO.
+          * TODO: Inject faults for errors.
