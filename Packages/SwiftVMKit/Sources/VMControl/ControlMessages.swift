@@ -67,7 +67,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case unplug
         /// List the host interfaces available for bridged networking.
         case networkInterfaces = "network-interfaces"
-        /// Select `shared` or `bridged` networking for a stopped machine.
+        /// Select `shared` or `bridged` networking, or set the MAC address, for a stopped machine.
         case network
         /// Install the guest tools in a running guest: over SSH, or with ``ControlRequest/usesDisc`` by
         /// plugging in the guest tools disc for someone to install from inside the guest.
@@ -252,6 +252,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
 
     public var networkMode: String?
     public var bridgedInterfaceIdentifier: String?
+    /// For `network` with mode `mac`: the network card's new address.
+    public var macAddress: String?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
@@ -259,7 +261,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
         control: ControlCall? = nil, timeout: Double? = nil, location: String? = nil, template: String? = nil,
-        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil
+        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil, macAddress: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -284,6 +286,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.template = template
         self.networkMode = networkMode
         self.bridgedInterfaceIdentifier = bridgedInterfaceIdentifier
+        self.macAddress = macAddress
     }
 }
 

@@ -80,6 +80,9 @@ Usage: swiftvm <command> [arguments]
   network <machine> shared         Use SwiftVM's shared NAT network (machine must be shut down)
   network <machine> bridged <interface>
                                     Bridge to a host interface, such as en0 (machine must be shut down)
+  network <machine> mac <address>   Set the MAC address (machine must be shut down)
+                                    Use create --no-start to set it before the first boot. A guest already
+                                    set up may need its network settings updated too
   install-tools <machine> [--disc] [--password <password>]
                                     Install or reinstall the guest tools in a running machine. Connected
                                     tools replace themselves; otherwise use SSH (macOS needs --password).
@@ -602,14 +605,15 @@ case "network-interfaces":
 
 case "network":
     let machine = requireMachine()
-    guard arguments.count >= 2 else { fail("Usage: swiftvm network <machine> shared|bridged [interface]") }
+    let usage = "Usage: swiftvm network <machine> shared | bridged <interface> | mac <address>"
+    guard arguments.count >= 2 else { fail(usage) }
     let mode = arguments[1]
-    guard (mode == "shared" && arguments.count == 2) || (mode == "bridged" && arguments.count == 3) else {
-        fail("Usage: swiftvm network <machine> shared | swiftvm network <machine> bridged <interface>")
-    }
+    guard (mode == "shared" && arguments.count == 2)
+        || ((mode == "bridged" || mode == "mac") && arguments.count == 3) else { fail(usage) }
     let response = send(ControlRequest(
         command: .network, machine: machine, networkMode: mode,
-        bridgedInterfaceIdentifier: mode == "bridged" ? arguments[2] : nil
+        bridgedInterfaceIdentifier: mode == "bridged" ? arguments[2] : nil,
+        macAddress: mode == "mac" ? arguments[2] : nil
     ))
     if let machine = response.machines.first { printDetails(of: machine) }
 

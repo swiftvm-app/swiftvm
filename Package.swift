@@ -53,6 +53,8 @@ let package = Package(
                 .product(name: "VMCore", package: "SwiftVMKit"),
                 .product(name: "VMControl", package: "SwiftVMKit"),
                 .product(name: "AgentControl", package: "SwiftVMKit"),
+                .product(name: "DiskTools", package: "SwiftVMKit"),
+                .product(name: "Installers", package: "SwiftVMKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),

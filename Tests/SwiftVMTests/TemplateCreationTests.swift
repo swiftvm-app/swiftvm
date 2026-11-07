@@ -1,4 +1,6 @@
+import DiskTools
 import Foundation
+import Installers
 import Testing
 import VMControl
 import VMCore
@@ -75,6 +77,7 @@ import VMCore
 
         try await theCommandLineSeesAndFreesTheNamesThatCreationsHold(model: model, template: template)
         try await bridgedMachinesKeepLANAddressesSeparateFromSharedReservations(model: model)
+        try await changingMACAddressesKeepsTheBundleAndFirstBootNetworkTogether(model: model)
     }
 
     private func bridgedMachinesKeepLANAddressesSeparateFromSharedReservations(model: AppModel) async throws {
@@ -106,6 +109,87 @@ import VMCore
         #expect(machine.configuration.networkInterfaces[0].usesSharedNetwork)
         #expect(model.address(for: machine) != nil)
         #expect(model.address(for: machine) != "10.23.0.99")
+    }
+
+    private func changingMACAddressesKeepsTheBundleAndFirstBootNetworkTogether(model: AppModel) async throws {
+        let configuration = VMConfiguration(
+            name: "Custom MAC", os: GuestOS(family: .linux), cpuCount: 2, memorySize: 1 << 30, disks: [],
+            networkInterfaces: [NetworkInterfaceConfiguration(macAddress: "02:11:22:33:44:55")],
+            ssh: SSHConfiguration(alias: "custom-mac", user: "username"),
+            installation: InstallationConfiguration(attachesSeedImage: true)
+        )
+        let staged = try VMBundle.create(at: model.library.makeStagingBundleURL(), configuration: configuration)
+        let seed = CloudInitSeed(
+            hostName: "custom-mac", userName: "username", password: "password",
+            macAddress: configuration.networkInterfaces[0].macAddress, guestAgentInstaller: nil
+        )
+        try seed.writeImage(to: staged.seedImageURL)
+        let machine = try model.addToLibrary(staged: staged)
+        defer { try? model.library.remove(machine, movingToTrash: false) }
+        let before = machine.configuration.networkInterfaces[0]
+        let snapshot = try await machine.takeSnapshot(named: "Before first boot")
+        let request = ControlRequest(command: .network, machine: machine.id.uuidString, networkMode: "mac", macAddress: " 02:AA:BB:CC:DD:EE\n")
+        let response = await model.handle(try JSONDecoder().decode(ControlRequest.self, from: JSONEncoder().encode(request)))
+        try #require(response.ok)
+        #expect(response.machines.first?.details?.macAddress == "02:aa:bb:cc:dd:ee")
+        var expected = before
+        expected.macAddress = "02:aa:bb:cc:dd:ee"
+        #expect(try machine.bundle.loadConfiguration().networkInterfaces == [expected])
+        #expect(try ISOImageBuilder.text(of: "meta-data", in: machine.bundle.seedImageURL) == seed.metaData)
+        #expect(try ISOImageBuilder.text(of: "user-data", in: machine.bundle.seedImageURL) == seed.userData)
+        let network = try ISOImageBuilder.text(of: "network-config", in: machine.bundle.seedImageURL)
+        #expect(network.contains("macaddress: \"02:aa:bb:cc:dd:ee\""))
+        #expect(!network.contains(before.macAddress))
+
+        let savedSeed = try Data(contentsOf: machine.bundle.seedImageURL)
+        for invalid in ["", "02:11:22:33:44", "02:11:22:33:44:gg", "2:11:22:33:44:55", "+2:11:22:33:44:55", "00:00:00:00:00:00", "01:11:22:33:44:55", "ff:ff:ff:ff:ff:ff"] {
+            #expect(throws: VMError.self) { try model.setMACAddress(invalid, for: machine) }
+        }
+        let missing = await model.handle(ControlRequest(command: .network, machine: machine.id.uuidString, networkMode: "mac"))
+        #expect(!missing.ok)
+        let mixed = await model.handle(ControlRequest(command: .network, machine: machine.id.uuidString, networkMode: "shared", macAddress: "02:11:22:33:44:66"))
+        #expect(!mixed.ok)
+        #expect(machine.configuration.networkInterfaces == [expected])
+        #expect(try Data(contentsOf: machine.bundle.seedImageURL) == savedSeed)
+
+        // A second machine's address is taken, even while that machine is shut down.
+        let other = try #require(model.library.machines.first { $0.name == "Original" })
+        #expect(throws: VMError.self) { try model.setMACAddress("02:11:22:33:44:66", for: other) }
+        try other.updateConfiguration { $0.networkInterfaces = [NetworkInterfaceConfiguration(macAddress: "02:11:22:33:44:66")] }
+        #expect(throws: VMError.self) { try model.setMACAddress("02:11:22:33:44:66", for: machine) }
+        try await machine.whileStopped(.duplicating) { () -> Void in
+            #expect(throws: VMError.self) { try model.setMACAddress("02:11:22:33:44:77", for: machine) }
+        }
+
+        // A broken setup disc leaves the address alone, rather than saving a card setup can't find.
+        try Data("not an ISO".utf8).write(to: machine.bundle.seedImageURL)
+        #expect(throws: (any Error).self) { try model.setMACAddress("02:11:22:33:44:77", for: machine) }
+        #expect(machine.configuration.networkInterfaces == [expected])
+        try savedSeed.write(to: machine.bundle.seedImageURL)
+
+        // If settings cannot be saved after rewriting the seed, both keep the old address.
+        try FileManager.default.removeItem(at: machine.bundle.configurationURL)
+        try FileManager.default.createDirectory(at: machine.bundle.configurationURL, withIntermediateDirectories: false)
+        #expect(throws: (any Error).self) { try model.setMACAddress("02:11:22:33:44:77", for: machine) }
+        #expect(machine.configuration.networkInterfaces == [expected])
+        #expect(try Data(contentsOf: machine.bundle.seedImageURL) == savedSeed)
+        try FileManager.default.removeItem(at: machine.bundle.configurationURL)
+        try machine.bundle.save(machine.configuration)
+
+        // Snapshots restore the card they were taken with, while the seed is shared between snapshots.
+        try await machine.revert(to: snapshot)
+        #expect(machine.configuration.networkInterfaces[0].macAddress == before.macAddress)
+        let prepare = try #require(model.backendProvider?.prepareMachine)
+        try await prepare(machine)
+        #expect(try ISOImageBuilder.text(of: "network-config", in: machine.bundle.seedImageURL) == seed.networkConfig)
+        #expect(try ISOImageBuilder.text(of: "meta-data", in: machine.bundle.seedImageURL) == seed.metaData)
+        #expect(try ISOImageBuilder.text(of: "user-data", in: machine.bundle.seedImageURL) == seed.userData)
+        // Removing setup media has always been allowed; neither editing nor starting puts it back.
+        try FileManager.default.removeItem(at: machine.bundle.seedImageURL)
+        try model.setMACAddress("02:11:22:33:44:77", for: machine)
+        try await prepare(machine)
+        #expect(try machine.bundle.loadConfiguration().networkInterfaces[0].macAddress == "02:11:22:33:44:77")
+        #expect(!FileManager.default.fileExists(atPath: machine.bundle.seedImageURL.path))
     }
 
     /// A creation holds its name before there is a machine: `list` shows it, and `delete` lets it go,

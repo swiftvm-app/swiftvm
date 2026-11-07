@@ -258,13 +258,19 @@ public final class VirtualMachine: Identifiable {
         var updated = configuration
         body(&updated)
         guard updated != configuration else { return }
-        // A running or suspended guest still has its old attachment. Keep address discovery and
-        // forwarded ports on that network until it has shut down and can change networks together.
+        // A running or suspended guest still has its old attachment and MAC address. Keep address
+        // discovery and forwarded ports with that card until it has shut down and can change them together.
         if state != .stopped, updated.networkInterfaces.contains(where: { interface in
-            configuration.networkInterfaces.first(where: { $0.id == interface.id })?.bridgedInterfaceIdentifier
-                != interface.bridgedInterfaceIdentifier
+            let previous = configuration.networkInterfaces.first(where: { $0.id == interface.id })
+            return previous?.bridgedInterfaceIdentifier != interface.bridgedInterfaceIdentifier
+                || previous?.macAddress != interface.macAddress
         }) {
             throw VMError.invalidConfiguration("Shut down the virtual machine before changing its network.")
+        }
+        if let activity, updated.networkInterfaces.contains(where: { interface in
+            configuration.networkInterfaces.first(where: { $0.id == interface.id })?.macAddress != interface.macAddress
+        }) {
+            throw VMError.busy(name: name, activity)
         }
         try bundle.save(updated)
         let previous = configuration

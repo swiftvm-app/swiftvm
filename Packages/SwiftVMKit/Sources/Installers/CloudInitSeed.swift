@@ -230,6 +230,25 @@ public struct CloudInitSeed: Sendable, Hashable {
     static let userDataFileName = "user-data"
     static let networkConfigFileName = "network-config"
 
+    /// Changes only the network card that first-boot setup looks for. The instance ID and account stay
+    /// as they were: changing a card must not run setup again or reset an existing account's password.
+    public static func updateNetwork(at url: URL, macAddress: String) throws {
+        let network = networkConfig(macAddress: macAddress)
+        guard (try? ISOImageBuilder.text(of: networkConfigFileName, in: url)) != network else { return }
+        let files: [String: Data] = [
+            metaDataFileName: Data(try ISOImageBuilder.text(of: metaDataFileName, in: url).utf8),
+            userDataFileName: Data(try ISOImageBuilder.text(of: userDataFileName, in: url).utf8),
+            networkConfigFileName: Data(network.utf8),
+        ]
+        // Keep the old seed until its replacement is whole, also when this is done just before boot.
+        let replacement = url.deletingLastPathComponent().appending(path: ".network-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: replacement) }
+        try ISOImageBuilder.makeISO(volumeName: volumeName, files: files, at: replacement)
+        guard rename(replacement.path, url.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
     /// Rewrites the seed image at `url` for a copy of the machine it was written for.
     ///
     /// The copy shares the original's disk, so as far as it knows it *is* the original. A new instance ID
