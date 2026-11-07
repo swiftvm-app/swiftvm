@@ -68,6 +68,33 @@ private final class CountingProvider: VMBackendProvider {
         #expect(virtualization.stopped == 0)
     }
 
+    @Test func preparationFinishesBeforeEitherEngineOpensTheMachine() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for family: GuestFamily in [.linux, .windows] {
+            let provider = CountingProvider()
+            let machine = try machine(family)
+            let router = BackendRouter(providers: [machine.configuration.engine: provider])
+            machine.backendProvider = router
+            var prepared = false
+            router.prepareMachine = { _ in
+                #expect(provider.made == 0)
+                throw VMError.invalidConfiguration("The seed couldn't be updated.")
+            }
+            await machine.start()
+            #expect(machine.state == .stopped)
+            #expect(provider.made == 0)
+            router.prepareMachine = { _ in
+                await Task.yield()
+                #expect(provider.made == 0)
+                prepared = true
+            }
+            await machine.start()
+            #expect(prepared && provider.made == 1)
+            #expect(machine.state == .running)
+            await machine.forceStop()
+        }
+    }
+
     @Test func saysSoWhenAnEngineIsMissing() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let windows = try machine(.windows)

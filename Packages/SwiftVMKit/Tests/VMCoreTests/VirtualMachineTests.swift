@@ -193,6 +193,40 @@ private final class FakeProvider: VMBackendProvider {
         #expect(try machine.bundle.loadConfiguration().networkInterfaces[0].bridgedInterfaceIdentifier == "en0")
     }
 
+    @Test func aMACAddressCannotChangeUntilTheGuestHasShutDown() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine(family: .linux)
+        let original = "02:11:22:33:44:55"
+        let replacement = "02:aa:bb:cc:dd:ee"
+        try machine.updateConfiguration { $0.networkInterfaces = [NetworkInterfaceConfiguration(macAddress: original)] }
+        try await machine.whileStopped(.duplicating) { () -> Void in
+            #expect(throws: VMError.self) {
+                try machine.updateConfiguration { $0.networkInterfaces[0].macAddress = replacement }
+            }
+        }
+        #expect(machine.configuration.networkInterfaces[0].macAddress == original)
+        await machine.start()
+        try #require(machine.state == .running)
+        #expect(throws: VMError.self) {
+            try machine.updateConfiguration { $0.networkInterfaces[0].macAddress = replacement }
+        }
+        await machine.pause()
+        try #require(machine.state == .paused)
+        #expect(throws: VMError.self) {
+            try machine.updateConfiguration { $0.networkInterfaces[0].macAddress = replacement }
+        }
+        await machine.suspend()
+        try #require(machine.state == .suspended)
+        #expect(throws: VMError.self) {
+            try machine.updateConfiguration { $0.networkInterfaces[0].macAddress = replacement }
+        }
+        #expect(machine.configuration.networkInterfaces[0].macAddress == original)
+        #expect(try machine.bundle.loadConfiguration().networkInterfaces[0].macAddress == original)
+        machine.discardSavedState()
+        try machine.updateConfiguration { $0.networkInterfaces[0].macAddress = replacement }
+        #expect(try VirtualMachine(bundle: machine.bundle).configuration.networkInterfaces[0].macAddress == replacement)
+    }
+
     @Test func keepsTheAccountWhenTheFirstStartFails() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try makeMachine()

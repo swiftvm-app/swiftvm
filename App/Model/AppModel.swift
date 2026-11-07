@@ -140,6 +140,17 @@ final class AppModel {
                 .virtualization: VZBackendProvider(networkManager: networkManager, usbAccessories: usbAccessories),
                 .qemu: qemu,
             ])
+            router.prepareMachine = { machine in
+                let configuration = machine.configuration
+                guard configuration.os.family == .linux, configuration.installation.attachesSeedImage,
+                      let address = configuration.networkInterfaces.first?.macAddress else { return }
+                let seedURL = machine.bundle.seedImageURL
+                guard FileManager.default.fileExists(atPath: seedURL.path) else { return }
+                // A snapshot restores its old card, and a harness may have edited config.json directly.
+                try await Task.detached {
+                    try CloudInitSeed.updateNetwork(at: seedURL, macAddress: address)
+                }.value
+            }
             self.networkManager = networkManager
             self.qemuProvider = qemu
             self.backendProvider = router
@@ -287,6 +298,49 @@ final class AppModel {
         try machine.updateConfiguration {
             $0.networkInterfaces[0].bridgedInterfaceIdentifier = identifier
             $0.networkInterfaces[0].ipv4Address = address
+        }
+        observedAddresses[machine.id] = nil
+        lastSeenAddresses[machine.id] = nil
+        syncSSHConfiguration()
+        syncPortForwards()
+    }
+
+    /// Changes the network card's address for the next boot, keeping a cloud image's setup disc in step.
+    func setMACAddress(_ value: String, for machine: VirtualMachine) throws {
+        guard machine.state == .stopped, machine.activity == nil else {
+            throw VMError.invalidConfiguration("Shut down the virtual machine and wait for its current work to finish before changing its MAC address.")
+        }
+        guard let interface = machine.configuration.networkInterfaces.first else {
+            throw VMError.invalidConfiguration("“\(machine.name)” has no network interface.")
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let address = MACAddress(trimmed), address.description == trimmed.lowercased() else {
+            throw VMError.invalidConfiguration("Enter six pairs of hexadecimal digits separated by colons, such as 02:1a:2b:3c:4d:5e.")
+        }
+        guard address.octets[0] & 1 == 0, address.octets.contains(where: { $0 != 0 }) else {
+            throw VMError.invalidConfiguration("Use a nonzero unicast MAC address, not a multicast or broadcast address.")
+        }
+        guard MACAddress(interface.macAddress) != address else { return }
+        for other in library.machines {
+            let taken = other.configuration.networkInterfaces.enumerated().contains { index, interface in
+                !(other.id == machine.id && index == 0) && MACAddress(interface.macAddress) == address
+            }
+            if taken {
+                throw VMError.invalidConfiguration("That MAC address is already used by “\(other.name)”.")
+            }
+        }
+        let seedURL = machine.bundle.seedImageURL
+        let seed = machine.configuration.os.family == .linux && machine.configuration.installation.attachesSeedImage
+            && FileManager.default.fileExists(atPath: seedURL.path) ? try Data(contentsOf: seedURL) : nil
+        do {
+            if seed != nil {
+                try CloudInitSeed.updateNetwork(at: seedURL, macAddress: address.description)
+            }
+            try machine.updateConfiguration { $0.networkInterfaces[0].macAddress = address.description }
+        } catch {
+            // A failed settings write must not leave the setup disc looking for another network card.
+            if let seed { try seed.write(to: seedURL, options: .atomic) }
+            throw error
         }
         observedAddresses[machine.id] = nil
         lastSeenAddresses[machine.id] = nil

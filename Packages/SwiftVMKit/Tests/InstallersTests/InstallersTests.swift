@@ -138,6 +138,30 @@ import VMCore
         #expect(size > 32 * 1024)
     }
 
+    @Test func changingTheNetworkCardPreservesFirstBootSetupAndInstanceIdentity() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "swiftvm-seed-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let original = CloudInitSeed(
+            hostName: "custom-mac", userName: "username", password: "password",
+            macAddress: "02:11:22:33:44:55", guestAgentInstaller: nil
+        )
+        try original.writeImage(to: url)
+        try CloudInitSeed.updateNetwork(at: url, macAddress: "02:AA:BB:CC:DD:EE")
+        #expect(try ISOImageBuilder.text(of: "meta-data", in: url) == original.metaData)
+        #expect(try ISOImageBuilder.text(of: "user-data", in: url) == original.userData)
+        let network = try ISOImageBuilder.text(of: "network-config", in: url)
+        #expect(network.contains("macaddress: \"02:aa:bb:cc:dd:ee\""))
+        #expect(!network.contains("02:11:22:33:44:55"))
+        let updated = try Data(contentsOf: url)
+        try CloudInitSeed.updateNetwork(at: url, macAddress: "02:aa:bb:cc:dd:ee")
+        #expect(try Data(contentsOf: url) == updated)
+        // A seed whose account data can't be read is never replaced by a partial image.
+        try ISOImageBuilder.makeISO(volumeName: "cidata", files: ["meta-data": Data(original.metaData.utf8)], at: url)
+        let incomplete = try Data(contentsOf: url)
+        #expect(throws: (any Error).self) { try CloudInitSeed.updateNetwork(at: url, macAddress: "02:aa:bb:cc:dd:ee") }
+        #expect(try Data(contentsOf: url) == incomplete)
+    }
+
     @Test func aCopyOfTheMachineGetsASeedOfItsOwn() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: "swiftvm-seed-\(UUID().uuidString).iso")
         defer { try? FileManager.default.removeItem(at: url) }

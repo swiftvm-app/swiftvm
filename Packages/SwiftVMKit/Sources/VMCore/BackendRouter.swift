@@ -5,6 +5,8 @@ import Foundation
 @MainActor
 public final class BackendRouter: VMBackendProvider {
     private let providers: [VMEngineKind: any VMBackendProvider]
+    /// Updates files the guest reads before either engine opens them, including after a snapshot restore.
+    public var prepareMachine: (@MainActor (VirtualMachine) async throws -> Void)?
 
     public init(providers: [VMEngineKind: any VMBackendProvider]) {
         self.providers = providers
@@ -14,6 +16,7 @@ public final class BackendRouter: VMBackendProvider {
         guard let provider = providers[machine.configuration.engine] else {
             throw VMError.unsupportedEngine(machine.configuration.engine)
         }
+        try await prepareMachine?(machine)
         return try await provider.makeBackend(for: machine, console: console)
     }
 

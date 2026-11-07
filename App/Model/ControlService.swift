@@ -284,6 +284,9 @@ extension AppModel {
             return details(machine)
         case .network:
             do {
+                if request.networkMode != "mac", request.macAddress != nil {
+                    return .failure("Use swiftvm network <machine> mac <address> to change the MAC address.")
+                }
                 switch request.networkMode {
                 case "shared":
                     guard request.bridgedInterfaceIdentifier == nil else {
@@ -295,8 +298,13 @@ extension AppModel {
                         return .failure("Choose a host interface from swiftvm network-interfaces.")
                     }
                     try setNetwork(of: machine, bridgedTo: host)
+                case "mac":
+                    guard let address = request.macAddress, request.bridgedInterfaceIdentifier == nil else {
+                        return .failure("Give a MAC address, without a host interface.")
+                    }
+                    try setMACAddress(address, for: machine)
                 default:
-                    return .failure("Choose shared or bridged networking.")
+                    return .failure("Choose shared or bridged networking, or mac to set the MAC address.")
                 }
                 return details(machine)
             } catch {

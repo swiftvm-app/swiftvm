@@ -100,6 +100,8 @@ struct MachineSettingsView: View {
     @State private var sshPort = ""
     /// What is wrong with the SSH name or port that was typed, while something is.
     @State private var sshProblem: String?
+    @State private var macAddress = ""
+    @State private var macAddressProblem: String?
     @State private var isResizingDisk = false
     @State private var isChangingCompression = false
     @State private var bridgeInterfaces: [BridgedNetworking.Interface] = []
@@ -129,6 +131,12 @@ struct MachineSettingsView: View {
             sshAlias = configuration.ssh.alias
             sshUser = configuration.ssh.user
             sshPort = String(configuration.ssh.port)
+            macAddress = configuration.networkInterfaces.first?.macAddress ?? ""
+        }
+        .onChange(of: configuration.networkInterfaces.first?.macAddress) { previous, current in
+            if macAddress == previous {
+                macAddress = current ?? ""
+            }
         }
         // What was typed in a pane is saved when another one is chosen, as its fields are gone then.
         .onChange(of: selection) { commitTextFields() }
@@ -197,7 +205,7 @@ struct MachineSettingsView: View {
                 if commitTextFields() {
                     dismiss()
                 } else {
-                    selection = .ssh
+                    selection = macAddressProblem == nil ? .ssh : .network
                 }
             }
             .keyboardShortcut(.defaultAction)
@@ -446,8 +454,13 @@ struct MachineSettingsView: View {
                 Toggle("Connected", isOn: binding(\.networkInterfaces[0].isConnected))
                 LabeledContent("IP Address", value: model.address(for: machine)
                     ?? (interface.usesSharedNetwork ? "Assigned when the machine starts" : "Assigned by your LAN"))
-                LabeledContent("MAC Address", value: interface.macAddress)
-                    .textSelection(.enabled)
+                if isActive || machine.activity != nil {
+                    LabeledContent("MAC Address", value: interface.macAddress)
+                        .textSelection(.enabled)
+                } else {
+                    TextField("MAC Address", text: $macAddress, prompt: Text("02:1a:2b:3c:4d:5e"))
+                        .onSubmit { commitTextFields() }
+                }
             } else {
                 Text("This virtual machine has no network interface.")
                     .foregroundStyle(.secondary)
@@ -458,7 +471,10 @@ struct MachineSettingsView: View {
             if !BridgedNetworking.isEntitled {
                 Text("Bridged networking isn't available in this copy of SwiftVM.")
             }
-            Text("Bridged networking gives the guest its own address on your LAN. Choose Ethernet for local device discovery. Shut down the machine before changing networks.")
+            if let macAddressProblem {
+                Text(macAddressProblem).foregroundStyle(.red)
+            }
+            Text("Bridged networking gives the guest its own address on your LAN. Choose Ethernet for local device discovery. Shut down the machine before changing networks or its MAC address. Changing the MAC address may also require updating network settings inside the guest.")
         }
         .onAppear { bridgeInterfaces = BridgedNetworking.interfaces }
     }
@@ -645,7 +661,16 @@ struct MachineSettingsView: View {
                 sshProblem = error.localizedDescription
             }
         }
-        return sshProblem == nil
+        macAddressProblem = nil
+        if let current = configuration.networkInterfaces.first?.macAddress, macAddress != current {
+            do {
+                try model.setMACAddress(macAddress, for: machine)
+                macAddress = machine.configuration.networkInterfaces[0].macAddress
+            } catch {
+                macAddressProblem = error.localizedDescription
+            }
+        }
+        return sshProblem == nil && macAddressProblem == nil
     }
 
     private func update(_ body: (inout VMConfiguration) -> Void) {
