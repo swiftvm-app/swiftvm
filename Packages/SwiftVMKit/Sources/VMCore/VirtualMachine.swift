@@ -123,6 +123,9 @@ public final class VirtualMachine: Identifiable {
             guard let self else { return }
             // A guest that restarts by itself keeps its machine running, and comes back with nothing mounted.
             hasAgentMountedSharedFolders = false
+            canResizeWindowsDisplay = false
+            backend?.setLiveDisplayResizing(false)
+            backend?.showPointer(nil)
             onGuestAgentChange?(self)
         }
         agent.onClipboard = { [weak self] text in
@@ -138,6 +141,7 @@ public final class VirtualMachine: Identifiable {
             guard let self else { return }
             onGuestWindowsChange?(self)
         }
+        agent.onCursor = { [weak self] cursor in self?.backend?.showPointer(cursor) }
     }
 
     public convenience init(bundle: VMBundle) throws {
@@ -164,15 +168,16 @@ public final class VirtualMachine: Identifiable {
     /// The guest display, available while the machine is active.
     public var displayView: NSView? { backend?.displayView }
 
-    /// Whether the guest's display takes a new size only as the guest starts, and so starts at the size
-    /// its window last showed it at, pixel for pixel: a Windows guest that draws with the Mac's GPU.
-    ///
-    /// Its driver offers Windows a new size only when the driver starts. One asked for while Windows
-    /// runs is never offered, and Windows picks another, which the window can only show scaled.
+    /// Whether the guest takes a new display size only as it starts. Older Windows 3D drivers don't
+    /// add modes while running; until the guest confirms support, keep the pixel-for-pixel boot size.
     public var startsAtDisplaySize: Bool {
         configuration.engine == .qemu && configuration.os.family == .windows
             && configuration.display.adapter == .virtioGPU3D && configuration.display.automaticallyResizes
+            && !canResizeWindowsDisplay
     }
+
+    /// Confirmed by the connected guest, not by the driver files bundled with the app.
+    private var canResizeWindowsDisplay = false
 
     /// The size the machine's window would show the guest's display at pixel for pixel, for a guest that
     /// ``startsAtDisplaySize``. `nil` until the window has said, and while the machine isn't running.
@@ -411,9 +416,24 @@ public final class VirtualMachine: Identifiable {
     private var requestedDisplaySize: (width: Int, height: Int, scale: Double)?
 
     private func agentDidConnect(_ hello: AgentHello) {
-        if startsAtDisplaySize {
-            // The size the guest started at, so that its agent gives Windows the scale for it.
+        let windowsDisplay = configuration.engine == .qemu && configuration.os.family == .windows
+        canResizeWindowsDisplay = windowsDisplay && configuration.display.adapter == .virtioGPU3D
+            && hello.features.contains(GuestFeature.liveDisplayResize)
+        backend?.setLiveDisplayResizing(canResizeWindowsDisplay)
+        // The Mac draws the pointer a guest's own display driver can't move at the Mac's speed.
+        agent.handOverPointer(hello.features.contains(GuestFeature.nativePointer))
+        if startsAtDisplaySize || windowsDisplay && !configuration.display.automaticallyResizes {
+            // A fixed display still needs its mode and DPI applied: no window resize will ask for it.
             let size = startingDisplaySize
+            if !startsAtDisplaySize && (configuration.display.adapter != .virtioGPU3D || canResizeWindowsDisplay) {
+                backend?.requestDisplaySize(width: size.width, height: size.height, scale: size.scale)
+            }
+            agent.sendDisplaySize(width: size.width, height: size.height, scale: size.scale)
+        } else if canResizeWindowsDisplay {
+            // Also notify the device: 5K modes need the driver's custom-mode path, not just EDID.
+            let size = requestedDisplaySize.map { DisplayPixels(width: $0.width, height: $0.height, scale: $0.scale) }
+                ?? wantedDisplaySize ?? startingDisplaySize
+            backend?.requestDisplaySize(width: size.width, height: size.height, scale: size.scale)
             agent.sendDisplaySize(width: size.width, height: size.height, scale: size.scale)
         } else if let size = requestedDisplaySize {
             agent.sendDisplaySize(width: size.width, height: size.height, scale: size.scale)
@@ -1211,6 +1231,8 @@ public final class VirtualMachine: Identifiable {
 
     private func tearDownBackend() {
         guard backend != nil else { return }
+        canResizeWindowsDisplay = false
+        requestedDisplaySize = nil
         wantedDisplaySize = nil
         displaySize = nil
         agent.stop()

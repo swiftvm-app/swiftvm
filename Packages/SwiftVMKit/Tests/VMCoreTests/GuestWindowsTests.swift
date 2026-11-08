@@ -42,8 +42,8 @@ private final class AgentEnd: @unchecked Sendable {
         GuestWindow(id: 42, title: "Notepad", x: 10, y: 20, width: 800, height: 600, isFocused: true),
     ])
 
-    /// An agent that offers Seamless Mode, and the guest's ends of the lines it is reached on.
-    private func connectedAgent() async throws -> (GuestAgent, () -> [AgentEnd]) {
+    /// An agent that offers these features, and the guest's ends of the lines it is reached on.
+    private func connectedAgent(features: [String] = [GuestFeature.seamless]) async throws -> (GuestAgent, () -> [AgentEnd]) {
         let agent = GuestAgent()
         agent.retryInterval = .milliseconds(10)
         var ends: [AgentEnd] = []
@@ -52,7 +52,7 @@ private final class AgentEnd: @unchecked Sendable {
             guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { throw POSIXError(.EIO) }
             _ = fcntl(descriptors[1], F_SETNOSIGPIPE, 1)
             let end = AgentEnd(descriptor: descriptors[1])
-            end.send(.hello(AgentHello(agent: "1.4", features: [GuestFeature.seamless])))
+            end.send(.hello(AgentHello(agent: "1.10", features: features)))
             ends.append(end)
             return FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
         }
@@ -97,6 +97,78 @@ private final class AgentEnd: @unchecked Sendable {
         end.send(.windows(windows))
         try await Task.sleep(for: .milliseconds(100))
         #expect(agent.windows == nil)
+    }
+
+    @Test(arguments: [true, false]) func aPointerIsTakenOnlyFromAnAgentAskedToHandItOver(offersPointer: Bool) async throws {
+        let (agent, ends) = try await connectedAgent(features: offersPointer ? [GuestFeature.nativePointer] : [])
+        defer { agent.stop() }
+        let end = try #require(ends().first)
+        defer { end.hangUp() }
+        #expect(await nextLine(from: end) == #"{"protocol":1,"type":"hello"}"#)
+        let pointer = GuestCursor(width: 1, height: 1, hotspotX: 0, hotspotY: 0, pixels: Data([0, 0, 0, 255]))
+        var received: [GuestCursor?] = []
+        agent.onCursor = { received.append($0) }
+
+        // An address message follows the cursor on the same line, so all preceding messages have been
+        // handled before checking that an unsolicited pointer was ignored.
+        let marker = GuestInterface(name: "ethernet", mac: "52:54:00:00:00:01", addresses: ["192.0.2.1"])
+        end.send(.cursor(pointer))
+        end.send(.addresses([marker]))
+        #expect(await waitFor { agent.interfaces == [marker] })
+        #expect(received.isEmpty)
+
+        #expect(agent.handOverPointer(true) == offersPointer)
+        if offersPointer {
+            #expect(await nextLine(from: end) == #"{"enabled":true,"type":"pointer-handoff"}"#)
+        }
+        end.send(.cursor(pointer))
+        end.send(.cursor(pointer))
+        end.send(.addresses([]))
+        #expect(await waitFor { agent.interfaces.isEmpty })
+        #expect(received == (offersPointer ? [pointer] : []))
+
+        // A secure desktop draws the cursor itself. The host must clear its shape without ending the
+        // handoff, and accept the same shape again when the desktop returns.
+        if offersPointer {
+            end.send(.cursor(nil))
+            end.send(.cursor(pointer))
+            #expect(await waitFor { received == [pointer, nil, pointer] })
+        }
+        #expect(agent.handOverPointer(false) == offersPointer)
+        let before = received
+        if offersPointer {
+            #expect(received == [pointer, nil, pointer, nil])
+            #expect(await nextLine(from: end) == #"{"enabled":false,"type":"pointer-handoff"}"#)
+        }
+        end.send(.cursor(pointer))
+        end.send(.addresses([marker]))
+        #expect(await waitFor { agent.interfaces == [marker] })
+        #expect(received == before)
+    }
+
+    @Test func aPointerIsForgottenOnDisconnectAndRequestedAgainOnReconnect() async throws {
+        let (agent, ends) = try await connectedAgent(features: [GuestFeature.nativePointer])
+        defer { agent.stop() }
+        let first = try #require(ends().first)
+        #expect(await nextLine(from: first) == #"{"protocol":1,"type":"hello"}"#)
+        let pointer = GuestCursor(width: 1, height: 1, hotspotX: 0, hotspotY: 0, pixels: Data([0, 0, 0, 255]))
+        var received: [GuestCursor?] = []
+        agent.onCursor = { received.append($0) }
+        #expect(agent.handOverPointer(true))
+        #expect(await nextLine(from: first) == #"{"enabled":true,"type":"pointer-handoff"}"#)
+        first.send(.cursor(pointer))
+        #expect(await waitFor { received == [pointer] })
+
+        first.hangUp()
+        try #require(await waitFor { ends().count == 2 && received == [pointer, nil] })
+        let second = try #require(ends().last)
+        defer { second.hangUp() }
+        #expect(await nextLine(from: second) == #"{"protocol":1,"type":"hello"}"#)
+        #expect(await nextLine(from: second) == #"{"enabled":true,"type":"pointer-handoff"}"#)
+        second.send(.cursor(pointer))
+        #expect(await waitFor { received == [pointer, nil, pointer] })
+        agent.stop()
+        #expect(received == [pointer, nil, pointer, nil])
     }
 
     @Test func aClickWaitsToHearWhetherItIsOnATitleBar() async throws {

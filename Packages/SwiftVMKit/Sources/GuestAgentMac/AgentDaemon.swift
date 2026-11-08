@@ -284,9 +284,10 @@ final class AgentDaemon: @unchecked Sendable {
             if let session, let line = GuestMessageCoding.clipboardLine(text, as: HostMessage.clipboard(text:)), session.send(line) {
                 sessionWantsClipboard = false
             }
-        case .displaySize, .seamless, .activateWindow, .hitTest, .moveWindow, .resizeWindow:
-            // macOS fits its display to the window by itself, and its windows aren't shown one by one.
-            // The app sends these only to an agent that offers them, which this one doesn't.
+        case .displaySize, .seamless, .activateWindow, .hitTest, .moveWindow, .resizeWindow, .pointerHandoff:
+            // macOS fits its display to the window by itself, its windows aren't shown one by one, and
+            // its pointer is the Mac's own. The app sends these only to an agent that offers them, which
+            // this one doesn't.
             break
         case .unknown(let type):
             // Something from a later version of the app. If it asks for an answer, it gets a no.

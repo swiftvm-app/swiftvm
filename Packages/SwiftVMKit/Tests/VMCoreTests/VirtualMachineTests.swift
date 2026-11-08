@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import GuestChannel
 import Testing
 @testable import VMCore
 
@@ -44,6 +45,14 @@ private final class FakeBackend: VMBackend {
     var drives: [RemovableImage] = []
     var driveError: (any Error)?
     var capturesSystemKeys: Bool?
+    var liveDisplayResizing = false
+    var displayRequests: [DisplayPixels] = []
+
+    func setLiveDisplayResizing(_ enabled: Bool) { liveDisplayResizing = enabled }
+
+    func requestDisplaySize(width: Int, height: Int, scale: Double) {
+        displayRequests.append(DisplayPixels(width: width, height: height, scale: scale))
+    }
 
     func attachRemovableImage(_ image: RemovableImage) async throws {
         if let driveError { throw driveError }
@@ -287,6 +296,113 @@ private final class FakeProvider: VMBackendProvider {
         await machine.forceStop()
         let snapshot = try await machine.takeSnapshot(named: "Shut down")
         #expect(machine.snapshots.contains { $0.id == snapshot.id })
+    }
+}
+
+@MainActor
+@Suite struct WindowsDisplayTests {
+    private let directory = FileManager.default.temporaryDirectory.appending(path: "swiftvm-display-\(UUID())")
+    private let provider = FakeProvider()
+    private let retina = DisplayPixels(width: 5120, height: 2880, scale: 2)
+
+    private func makeMachine(adapter: DisplayAdapter, automaticallyResizes: Bool) async throws -> VirtualMachine {
+        let configuration = VMConfiguration(
+            name: "Windows", os: GuestOS(family: .windows), engine: .qemu, cpuCount: 2, memorySize: 4 << 30, disks: [],
+            display: DisplayConfiguration(widthInPixels: retina.width, heightInPixels: retina.height,
+                                          pixelsPerInch: 144, automaticallyResizes: automaticallyResizes, adapter: adapter)
+        )
+        let machine = try VirtualMachine(bundle: VMBundle.create(at: directory, configuration: configuration))
+        machine.backendProvider = provider
+        machine.isHostLocked = { false }
+        await machine.start()
+        return machine
+    }
+
+    private func connect(_ machine: VirtualMachine, features: [String]) async throws -> FileHandle {
+        machine.agent.stop()
+        var descriptors: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0)
+        let app = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
+        let peer = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+        let hello = GuestMessageCoding.line(for: AgentMessage.hello(AgentHello(agent: "1.9", features: features)))
+        _ = ByteRelay.writeAll(ArraySlice(hello), to: peer.fileDescriptor)
+        machine.agent.start { app }
+        try #require(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
+        return peer
+    }
+
+    private nonisolated static func nextDisplaySize(from descriptor: Int32) -> DisplayPixels? {
+        var framer = GuestMessageFramer()
+        for _ in 0..<50 {
+            var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            guard poll(&waiting, 1, 100) >= 0 else { return nil }
+            if waiting.revents == 0 { continue }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            let count = read(descriptor, &buffer, buffer.count)
+            guard count > 0, let lines = try? framer.receive(Data(buffer.prefix(count))) else { return nil }
+            for line in lines {
+                guard let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      message["type"] as? String == "display-size",
+                      let width = message["width"] as? Int, let height = message["height"] as? Int,
+                      let scale = message["scale"] as? Double else { continue }
+                return DisplayPixels(width: width, height: height, scale: scale)
+            }
+        }
+        return nil
+    }
+
+    @Test(arguments: [DisplayAdapter.virtioGPU, .virtioGPU3D])
+    func aFixedRetinaDisplayRequestsBothItsDeviceModeAndWindowsScale(adapter: DisplayAdapter) async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeMachine(adapter: adapter, automaticallyResizes: false)
+        defer { machine.agent.stop() }
+        let features = [GuestFeature.displaySize] + (adapter == .virtioGPU3D ? [GuestFeature.liveDisplayResize] : [])
+        let peer = try await connect(machine, features: features)
+        defer { try? peer.close() }
+        let descriptor = peer.fileDescriptor
+        #expect(provider.backend.displayRequests == [retina])
+        #expect(await Task.detached { Self.nextDisplaySize(from: descriptor) }.value == retina)
+        #expect(!machine.configuration.display.automaticallyResizes)
+    }
+
+    @Test func liveResizingRequiresFreshDriverSupport() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeMachine(adapter: .virtioGPU3D, automaticallyResizes: true)
+        defer { machine.agent.stop() }
+        let wanted = DisplayPixels(width: 3840, height: 2400, scale: 2)
+        provider.backend.eventHandler?(.displaySizeWanted(wanted))
+        let old = try await connect(machine, features: [GuestFeature.displaySize, GuestFeature.acceleratedDisplay])
+        defer { try? old.close() }
+        #expect(machine.startsAtDisplaySize)
+        #expect(!provider.backend.liveDisplayResizing)
+        #expect(provider.backend.displayRequests.isEmpty)
+
+        let current = try await connect(machine, features: [GuestFeature.displaySize, GuestFeature.liveDisplayResize])
+        defer { try? current.close() }
+        #expect(!machine.startsAtDisplaySize)
+        #expect(provider.backend.liveDisplayResizing)
+        #expect(provider.backend.displayRequests == [wanted])
+
+        machine.agent.stop()
+        #expect(machine.startsAtDisplaySize)
+        #expect(!provider.backend.liveDisplayResizing)
+        let reconnected = try await connect(machine, features: [GuestFeature.displaySize, GuestFeature.acceleratedDisplay])
+        defer { try? reconnected.close() }
+        #expect(machine.startsAtDisplaySize)
+        #expect(!provider.backend.liveDisplayResizing)
+        #expect(provider.backend.displayRequests == [wanted])
+    }
+
+    @Test func aNewRunDoesNotReuseThePreviousRunsDisplayRequest() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try await makeMachine(adapter: .virtioGPU3D, automaticallyResizes: true)
+        defer { machine.agent.stop() }
+        provider.backend.eventHandler?(.displaySizeRequested(width: 1920, height: 1080, scale: 1))
+        await machine.forceStop()
+        await machine.start()
+        let peer = try await connect(machine, features: [GuestFeature.displaySize, GuestFeature.liveDisplayResize])
+        defer { try? peer.close() }
+        #expect(provider.backend.displayRequests == [retina])
     }
 }
 

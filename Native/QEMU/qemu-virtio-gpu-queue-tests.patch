@@ -1,0 +1,256 @@
+Exercise the display-only driver's large backing attachment under queue pressure.
+Queue resource creation and two display queries before a 59-descriptor
+attachment for a 5K framebuffer backed by 14,400 scattered 4 KiB pages.
+Require successful attachment, transfer, scanout and flush, then check the
+live host surface geometry through QMP screendump, not advertised modes.
+
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -274,6 +274,9 @@
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+    config_all_devices.has_key('CONFIG_ARM_VIRT') ?
+    ['iommu-smmuv3-test'] : []) + \
++  (config_all_devices.has_key('CONFIG_ARM_VIRT') and
++   config_all_devices.has_key('CONFIG_VIRTIO_PCI') and
++   config_all_devices.has_key('CONFIG_VIRTIO_GPU') ? ['virtio-gpu-test'] : []) + \
+   qtests_cxl +                                                                                  \
+   ['arm-cpu-features',
+    'numa-test',
+--- /dev/null
++++ b/tests/qtest/virtio-gpu-test.c
+@@ -0,0 +1,235 @@
++/*
++ * Virtio GPU large framebuffer backing regression test.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "libqtest.h"
++#include "libqos/generic-pcihost.h"
++#include "libqos/virtio-pci.h"
++#include "standard-headers/linux/virtio_config.h"
++#include "standard-headers/linux/virtio_gpu.h"
++
++#define GPU_PAGE_SIZE 4096
++#define GPU_WIDTH 5120
++#define GPU_HEIGHT 2880
++#define GPU_FB_SIZE (GPU_WIDTH * GPU_HEIGHT * 4)
++#define GPU_PAGES (GPU_FB_SIZE / GPU_PAGE_SIZE)
++
++typedef struct GPURequest {
++    uint64_t addr;
++    uint64_t data;
++    uint64_t response;
++    uint32_t head;
++    uint32_t response_size;
++} GPURequest;
++
++typedef struct GPUTest {
++    QTestState *qts;
++    QGuestAllocator alloc;
++    QVirtioPCIDevice pci;
++    QVirtQueue *vq;
++    uint16_t avail_idx;
++} GPUTest;
++
++static GPURequest gpu_queue(GPUTest *gpu, const void *cmd, size_t cmd_size,
++                            const void *data, size_t data_size,
++                            uint32_t response_size)
++{
++    GPURequest req = { .response_size = response_size };
++    uint16_t head;
++
++    /* libqos does not check for descriptor exhaustion in qvirtqueue_add(). */
++    g_assert_cmpuint(gpu->vq->num_free, >=,
++                     2 + DIV_ROUND_UP(data_size, GPU_PAGE_SIZE));
++    req.addr = guest_alloc(&gpu->alloc, cmd_size + response_size);
++    req.response = req.addr + cmd_size;
++    qtest_memwrite(gpu->qts, req.addr, cmd, cmd_size);
++    qtest_memset(gpu->qts, req.response, 0, response_size);
++    req.head = qvirtqueue_add(gpu->qts, gpu->vq, req.addr, cmd_size,
++                              false, true);
++    if (data_size) {
++        req.data = guest_alloc(&gpu->alloc, data_size);
++        qtest_memwrite(gpu->qts, req.data, data, data_size);
++        for (size_t offset = 0; offset < data_size; offset += GPU_PAGE_SIZE) {
++            qvirtqueue_add(gpu->qts, gpu->vq, req.data + offset,
++                           MIN(GPU_PAGE_SIZE, data_size - offset), false, true);
++        }
++    }
++    qvirtqueue_add(gpu->qts, gpu->vq, req.response, response_size, true, false);
++
++    /* Publish without notifying, so the whole batch is outstanding together. */
++    head = cpu_to_le16(req.head);
++    qtest_memwrite(gpu->qts,
++                   gpu->vq->avail + 4 + 2 * (gpu->avail_idx % gpu->vq->size),
++                   &head, sizeof(head));
++    qvirtqueue_set_avail_idx(gpu->qts, &gpu->pci.vdev, gpu->vq,
++                             ++gpu->avail_idx);
++    return req;
++}
++
++static void gpu_wait(GPUTest *gpu, GPURequest *req, uint32_t response_type)
++{
++    struct virtio_gpu_ctrl_hdr response;
++    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
++    uint32_t head, len;
++
++    /* A batch can share one interrupt; consume every used element. */
++    while (!qvirtqueue_get_buf(gpu->qts, gpu->vq, &head, &len)) {
++        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
++        g_usleep(1000);
++    }
++    g_assert_cmpuint(head, ==, req->head);
++    g_assert_cmpuint(len, ==, req->response_size);
++    qtest_memread(gpu->qts, req->response, &response, sizeof(response));
++    g_assert_cmphex(le32_to_cpu(response.type), ==, response_type);
++    guest_free(&gpu->alloc, req->addr);
++    if (req->data) {
++        guest_free(&gpu->alloc, req->data);
++    }
++}
++
++static void gpu_command(GPUTest *gpu, const void *cmd, size_t size)
++{
++    GPURequest req = gpu_queue(gpu, cmd, size, NULL, 0,
++                               sizeof(struct virtio_gpu_ctrl_hdr));
++
++    gpu->pci.vdev.bus->virtqueue_kick(&gpu->pci.vdev, gpu->vq);
++    gpu_wait(gpu, &req, VIRTIO_GPU_RESP_OK_NODATA);
++    qvirtqueue_reset_pool(gpu->vq);
++}
++
++static void gpu_check_surface(GPUTest *gpu)
++{
++    g_autofree char *path = NULL;
++    g_autofree char *contents = NULL;
++    g_autofree char *header = g_strdup_printf("P6\n%d %d\n255\n",
++                                              GPU_WIDTH, GPU_HEIGHT);
++    size_t header_size = strlen(header);
++    gsize size;
++    int fd = g_file_open_tmp("virtio-gpu-XXXXXX", &path, NULL);
++
++    g_assert_cmpint(fd, >=, 0);
++    close(fd);
++    qtest_qmp_assert_success(gpu->qts,
++        "{ 'execute': 'screendump', 'arguments': { 'filename': %s } }", path);
++    g_assert_true(g_file_get_contents(path, &contents, &size, NULL));
++    unlink(path);
++
++    /* Check the live surface, not EDID or the requested display dimensions. */
++    g_assert_cmpuint(size, ==, header_size + GPU_WIDTH * GPU_HEIGHT * 3);
++    g_assert_cmpmem(contents, header_size, header, header_size);
++}
++
++static void test_5k_backing(void)
++{
++    GPUTest gpu = { 0 };
++    QGenericPCIBus bus = { 0 };
++    QPCIAddress address = { .devfn = QPCI_DEVFN(1, 0) };
++    GPURequest pending[4];
++    g_autofree struct virtio_gpu_mem_entry *entries =
++        g_new0(struct virtio_gpu_mem_entry, GPU_PAGES);
++    uint64_t backing;
++    struct virtio_gpu_resource_create_2d create = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
++        .resource_id = cpu_to_le32(1),
++        .format = cpu_to_le32(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM),
++        .width = cpu_to_le32(GPU_WIDTH),
++        .height = cpu_to_le32(GPU_HEIGHT),
++    };
++    struct virtio_gpu_ctrl_hdr info = {
++        .type = cpu_to_le32(VIRTIO_GPU_CMD_GET_DISPLAY_INFO),
++    };
++    struct virtio_gpu_resource_attach_backing attach = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
++        .resource_id = cpu_to_le32(1),
++        .nr_entries = cpu_to_le32(GPU_PAGES),
++    };
++    struct virtio_gpu_transfer_to_host_2d transfer = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
++        .r.width = cpu_to_le32(GPU_WIDTH),
++        .r.height = cpu_to_le32(GPU_HEIGHT),
++        .resource_id = cpu_to_le32(1),
++    };
++    struct virtio_gpu_set_scanout scanout = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_SET_SCANOUT),
++        .r.width = cpu_to_le32(GPU_WIDTH),
++        .r.height = cpu_to_le32(GPU_HEIGHT),
++        .resource_id = cpu_to_le32(1),
++    };
++    struct virtio_gpu_resource_flush flush = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_FLUSH),
++        .r.width = cpu_to_le32(GPU_WIDTH),
++        .r.height = cpu_to_le32(GPU_HEIGHT),
++        .resource_id = cpu_to_le32(1),
++    };
++    struct virtio_gpu_resource_unref unref = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_UNREF),
++        .resource_id = cpu_to_le32(1),
++    };
++
++    gpu.qts = qtest_init("-machine virt -cpu max -m 256M -nodefaults "
++                         "-device virtio-gpu-pci,addr=01.0,max_outputs=1");
++    alloc_init(&gpu.alloc, ALLOC_LEAK_ASSERT, 0x40000000, 0x50000000,
++               GPU_PAGE_SIZE);
++    qpci_init_generic(&bus, gpu.qts, &gpu.alloc, false);
++    virtio_pci_init(&gpu.pci, &bus.bus, &address);
++    qvirtio_pci_start_hw(&gpu.pci.obj);
++    /* Like the Windows display-only driver, use direct descriptors. */
++    qvirtio_set_features(&gpu.pci.vdev,
++        qvirtio_get_features(&gpu.pci.vdev) & (1ULL << VIRTIO_F_VERSION_1));
++    gpu.vq = qvirtqueue_setup(&gpu.pci.vdev, &gpu.alloc, 0);
++    qvirtio_set_driver_ok(&gpu.pci.vdev);
++
++    /* Alternate mapped pages and holes, so backing is genuinely scattered. */
++    backing = guest_alloc(&gpu.alloc, GPU_FB_SIZE * 2);
++    for (unsigned int i = 0; i < GPU_PAGES; i++) {
++        entries[i].addr = cpu_to_le64(backing + i * GPU_PAGE_SIZE * 2);
++        entries[i].length = cpu_to_le32(GPU_PAGE_SIZE);
++    }
++
++    pending[0] = gpu_queue(&gpu, &create, sizeof(create), NULL, 0,
++                           sizeof(struct virtio_gpu_ctrl_hdr));
++    for (unsigned int i = 1; i < 3; i++) {
++        pending[i] = gpu_queue(&gpu, &info, sizeof(info), NULL, 0,
++                               sizeof(struct virtio_gpu_resp_display_info));
++    }
++    /*
++     * 14,400 backing entries occupy 57 separate 4 KiB descriptor buffers.
++     * Header + entries + response need 59 descriptors, in addition to the
++     * six held by the three commands above. Do not drain them first.
++     */
++    pending[3] = gpu_queue(&gpu, &attach, sizeof(attach), entries,
++                           GPU_PAGES * sizeof(*entries),
++                           sizeof(struct virtio_gpu_ctrl_hdr));
++    gpu.pci.vdev.bus->virtqueue_kick(&gpu.pci.vdev, gpu.vq);
++    gpu_wait(&gpu, &pending[0], VIRTIO_GPU_RESP_OK_NODATA);
++    for (unsigned int i = 1; i < 3; i++) {
++        gpu_wait(&gpu, &pending[i], VIRTIO_GPU_RESP_OK_DISPLAY_INFO);
++    }
++    gpu_wait(&gpu, &pending[3], VIRTIO_GPU_RESP_OK_NODATA);
++    qvirtqueue_reset_pool(gpu.vq);
++
++    gpu_command(&gpu, &transfer, sizeof(transfer));
++    gpu_command(&gpu, &scanout, sizeof(scanout));
++    gpu_command(&gpu, &flush, sizeof(flush));
++    gpu_check_surface(&gpu);
++
++    gpu_command(&gpu, &unref, sizeof(unref));
++    guest_free(&gpu.alloc, backing);
++    qvirtio_reset(&gpu.pci.vdev);
++    qvirtqueue_cleanup(gpu.pci.vdev.bus, gpu.vq, &gpu.alloc);
++    qvirtio_pci_destructor(&gpu.pci.obj);
++    alloc_destroy(&gpu.alloc);
++    qtest_quit(gpu.qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/virtio-gpu/2d/5k-backing-outstanding", test_5k_backing);
++    return g_test_run();
++}

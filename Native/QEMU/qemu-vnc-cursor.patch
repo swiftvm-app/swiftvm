@@ -1,0 +1,163 @@
+Propagate cached console cursor visibility through AlphaCursor and RichCursor.
+Keep shape independent of visibility, preserve define-only devices, and query
+the current console on replay so hidden cursors stay hidden. Clear cursors on
+consoles without a shape, including equal-sized console switches.
+Build RichCursor masks from the replayed shape and convert all source pixels.
+Alpha pixel ordering remains unchanged.
+
+--- a/ui/console.c
++++ b/ui/console.c
+@@ -57,6 +57,7 @@
+     QEMUCursor *cursor;
+     int cursor_x, cursor_y;
+     bool cursor_on;
++    bool cursor_mouse_set;
+ } QemuGraphicConsole;
+ 
+ typedef QemuConsoleClass QemuGraphicConsoleClass;
+@@ -966,6 +967,7 @@
+     con->cursor_x = x;
+     con->cursor_y = y;
+     con->cursor_on = on;
++    con->cursor_mouse_set = true;
+     QLIST_FOREACH(dcl, &s->listeners, next) {
+         if (c != dcl->con) {
+             continue;
+@@ -1362,6 +1364,17 @@
+ QEMUCursor *qemu_console_get_cursor(QemuConsole *con)
+ {
+     return QEMU_IS_GRAPHIC_CONSOLE(con) ? QEMU_GRAPHIC_CONSOLE(con)->cursor : NULL;
++}
++
++bool qemu_console_get_cursor_visible(QemuConsole *con)
++{
++    if (!QEMU_IS_GRAPHIC_CONSOLE(con)) {
++        return false;
++    }
++
++    /* Keep define-only devices visible until they explicitly set visibility. */
++    return !QEMU_GRAPHIC_CONSOLE(con)->cursor_mouse_set ||
++           QEMU_GRAPHIC_CONSOLE(con)->cursor_on;
+ }
+ 
+ bool qemu_console_is_graphic(QemuConsole *con)
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -390,6 +390,7 @@
+ QemuConsole *qemu_console_lookup_by_device_name(const char *device_id,
+                                                 uint32_t head, Error **errp);
+ QEMUCursor *qemu_console_get_cursor(QemuConsole *con);
++bool qemu_console_get_cursor_visible(QemuConsole *con);
+ bool qemu_console_is_graphic(QemuConsole *con);
+ bool qemu_console_is_fixedsize(QemuConsole *con);
+ bool qemu_console_is_gl_blocked(QemuConsole *con);
+--- a/ui/vnc.c
++++ b/ui/vnc.c
+@@ -812,8 +812,12 @@
+                            DisplaySurface *surface)
+ {
+     VncDisplay *vd = container_of(dcl, VncDisplay, dcl);
+-    bool pageflip = vnc_check_pageflip(vd->ds, surface);
++    bool pageflip = vd->cursor_con == dcl->con &&
++                    vnc_check_pageflip(vd->ds, surface);
+     VncState *vs;
+ 
++    vd->cursor_con = dcl->con;
++    vd->cursor_visible = qemu_console_get_cursor_visible(dcl->con);
++
+     vnc_abort_display_jobs(vd);
+     vd->ds = surface;
+@@ -982,27 +985,39 @@
+ static void vnc_mouse_set(DisplayChangeListener *dcl,
+                           int x, int y, bool visible)
+ {
+-    /* can we ask the client(s) to move the pointer ??? */
++    VncDisplay *vd = container_of(dcl, VncDisplay, dcl);
++    VncState *vs;
++
++    visible = qemu_console_get_cursor_visible(dcl->con);
++    if (vd->cursor_visible == visible) {
++        return;
++    }
++    vd->cursor_visible = visible;
++    QTAILQ_FOREACH(vs, &vd->clients, next) {
++        vnc_cursor_define(vs);
++    }
+ }
+ 
+ static int vnc_cursor_define(VncState *vs)
+ {
+     QEMUCursor *c = qemu_console_get_cursor(vs->vd->dcl.con);
+-    int isize;
+-
+-    if (!c) {
+-        return -1;
+-    }
++    bool visible = qemu_console_get_cursor_visible(vs->vd->dcl.con);
++    int width = visible && c ? c->width : 0;
++    int height = visible && c ? c->height : 0;
++    int hot_x = visible && c ? c->hot_x : 0;
++    int hot_y = visible && c ? c->hot_y : 0;
+ 
+     if (vnc_has_feature(vs, VNC_FEATURE_ALPHA_CURSOR)) {
+         vnc_lock_output(vs);
+         vnc_write_u8(vs,  VNC_MSG_SERVER_FRAMEBUFFER_UPDATE);
+         vnc_write_u8(vs,  0);  /*  padding     */
+         vnc_write_u16(vs, 1);  /*  # of rects  */
+-        vnc_framebuffer_update(vs, c->hot_x, c->hot_y, c->width, c->height,
++        vnc_framebuffer_update(vs, hot_x, hot_y, width, height,
+                                VNC_ENCODING_ALPHA_CURSOR);
+         vnc_write_s32(vs, VNC_ENCODING_RAW);
+-        vnc_write(vs, c->data, c->width * c->height * 4);
++        if (width && height) {
++            vnc_write(vs, c->data, width * height * 4);
++        }
+         vnc_unlock_output(vs);
+         return 0;
+     }
+@@ -1011,11 +1026,16 @@
+         vnc_write_u8(vs,  VNC_MSG_SERVER_FRAMEBUFFER_UPDATE);
+         vnc_write_u8(vs,  0);  /*  padding     */
+         vnc_write_u16(vs, 1);  /*  # of rects  */
+-        vnc_framebuffer_update(vs, c->hot_x, c->hot_y, c->width, c->height,
++        vnc_framebuffer_update(vs, hot_x, hot_y, width, height,
+                                VNC_ENCODING_RICH_CURSOR);
+-        isize = c->width * c->height * vs->client_pf.bytes_per_pixel;
+-        vnc_write_pixels_generic(vs, c->data, isize);
+-        vnc_write(vs, vs->vd->cursor_mask, vs->vd->cursor_msize);
++        if (width && height) {
++            int msize = cursor_get_mono_bpl(c) * height;
++            g_autofree uint8_t *mask = g_malloc0(msize);
++
++            cursor_get_mono_mask(c, 0, mask);
++            vnc_write_pixels_generic(vs, c->data, width * height * 4);
++            vnc_write(vs, mask, msize);
++        }
+         vnc_unlock_output(vs);
+         return 0;
+     }
+@@ -1027,11 +1047,6 @@
+ {
+     VncDisplay *vd = container_of(dcl, VncDisplay, dcl);
+     VncState *vs;
+-
+-    g_free(vd->cursor_mask);
+-    vd->cursor_msize = cursor_get_mono_bpl(c) * c->height;
+-    vd->cursor_mask = g_malloc0(vd->cursor_msize);
+-    cursor_get_mono_mask(c, 0, vd->cursor_mask);
+ 
+     QTAILQ_FOREACH(vs, &vd->clients, next) {
+         vnc_cursor_define(vs);
+--- a/ui/vnc.h
++++ b/ui/vnc.h
+@@ -153,8 +153,8 @@
+     QemuMutex mutex;
+     VncJobQueue *queue;
+ 
+-    int cursor_msize;
+-    uint8_t *cursor_mask;
++    QemuConsole *cursor_con;
++    bool cursor_visible;
+ 
+     struct VncSurface guest;   /* guest visible surface (aka ds->surface) */
+     pixman_image_t *server;    /* vnc server surface */

@@ -38,7 +38,7 @@ namespace SwiftVM
 {
     static class Program
     {
-        public const string Version = "1.8";
+        public const string Version = "1.10";
         public const string ServiceName = "SwiftVMAgent";
         public const string PortName = @"\\.\Global\org.swiftvm.agent";
         public const string SessionPipe = "swiftvm-agent-session";
@@ -222,6 +222,7 @@ namespace SwiftVM
         readonly SessionLink session;
         readonly object linesGate = new object();
         readonly object seamlessGate = new object();
+        readonly object pointerGate = new object();
         readonly List<AgentLine> lines = new List<AgentLine>();
 
         public Agent()
@@ -288,16 +289,27 @@ namespace SwiftVM
             foreach (var line in Lines()) line.SendWindows(message);
         }
 
+        /// Has the session half hand its pointer over while any line to the Mac wants to draw it.
+        public void PointerHandoffChanged()
+        {
+            lock (pointerGate) session.HandOverPointer(Lines().Any(line => line.HandsPointer));
+        }
+
+        /// Passes the pointer from the session half to every line whose Mac draws it.
+        public void PointerChanged(Dictionary<string, object> message)
+        {
+            foreach (var line in Lines()) line.SendPointer(message);
+        }
+
         List<AgentLine> Lines()
         {
             lock (linesGate) return new List<AgentLine>(lines);
         }
     }
 
-    /// The resolution service that comes with the 3D display driver. It has Windows switch to the size
-    /// the Mac last asked for, which that driver offers Windows only as it starts: Windows puts another,
-    /// smaller size in its place, which the Mac's window can only show scaled. The machine starts at
-    /// the size its window shows it at instead, and this agent gives Windows the scale for it.
+    /// The resolution service that comes with the 3D display driver. This agent owns both the display's
+    /// mode and DPI, so the driver's helper stays off even when its driver supports live resizing:
+    /// two owners switching the display can race.
     static class ResolutionHelper
     {
         const string ServiceName = "vgpusrv";
@@ -850,6 +862,7 @@ namespace SwiftVM
         readonly object writeGate = new object();
         bool sharesClipboard;
         bool showsWindows;
+        bool handsPointer;
         string lastAddresses;
         string lastSetup;
 
@@ -886,6 +899,11 @@ namespace SwiftVM
             {
                 showsWindows = false;
                 agent.SeamlessChanged();
+            }
+            if (handsPointer)
+            {
+                handsPointer = false;
+                agent.PointerHandoffChanged();
             }
         }
 
@@ -947,6 +965,10 @@ namespace SwiftVM
                     case "resize-window":
                         agent.Session.PassOn(type, message);
                         break;
+                    case "pointer-handoff":
+                        handsPointer = Json.Flag(message, "enabled");
+                        agent.PointerHandoffChanged();
+                        break;
                     default:
                         if (id != 0) Answer(id, "The guest tools don't know “" + type + "”.");
                         break;
@@ -1006,6 +1028,17 @@ namespace SwiftVM
             get { return showsWindows; }
         }
 
+        public bool HandsPointer
+        {
+            get { return handsPointer; }
+        }
+
+        public void SendPointer(Dictionary<string, object> message)
+        {
+            if (!handsPointer) return;
+            try { Send(message); } catch (Exception) { }
+        }
+
         public void SendWindows(Dictionary<string, object> message)
         {
             if (!showsWindows) return;
@@ -1063,9 +1096,10 @@ namespace SwiftVM
             string architecture = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
             if (architecture != null) system["architecture"] = architecture.ToLowerInvariant();
 
-            var features = new List<object> { "clipboard", "time-zone", "exec", "input", "accessibility", "display-size", "seamless" };
+            var features = new List<object> { "clipboard", "time-zone", "exec", "input", "accessibility", "display-size", "seamless", "native-pointer" };
             if (HasResizableDisplayDriver()) features.Add("resizable-display");
             if (HasDisplayDriver("viogpu3d.inf_*")) features.Add("accelerated-display");
+            if (HasLiveDisplayResize()) features.Add("live-display-resize");
 
             var hello = new Dictionary<string, object>();
             hello["type"] = "hello";
@@ -1095,6 +1129,98 @@ namespace SwiftVM
             catch (Exception)
             {
                 return false;
+            }
+        }
+
+        /// Staging a driver is enough for the hints above, but not for live resizing. The present GPU
+        /// must be running the known driver, with no restart still needed to replace the old one.
+        static bool HasLiveDisplayResize()
+        {
+            try
+            {
+                using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager"))
+                {
+                    if (key == null) return false;
+                    object pending = key.GetValue("PendingFileRenameOperations");
+                    if (pending != null && (!(pending is string[]) || ((string[])pending).Length != 0)) return false;
+                }
+                var displayClass = new Guid("4d36e968-e325-11ce-bfc1-08002be10318");
+                IntPtr devices = Native.SetupDiGetClassDevs(ref displayClass, null, IntPtr.Zero, Native.DevicePresent);
+                if (devices == IntPtr.Zero || devices == new IntPtr(-1)) return false;
+                try
+                {
+                    for (uint index = 0; ; index++)
+                    {
+                        var device = new Native.DeviceInfoData();
+                        device.Size = (uint)Marshal.SizeOf(typeof(Native.DeviceInfoData));
+                        if (!Native.SetupDiEnumDeviceInfo(devices, index, ref device)) return false;
+                        uint status, problem;
+                        if (Native.CM_Get_DevNode_Status(out status, out problem, device.DevInst, 0) != 0
+                            || problem != 0 || (status & Native.DeviceStarted) == 0
+                            || (status & (Native.DeviceHasProblem | Native.DeviceNeedsRestart)) != 0) continue;
+                        var install = new Native.DeviceInstallParams();
+                        install.Size = (uint)Marshal.SizeOf(typeof(Native.DeviceInstallParams));
+                        if (!Native.SetupDiGetDeviceInstallParams(devices, ref device, ref install)
+                            || (install.Flags & (Native.DeviceInstallNeedsRestart | Native.DeviceInstallNeedsReboot)) != 0) continue;
+                        var service = new byte[512];
+                        uint type, length;
+                        if (!Native.SetupDiGetDeviceRegistryProperty(devices, ref device, Native.DeviceService,
+                            out type, service, (uint)service.Length, out length)
+                            || type != 1 || length < 2 || length > service.Length || length % 2 != 0
+                            || !string.Equals(Encoding.Unicode.GetString(service, 0, (int)length).TrimEnd('\0'),
+                                "VioGpu3D", StringComparison.OrdinalIgnoreCase)) continue;
+                        using (var handle = Native.SetupDiOpenDevRegKey(devices, ref device,
+                            Native.DeviceGlobal, 0, Native.DeviceDriverKey, Native.KeyQueryValue))
+                        {
+                            if (handle.IsInvalid) continue;
+                            using (var key = RegistryKey.FromHandle(handle))
+                            {
+                                if (IsLiveDisplayDriver(key) && HasLiveDisplayDriverBinary()) return true;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    Native.SetupDiDestroyDeviceInfoList(devices);
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        static bool IsLiveDisplayDriver(RegistryKey key)
+        {
+            // v0.3 and v0.5 share a version. Only this exact v0.5 date is known to refresh host modes;
+            // neither an older driver nor an unknown future package should enable live resizing.
+            var date = key.GetValue("DriverDateData") as byte[];
+            return string.Equals(key.GetValue("InfSection") as string, "VioGpu3D_Inst", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(key.GetValue("DriverVersion") as string, "100.6.101.58000", StringComparison.Ordinal)
+                && Equals(key.GetValue("FlexResolution"), 1)
+                && date != null && date.Length == 8 && BitConverter.ToInt64(date, 0)
+                    == new DateTime(2026, 10, 29, 0, 0, 0, DateTimeKind.Utc).ToFileTimeUtc();
+        }
+
+        static bool HasLiveDisplayDriverBinary()
+        {
+            using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\VioGpu3D"))
+            {
+                string path = key == null ? null : key.GetValue("ImagePath") as string;
+                if (string.IsNullOrEmpty(path)) return false;
+                path = Environment.ExpandEnvironmentVariables(path);
+                if (path.StartsWith(@"\SystemRoot\", StringComparison.OrdinalIgnoreCase))
+                    path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), path.Substring(12));
+                if (path.StartsWith(@"\??\", StringComparison.Ordinal)) path = path.Substring(4);
+                if (!Path.IsPathRooted(path) || !string.Equals(Path.GetFileName(path), "viogpu3d.sys", StringComparison.OrdinalIgnoreCase)) return false;
+                using (var file = File.OpenRead(path))
+                using (var hash = System.Security.Cryptography.SHA256.Create())
+                {
+                    // The signed ARM64X binary in the bundled osy v0.5 archive.
+                    return BitConverter.ToString(hash.ComputeHash(file)).Replace("-", "").ToLowerInvariant()
+                        == "642f2d861124639059469722c165fb9a640eed0dad97d30e59e5a42b88d4b1d6";
+                }
             }
         }
 
@@ -1789,6 +1915,7 @@ namespace SwiftVM
         StreamWriter writer;
         bool hasClipboardToFill;
         bool seamless;
+        bool handsPointer;
         Dictionary<string, object> displaySize;
         readonly Dictionary<long, ManualResetEvent> waiting = new Dictionary<long, ManualResetEvent>();
         readonly Dictionary<long, bool> answers = new Dictionary<long, bool>();
@@ -1844,6 +1971,8 @@ namespace SwiftVM
                             writer.AutoFlush = true;
                             if (displaySize != null) Send(displaySize);
                             if (seamless) Send(SeamlessMessage(true));
+                            // A session half that comes back has a pointer of its own again.
+                            if (handsPointer) Send(PointerMessage(true));
                         }
                         // Someone who has just logged in gets the Mac's shared folders as a drive.
                         string share, letter;
@@ -1865,6 +1994,10 @@ namespace SwiftVM
                     Thread.Sleep(1000);
                 }
                 lock (gate) writer = null;
+                // Windows has its pointer back while there is no session half to hand it over.
+                var pointer = new Dictionary<string, object>();
+                pointer["type"] = "cursor";
+                agent.PointerChanged(pointer);
                 // A session half that ended while its session goes on, as in a crash, starts again.
                 ThreadPool.QueueUserWorkItem(delegate
                 {
@@ -1907,6 +2040,9 @@ namespace SwiftVM
                 case "windows":
                 case "hit":
                     agent.WindowsChanged(message);
+                    break;
+                case "cursor":
+                    agent.PointerChanged(message);
                     break;
                 case "result":
                     long id = Json.Number(message, "id") ?? 0;
@@ -1979,6 +2115,14 @@ namespace SwiftVM
             return message;
         }
 
+        static Dictionary<string, object> PointerMessage(bool enabled)
+        {
+            var message = new Dictionary<string, object>();
+            message["type"] = "pointer-handoff";
+            message["enabled"] = enabled;
+            return message;
+        }
+
         /// Passes on what the Mac asks of a window: to bring it forward, to say what is at a point of it, or
         /// to move or resize it. Only the numbers these take go on.
         public void PassOn(string type, Dictionary<string, object> fromMac)
@@ -1991,6 +2135,14 @@ namespace SwiftVM
                 if (value != null) message[key] = value.Value;
             }
             Send(message);
+        }
+
+        /// Forwards whether the Mac draws the pointer, which the session half carries out. One that
+        /// connects again is told again: it starts with the pointer Windows draws.
+        public void HandOverPointer(bool enabled)
+        {
+            lock (gate) handsPointer = enabled;
+            Send(PointerMessage(enabled));
         }
 
         public bool ResizeDisplay(int width, int height)
@@ -2171,6 +2323,9 @@ namespace SwiftVM
                                 case "seamless":
                                     WindowWatcher.SetEnabled(Json.Flag(message, "enabled"));
                                     break;
+                                case "pointer-handoff":
+                                    PointerWatcher.SetEnabled(Json.Flag(message, "enabled"));
+                                    break;
                                 case "activate-window":
                                     WindowWatcher.Activate(Json.Number(message, "window") ?? 0);
                                     break;
@@ -2209,6 +2364,7 @@ namespace SwiftVM
                 // A service that comes back asks again if the Mac still wants the windows. One that
                 // was updated or restarted meanwhile may never say that it doesn't.
                 WindowWatcher.SetEnabled(false);
+                PointerWatcher.SetEnabled(false);
                 Thread.Sleep(2000);
             }
         }
@@ -3798,6 +3954,350 @@ namespace SwiftVM
         }
     }
 
+    /// The pointer the Mac draws in place of the guest's own.
+    ///
+    /// Windows' display drivers for virtio-gpu draw the pointer into the desktop themselves, a frame or
+    /// more behind the mouse. While the Mac draws it, the guest's system cursor is hidden and its shape is
+    /// sent over the agent's line instead: nothing on the desktop moves, and the pointer moves at the
+    /// speed of the Mac's own. Windows keeps drawing it where the Mac can't see it, on its lock screen and
+    /// the questions it asks over the desktop, and there the Mac draws none.
+    static class PointerWatcher
+    {
+        /// How long between looks at the shape. An app changes it as the pointer goes over what it is for,
+        /// and Windows says nothing about it that could be waited for.
+        const int Interval = 100;
+        /// The largest side that fits comfortably in one protocol line. Larger pointers stay Windows'
+        /// own rather than losing the size the user chose in accessibility settings.
+        const int MostSide = 128;
+
+        static readonly object Gate = new object();
+        static readonly AutoResetEvent Changed = new AutoResetEvent(false);
+        static bool enabled;
+        static bool refresh;
+        static Thread thread;
+        /// Whether Windows is initialized for hiding its cursor here.
+        static bool initialized;
+        /// Whether the Mac draws the pointer, and the guest's cursor is hidden for it.
+        static bool handed;
+        /// What the Mac was told last, so that it isn't told the same again.
+        static string sent;
+        /// The cursor looked at last, which is the same one while nothing changes.
+        static IntPtr lastCursor = IntPtr.Zero;
+        static int lastFlags = -1;
+        /// The shape of that cursor.
+        static Dictionary<string, object> current;
+
+        public static void SetEnabled(bool on)
+        {
+            lock (Gate)
+            {
+                enabled = on;
+                // A Mac that asks again has forgotten what it was told. Only the watcher touches its
+                // cache, so a request arriving during a read can't lose the next shape.
+                refresh = true;
+                Changed.Set();
+                if (on && thread == null)
+                {
+                    thread = new Thread(Run);
+                    thread.IsBackground = true;
+                    thread.Name = "pointer";
+                    thread.Start();
+                }
+            }
+        }
+
+        public static void Run()
+        {
+            while (true)
+            {
+                try
+                {
+                    bool wanted;
+                    lock (Gate)
+                    {
+                        wanted = enabled;
+                        if (refresh)
+                        {
+                            sent = null;
+                            current = null;
+                            lastCursor = IntPtr.Zero;
+                            lastFlags = -1;
+                            refresh = false;
+                        }
+                    }
+                    if (!wanted)
+                    {
+                        GiveBack();
+                        Changed.WaitOne(500);
+                        continue;
+                    }
+                    Step();
+                }
+                catch (Exception error)
+                {
+                    Log.Write("pointer: " + error.Message);
+                    GiveBack();
+                }
+                Changed.WaitOne(Interval);
+            }
+        }
+
+        /// One look: whether Windows draws the pointer itself here, and otherwise what its shape is.
+        static void Step()
+        {
+            Dictionary<string, object> shape;
+            if (GuestDraws() || !Read(out shape))
+            {
+                // Windows draws secure desktops and shapes the Mac can't reproduce. Clear the host copy
+                // as soon as the guest has its pointer back, rather than keeping a stale shape.
+                if (handed)
+                {
+                    Native.MagShowSystemCursor(true);
+                    handed = false;
+                    Tell(null);
+                }
+                return;
+            }
+            if (!initialized)
+            {
+                // Without the magnifier's API the pointer stays Windows' own, which is how it was before.
+                initialized = Native.MagInitialize();
+                if (!initialized)
+                {
+                    Thread.Sleep(1000);
+                    return;
+                }
+            }
+            if (!handed)
+            {
+                // The guest's copy would be a second pointer, a frame behind this one. Only now that its
+                // shape is known: one that can't be read is better drawn by Windows than by nobody.
+                if (!Native.MagShowSystemCursor(false))
+                {
+                    return;
+                }
+                handed = true;
+            }
+            Tell(shape);
+        }
+
+        /// Whether Windows draws the pointer itself here, where the Mac can't: on its sign-in screen and
+        /// on the questions it asks over the desktop, which are desktops of their own, and on its lock
+        /// screen, which is an app of the desktop's that covers it.
+        static bool GuestDraws()
+        {
+            IntPtr desktop = Native.OpenInputDesktop(0, false, 0x0100); // DESKTOP_READSCREEN
+            if (desktop == IntPtr.Zero) return true;
+            Native.CloseDesktop(desktop);
+            IntPtr window = Native.GetForegroundWindow();
+            // A desktop that has taken no window is the one people work on: the shell takes one back as
+            // soon as it is unlocked.
+            if (window == IntPtr.Zero) return false;
+            uint process;
+            Native.GetWindowThreadProcessId(window, out process);
+            try
+            {
+                using (var running = System.Diagnostics.Process.GetProcessById((int)process))
+                {
+                    string name = running.ProcessName;
+                    return string.Equals(name, "LockApp", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(name, "LogonUI", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(name, "consent", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// Whether Windows said what its pointer is, and what the Mac is to draw of it: its shape, or null
+        /// for no pointer at all.
+        static bool Read(out Dictionary<string, object> shape)
+        {
+            var info = new Native.CursorInfo();
+            info.Size = Marshal.SizeOf(typeof(Native.CursorInfo));
+            if (!Native.GetCursorInfo(ref info))
+            {
+                shape = null;
+                return false;
+            }
+            if (info.Flags == lastFlags && info.Cursor == lastCursor)
+            {
+                shape = current;
+                return true;
+            }
+            if ((info.Flags & Native.CursorShowing) == 0 || info.Cursor == IntPtr.Zero)
+            {
+                // An app that hides its pointer, or Windows suppressing it for touch input, hides the
+                // host copy too. This is different from a shape that couldn't be read.
+                shape = null;
+                lastFlags = info.Flags;
+                lastCursor = info.Cursor;
+                current = null;
+                return true;
+            }
+            // Don't cache a failure: Windows draws it for now and the next look may be able to read it.
+            shape = Shape(info.Cursor);
+            if (shape == null) return false;
+            lastFlags = info.Flags;
+            lastCursor = info.Cursor;
+            current = shape;
+            return true;
+        }
+
+        /// Gives the pointer back to Windows, whatever was happening, and forgets what the Mac was told.
+        static void GiveBack()
+        {
+            if (handed)
+            {
+                Native.MagShowSystemCursor(true);
+                handed = false;
+                Tell(null);
+            }
+            if (initialized)
+            {
+                Native.MagUninitialize();
+                initialized = false;
+            }
+            sent = null;
+            current = null;
+            lastCursor = IntPtr.Zero;
+            lastFlags = -1;
+        }
+
+        /// Says what the Mac is to draw, or that it is to draw none.
+        static void Tell(Dictionary<string, object> shape)
+        {
+            var message = new Dictionary<string, object>();
+            message["type"] = "cursor";
+            if (shape != null)
+            {
+                foreach (var pair in shape) message[pair.Key] = pair.Value;
+            }
+            string line = Json.Write(message);
+            if (line == sent) return;
+            sent = line;
+            SessionHalf.Send(message);
+        }
+
+        /// A cursor's shape and hotspot, as the Mac draws it, or null if Windows doesn't say.
+        static Dictionary<string, object> Shape(IntPtr cursor)
+        {
+            var icon = new Native.IconInfo();
+            if (!Native.GetIconInfo(cursor, ref icon)) return null;
+            try
+            {
+                var bitmap = new Native.Bitmap();
+                IntPtr drawn = icon.Color != IntPtr.Zero ? icon.Color : icon.Mask;
+                if (drawn == IntPtr.Zero) return null;
+                if (Native.GetObject(drawn, Marshal.SizeOf(typeof(Native.Bitmap)), ref bitmap) == 0) return null;
+                int width = bitmap.Width;
+                // A monochrome cursor's mask is both of its halves: what is there, and whether it is white.
+                int height = icon.Color != IntPtr.Zero ? bitmap.Height : bitmap.Height / 2;
+                if (width <= 0 || height <= 0 || width > MostSide || height > MostSide) return null;
+                byte[] pixels = icon.Color != IntPtr.Zero
+                    ? Colour(icon.Color, icon.Mask, width, height)
+                    : Monochrome(icon.Mask, width, height);
+                if (pixels == null) return null;
+                int hotspotX = icon.XHotspot, hotspotY = icon.YHotspot;
+                var shape = new Dictionary<string, object>();
+                shape["width"] = width;
+                shape["height"] = height;
+                shape["hotspotX"] = Math.Min(Math.Max(hotspotX, 0), width - 1);
+                shape["hotspotY"] = Math.Min(Math.Max(hotspotY, 0), height - 1);
+                shape["pixels"] = Convert.ToBase64String(pixels);
+                return shape;
+            }
+            finally
+            {
+                if (icon.Color != IntPtr.Zero) Native.DeleteObject(icon.Color);
+                if (icon.Mask != IntPtr.Zero) Native.DeleteObject(icon.Mask);
+            }
+        }
+
+        /// A cursor's premultiplied BGRA colours, as Windows keeps them. One with no alpha of its own is
+        /// cut out of its colours by its mask; XOR effects need the desktop behind it and stay guest-drawn.
+        static byte[] Colour(IntPtr colour, IntPtr mask, int width, int height)
+        {
+            byte[] pixels = Bits(colour, width, height, 32);
+            if (pixels == null) return null;
+            bool hasAlpha = false;
+            for (int index = 3; index < pixels.Length && !hasAlpha; index += 4)
+            {
+                hasAlpha = pixels[index] != 0;
+            }
+            if (hasAlpha) return pixels;
+            if (mask == IntPtr.Zero) return null;
+            byte[] cut = Bits(mask, width, height, 1);
+            if (cut == null) return null;
+            int stride = ((width + 31) / 32) * 4;
+            for (int row = 0; row < height; row++)
+            {
+                for (int column = 0; column < width; column++)
+                {
+                    // The mask says where the pointer isn't.
+                    bool there = (cut[row * stride + column / 8] & (0x80 >> (column % 8))) == 0;
+                    int index = (row * width + column) * 4;
+                    if (!there && (pixels[index] != 0 || pixels[index + 1] != 0 || pixels[index + 2] != 0)) return null;
+                    pixels[index + 3] = (byte)(there ? 255 : 0);
+                }
+            }
+            return pixels;
+        }
+
+        /// A monochrome cursor: AND and XOR masks define transparent, black, white, or inverted pixels.
+        /// Inversion depends on the desktop behind it, which a host cursor can't reproduce.
+        static byte[] Monochrome(IntPtr mask, int width, int height)
+        {
+            byte[] bits = Bits(mask, width, height * 2, 1);
+            if (bits == null) return null;
+            int stride = ((width + 31) / 32) * 4;
+            var pixels = new byte[width * height * 4];
+            for (int row = 0; row < height; row++)
+            {
+                for (int column = 0; column < width; column++)
+                {
+                    byte bit = (byte)(0x80 >> (column % 8));
+                    bool cut = (bits[row * stride + column / 8] & bit) != 0;
+                    bool white = (bits[(height + row) * stride + column / 8] & bit) != 0;
+                    if (cut && white) return null;
+                    if (cut) continue;
+                    int index = (row * width + column) * 4;
+                    byte value = (byte)(white ? 255 : 0);
+                    pixels[index] = value;
+                    pixels[index + 1] = value;
+                    pixels[index + 2] = value;
+                    pixels[index + 3] = 255;
+                }
+            }
+            return pixels;
+        }
+
+        /// A bitmap's pixels from the top row down, in its own depth.
+        static byte[] Bits(IntPtr bitmap, int width, int rows, int depth)
+        {
+            var info = new Native.BitmapInfo();
+            info.Header.Size = (uint)Marshal.SizeOf(typeof(Native.BitmapInfoHeader));
+            info.Header.Width = width;
+            // From the top down, as the rows are counted here.
+            info.Header.Height = -rows;
+            info.Header.Planes = 1;
+            info.Header.BitCount = (ushort)depth;
+            var bits = new byte[((width * depth + 31) / 32) * 4 * rows];
+            IntPtr screen = Native.GetDC(IntPtr.Zero);
+            if (screen == IntPtr.Zero) return null;
+            try
+            {
+                return Native.GetDIBits(screen, bitmap, 0, (uint)rows, bits, ref info, 0) == rows ? bits : null;
+            }
+            finally
+            {
+                Native.ReleaseDC(IntPtr.Zero, screen);
+            }
+        }
+    }
+
     // MARK: - Windows
 
     static class Native
@@ -3811,6 +4311,28 @@ namespace SwiftVM
         public const int DisplayDeviceAttachedToDesktop = 0x1;
         public const uint DisplayActivePaths = 0x2, DisplayApply = 0x80, DisplayUseSupplied = 0x20;
         public const uint DisplaySave = 0x200, DisplayAllowChanges = 0x400, DisplayForceEnumeration = 0x1000;
+        public const uint DevicePresent = 0x2, DeviceStarted = 0x8, DeviceHasProblem = 0x400, DeviceNeedsRestart = 0x100;
+        public const uint DeviceInstallNeedsRestart = 0x80, DeviceInstallNeedsReboot = 0x100;
+        public const uint DeviceGlobal = 1, DeviceDriverKey = 2, KeyQueryValue = 1, DeviceService = 4;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DeviceInfoData
+        {
+            public uint Size;
+            public Guid ClassGuid;
+            public uint DevInst;
+            public UIntPtr Reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DeviceInstallParams
+        {
+            public uint Size, Flags, FlagsEx;
+            public IntPtr Parent, InstallMessageHandler, InstallMessageContext, FileQueue;
+            public UIntPtr ClassInstallReserved;
+            public uint Reserved;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string DriverPath;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         public struct Rect
@@ -3835,6 +4357,24 @@ namespace SwiftVM
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        public struct CursorInfo
+        {
+            public int Size;
+            public int Flags;
+            public IntPtr Cursor;
+            public Point ScreenPosition;
+        }
+        public const int CursorShowing = 0x1;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct IconInfo
+        {
+            public int IsIcon;
+            public int XHotspot, YHotspot;
+            public IntPtr Mask, Color;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         public struct AnimationInfo
         {
             public uint Size;
@@ -3856,6 +4396,25 @@ namespace SwiftVM
             public uint Compression, SizeImage;
             public int XPelsPerMeter, YPelsPerMeter;
             public uint ClrUsed, ClrImportant;
+        }
+
+        /// A header with room for the palette of a mask. Windows writes the palette of a monochrome bitmap
+        /// into what it is given, so what is given has to hold one.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BitmapInfo
+        {
+            public BitmapInfoHeader Header;
+            public uint First, Second;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Bitmap
+        {
+            public int Type;
+            public int Width, Height;
+            public int WidthBytes;
+            public ushort Planes, BitCount;
+            public IntPtr Bits;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -4237,6 +4796,12 @@ namespace SwiftVM
         public static extern bool UpdateLayeredWindow(IntPtr window, IntPtr screen, ref Point place, ref Size size,
             IntPtr source, ref Point origin, uint key, ref uint blend, uint flags);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetCursorInfo(ref CursorInfo info);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetIconInfo(IntPtr cursor, ref IconInfo info);
+
         [DllImport("user32.dll")]
         public static extern IntPtr GetDC(IntPtr window);
 
@@ -4255,6 +4820,22 @@ namespace SwiftVM
 
         [DllImport("gdi32.dll")]
         public static extern IntPtr SelectObject(IntPtr context, IntPtr item);
+
+        [DllImport("gdi32.dll")]
+        public static extern int GetObject(IntPtr item, int size, ref Bitmap bitmap);
+
+        [DllImport("gdi32.dll")]
+        public static extern int GetDIBits(IntPtr context, IntPtr bitmap, uint start, uint count,
+            [Out] byte[] bits, ref BitmapInfo info, uint usage);
+
+        [DllImport("Magnification.dll", SetLastError = true)]
+        public static extern bool MagInitialize();
+
+        [DllImport("Magnification.dll", SetLastError = true)]
+        public static extern bool MagUninitialize();
+
+        [DllImport("Magnification.dll", SetLastError = true)]
+        public static extern bool MagShowSystemCursor(bool show);
 
         [DllImport("gdi32.dll")]
         public static extern bool DeleteObject(IntPtr item);
@@ -4303,6 +4884,29 @@ namespace SwiftVM
 
         [DllImport("dwmapi.dll")]
         public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out Rect value, int size);
+
+        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern IntPtr SetupDiGetClassDevs(ref Guid classGuid, string enumerator, IntPtr parent, uint flags);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        public static extern bool SetupDiEnumDeviceInfo(IntPtr devices, uint index, ref DeviceInfoData device);
+
+        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool SetupDiGetDeviceInstallParams(IntPtr devices, ref DeviceInfoData device, ref DeviceInstallParams parameters);
+
+        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool SetupDiGetDeviceRegistryProperty(IntPtr devices, ref DeviceInfoData device,
+            uint property, out uint type, [Out] byte[] buffer, uint size, out uint required);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        public static extern SafeRegistryHandle SetupDiOpenDevRegKey(IntPtr devices, ref DeviceInfoData device,
+            uint scope, uint profile, uint keyType, uint access);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        public static extern bool SetupDiDestroyDeviceInfoList(IntPtr devices);
+
+        [DllImport("cfgmgr32.dll")]
+        public static extern uint CM_Get_DevNode_Status(out uint status, out uint problem, uint devInst, uint flags);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "EnumDisplayDevicesW")]
         public static extern bool EnumDisplayDevices(string device, int index, ref DisplayDevice information, int flags);

@@ -34,15 +34,21 @@ public final class QEMUBackend: VMBackend {
     /// QEMU's end of the display's line, until it has been handed over.
     private var screenEnd: Int32
     private let view: GuestScreenView
-    /// The guest takes a new size of display only as it starts: Windows with its 3D driver. See
-    /// ``VirtualMachine/startsAtDisplaySize``.
-    private let startsAtDisplaySize: Bool
+    /// Older Windows 3D drivers take a new size only as they start. The guest confirms whether its
+    /// active driver can resize; until then the view only reports the size that would fit sharply.
+    private let needsDisplayResizeSupport: Bool
+    private var hasDisplayResizeSupport = false
+    private var startsAtDisplaySize: Bool {
+        needsDisplayResizeSupport && configuration.display.automaticallyResizes && !hasDisplayResizeSupport
+    }
     /// The views of parts of the display that are open: windows of the guest's apps on the Mac.
     private let regionViews = NSHashTable<GuestScreenView>.weakObjects()
     /// The views of part of the VNC client's picture that haven't been closed.
     private var openRegions = 0
     /// The guest's pointer as the display last drew it, for a view of part of it that opens later.
     private var cursor: RFBClient.Cursor?
+    /// The pointer the guest hands over for the Mac to draw, for a view of part of it that opens later.
+    private var pointer: GuestCursor?
     /// What waits for the display's next picture. See ``afterDisplayUpdate(_:)``.
     private var afterUpdate: [@MainActor () -> Void] = []
     private var process: QEMUProcess?
@@ -106,10 +112,9 @@ public final class QEMUBackend: VMBackend {
             screenEnd = engine
             view = GuestScreenView(client: screen)
         }
-        startsAtDisplaySize = adapter == .virtioGPU3D && configuration.os.family == .windows
-            && configuration.display.automaticallyResizes
+        needsDisplayResizeSupport = adapter == .virtioGPU3D && configuration.os.family == .windows
         view.capturesSystemKeys = configuration.keyboard.capturesSystemKeys
-        // A size asked for while it runs only has Windows pick another, which the window shows scaled.
+        // Wait for the guest to confirm that its active 3D driver can add modes.
         view.resizesGuest = adapter != .framebuffer && configuration.display.automaticallyResizes && !startsAtDisplaySize
         connectScreen()
     }
@@ -142,10 +147,10 @@ public final class QEMUBackend: VMBackend {
         }
         guard let screen else { return }
         let redraw = Redraw()
-        screen.onResize = { [weak self] picture in
+        screen.onResize = { [weak self] _ in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self else { return }
+                    guard let self, let picture = self.screen?.picture else { return }
                     self.screenViews.forEach { $0.show(picture) }
                     self.eventHandler?(.displayResized(width: picture.width, height: picture.height))
                 }
@@ -156,8 +161,8 @@ public final class QEMUBackend: VMBackend {
             DispatchQueue.main.async {
                 redraw.release()
                 MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.screenViews.forEach { $0.pictureDidChange() }
+                    guard let self, let picture = self.screen?.picture else { return }
+                    self.screenViews.forEach { $0.show(picture) }
                     self.displayDidUpdate()
                 }
             }
@@ -199,6 +204,7 @@ public final class QEMUBackend: VMBackend {
         } else {
             return nil
         }
+        region.show(pointer: pointer)
         region.capturesSystemKeys = view.capturesSystemKeys
         regionViews.add(region)
         return region
@@ -213,6 +219,17 @@ public final class QEMUBackend: VMBackend {
             // Windows switches to it through its agent, as it does for the window. SPICE says itself.
             eventHandler?(.displaySizeRequested(width: width & ~1, height: height & ~1, scale: scale))
         }
+    }
+
+    public func setLiveDisplayResizing(_ enabled: Bool) {
+        guard needsDisplayResizeSupport else { return }
+        hasDisplayResizeSupport = enabled
+        view.resizesGuest = enabled && configuration.display.automaticallyResizes
+    }
+
+    public func showPointer(_ cursor: GuestCursor?) {
+        pointer = cursor
+        screenViews.forEach { $0.show(pointer: cursor) }
     }
 
     public func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void) {
@@ -750,13 +767,15 @@ public final class QEMUBackend: VMBackend {
             return frame
         }
         guard let picture = screen?.picture else { throw MachineDeskError.nothingShown }
-        let surface = picture.surface
-        surface.lock(options: .readOnly, seed: nil)
-        defer { surface.unlock(options: .readOnly, seed: nil) }
-        return ScreenFrame(
-            width: picture.width, height: picture.height, bytesPerRow: surface.bytesPerRow,
-            pixels: Data(bytes: surface.baseAddress, count: surface.bytesPerRow * surface.height)
-        )
+        return withExtendedLifetime(picture) {
+            let surface = picture.surface
+            surface.lock(options: .readOnly, seed: nil)
+            defer { surface.unlock(options: .readOnly, seed: nil) }
+            return ScreenFrame(
+                width: picture.width, height: picture.height, bytesPerRow: surface.bytesPerRow,
+                pixels: Data(bytes: surface.baseAddress, count: surface.bytesPerRow * surface.height)
+            )
+        }
     }
 
     /// How long the guest gets to take in what the mouse did before the next thing.

@@ -208,6 +208,11 @@ public protocol VMBackend: AnyObject {
     /// Asks the guest's display to be this many pixels, at `scale` pixels to a point, as a window that
     /// shows it would.
     func requestDisplaySize(width: Int, height: Int, scale: Double)
+    /// Allows a Windows 3D display to follow its window once the guest confirms driver support.
+    func setLiveDisplayResizing(_ enabled: Bool)
+    /// Draws the pointer the guest hands over instead of the one it draws itself, in the guest's pixels, or
+    /// none: while the guest hides it, or draws it itself. See ``GuestFeature/nativePointer``.
+    func showPointer(_ cursor: GuestCursor?)
     /// Calls `body` once the display has next been drawn anew, or soon after if nothing changes on it:
     /// for something the guest says on another line than its display's, such as where its windows
     /// are, to be shown together with the picture that goes with it.
@@ -250,6 +255,10 @@ extension VMBackend {
     public func makeRegionView() -> (any GuestRegionView)? { nil }
 
     public func requestDisplaySize(width: Int, height: Int, scale: Double) {}
+
+    public func setLiveDisplayResizing(_ enabled: Bool) {}
+
+    public func showPointer(_ cursor: GuestCursor?) {}
 
     public func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void) {
         body()

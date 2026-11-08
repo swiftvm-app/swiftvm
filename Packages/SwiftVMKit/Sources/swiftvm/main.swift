@@ -22,7 +22,8 @@ Usage: swiftvm <command> [arguments]
                                     The machine runs on QEMU, so it can't be suspended or use Rosetta or --nested-virt.
                                     Windows: install the experimental 3D driver (off by default), with Direct3D 11.
                                     Direct3D 12 and OpenGL take D3DMetal, installed in the app's Graphics settings.
-                                    Windows is sharp at the size it starts at; a new window size takes a restart
+                                    Windows follows the window size with current guest tools and the bundled driver.
+                                    Older drivers need a restart for a new size
       --no-gpu                      Linux: use Apple's backend without GPU acceleration, with suspend support.
                                     Windows: a driver for a display only, sharp at any window size but slower
       --compressed                  Linux and Windows: keep the disk compressed, which usually takes less

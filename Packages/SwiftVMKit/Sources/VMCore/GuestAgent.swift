@@ -54,6 +54,9 @@ public final class GuestAgent {
     @ObservationIgnored public var onSetupChange: (@MainActor (GuestSetupStatus) -> Void)?
     /// Called when ``windows`` has changed.
     @ObservationIgnored public var onWindowsChange: (@MainActor () -> Void)?
+    /// Called with the pointer the Mac is to draw instead of the guest, or `nil` to draw none: the guest
+    /// hides it, or draws it itself. Only from an agent that offers ``GuestFeature/nativePointer``.
+    @ObservationIgnored public var onCursor: (@MainActor (GuestCursor?) -> Void)?
     /// How long to wait before trying again after the agent couldn't be reached, or went away.
     @ObservationIgnored public var retryInterval: Duration = .seconds(1)
     /// The same once ``eagerAttempts`` have come to nothing. A guest that is starting up answers within
@@ -73,6 +76,10 @@ public final class GuestAgent {
     @ObservationIgnored private var hasFailedToConnect = false
     /// Whether the app wants the guest's windows, which an agent that connects again is asked for anew.
     @ObservationIgnored private var wantsWindows = false
+    /// Whether the Mac draws the guest's pointer, which an agent that connects again is asked for anew.
+    @ObservationIgnored private var wantsPointer = false
+    /// The pointer last handed over, which an agent that connects again starts without.
+    @ObservationIgnored private var pointer: GuestCursor?
     /// Those waiting to hear whether a point is on a window's title bar, by the number of their question.
     @ObservationIgnored private var hitTests: [Int: CheckedContinuation<Bool, Never>] = [:]
     @ObservationIgnored private var lastHitTest = 0
@@ -190,6 +197,19 @@ public final class GuestAgent {
         return connection.send(line: GuestMessageCoding.line(for: HostMessage.activateWindow(id)))
     }
 
+    /// Has the Mac draw the guest's pointer in place of the guest, so that it moves as the Mac's own does,
+    /// or has the guest draw it again. The agent is asked again whenever it connects, until this is
+    /// turned off. Returns `false` when there is no agent that hands its pointer over.
+    @discardableResult
+    public func handOverPointer(_ enabled: Bool) -> Bool {
+        wantsPointer = enabled
+        if !enabled {
+            forgetPointer()
+        }
+        guard hello?.offers(GuestFeature.nativePointer) == true, let connection else { return false }
+        return connection.send(line: GuestMessageCoding.line(for: HostMessage.pointerHandoff(enabled: enabled)))
+    }
+
     /// Whether a click at this point of the guest's screen, in its pixels, would take hold of the title bar
     /// of the window with this ``GuestWindow/id``: Windows' own, or one that its app draws itself. `false`
     /// also when the agent doesn't answer in time.
@@ -290,6 +310,9 @@ public final class GuestAgent {
                 if wantsWindows, hello.offers(GuestFeature.seamless) {
                     connection.send(.seamless(enabled: true))
                 }
+                if wantsPointer, hello.offers(GuestFeature.nativePointer) {
+                    connection.send(.pointerHandoff(enabled: true))
+                }
                 onConnect?(hello)
             case .addresses(let interfaces):
                 if hasSaidHello, interfaces != self.interfaces {
@@ -316,6 +339,11 @@ public final class GuestAgent {
                 }
             case .hit(let hit):
                 answerHitTest(hit.request, isTitleBar: hit.area == GuestHit.titleBar)
+            case .cursor(let cursor):
+                if hasSaidHello, wantsPointer, offers(GuestFeature.nativePointer), cursor != pointer {
+                    pointer = cursor
+                    onCursor?(cursor)
+                }
             case .result, .unknown:
                 break
             }
@@ -329,6 +357,13 @@ public final class GuestAgent {
         onWindowsChange?()
     }
 
+    /// A guest that is gone, or that has been given its pointer back, draws it itself again.
+    private func forgetPointer() {
+        guard pointer != nil else { return }
+        pointer = nil
+        onCursor?(nil)
+    }
+
     private func forgetAgent() {
         let wasConnected = hello != nil
         if wasConnected {
@@ -338,6 +373,7 @@ public final class GuestAgent {
             setup = nil
         }
         forgetWindows()
+        forgetPointer()
         for request in Array(hitTests.keys) {
             answerHitTest(request, isTitleBar: false)
         }

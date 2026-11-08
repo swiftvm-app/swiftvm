@@ -1,0 +1,388 @@
+Exercise VNC cursor visibility through virtio-gpu commands and the RFB wire.
+Cover AlphaCursor and 32-/16-bit RichCursor replay, hide/show, movement, hidden
+shape updates, renegotiation, reconnect, and equal-sized console switches.
+Check dimensions, hotspots, pixel/channel bytes, masks and zero-sized framing.
+No guest OS, test-only production API, or gtk-vnc dependency is required.
+
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -430,2 +430,7 @@
+   gvnc = dependency('gvnc-1.0', method: 'pkg-config', required: false)
++  if host_os != 'windows' and config_all_devices.has_key('CONFIG_ARM_VIRT') and \
++     config_all_devices.has_key('CONFIG_VIRTIO_PCI') and \
++     config_all_devices.has_key('CONFIG_VIRTIO_GPU')
++    qtests_aarch64 += ['vnc-cursor-test']
++  endif
+   if gvnc.found()
+--- /dev/null
++++ b/tests/qtest/vnc-cursor-test.c
+@@ -0,0 +1,369 @@
++/*
++ * VNC cursor visibility and wire framing regression tests.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "qemu/sockets.h"
++#include "libqtest.h"
++#include "libqos/generic-pcihost.h"
++#include "libqos/virtio-pci.h"
++#include "standard-headers/linux/virtio_config.h"
++#include "standard-headers/linux/virtio_gpu.h"
++
++#define RFB_RICH_CURSOR ((uint32_t)-239)
++#define RFB_ALPHA_CURSOR ((uint32_t)-314)
++#define CURSOR_SIZE 64
++#define CURSOR_BYTES (CURSOR_SIZE * CURSOR_SIZE * 4)
++
++static void gpu_command(QTestState *qts, QGuestAllocator *alloc,
++                        QVirtioDevice *dev, QVirtQueue *vq,
++                        const void *cmd, size_t size, bool response)
++{
++    uint64_t addr = guest_alloc(alloc, size + 24);
++    uint32_t head, used, len;
++    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
++
++    qtest_memwrite(qts, addr, cmd, size);
++    head = qvirtqueue_add(qts, vq, addr, size, false, response);
++    if (response) {
++        qtest_memset(qts, addr + size, 0, 24);
++        qvirtqueue_add(qts, vq, addr + size, 24, true, false);
++    }
++    qvirtqueue_kick(qts, dev, vq, head);
++    while (!qvirtqueue_get_buf(qts, vq, &used, &len)) {
++        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
++        g_usleep(1000);
++    }
++    g_assert_cmpuint(used, ==, head);
++    g_assert_cmpuint(len, ==, response ? 24 : 0);
++    if (response) {
++        g_assert_cmphex(qtest_readl(qts, addr + size), ==,
++                        VIRTIO_GPU_RESP_OK_NODATA);
++    }
++    guest_free(alloc, addr);
++    qvirtqueue_reset_pool(vq);
++}
++
++static void rfb_read(int fd, void *buf, size_t size)
++{
++    uint8_t *bytes = buf;
++
++    while (size) {
++        ssize_t len = recv(fd, bytes, size, 0);
++
++        if (len < 0 && errno == EINTR) {
++            continue;
++        }
++        g_assert_cmpint(len, >, 0);
++        bytes += len;
++        size -= len;
++    }
++}
++
++static void rfb_discard(int fd, size_t size)
++{
++    uint8_t buf[4096];
++
++    while (size) {
++        size_t len = MIN(size, sizeof(buf));
++
++        rfb_read(fd, buf, len);
++        size -= len;
++    }
++}
++
++static void rfb_encodings(int fd, uint32_t encoding)
++{
++    uint8_t buf[12] = { 2, 0, 0, 2 };
++
++    stl_be_p(buf + 4, encoding);
++    g_assert_cmpint(send(fd, buf, sizeof(buf), 0), ==, sizeof(buf));
++}
++
++static void rfb_switch_console(int fd, unsigned int index)
++{
++    uint32_t keys[] = { 0xffe3, 0xffe9, '1' + index };
++    uint8_t buf[8] = { 4, 1 };
++
++    /* Ctrl-Alt-number is handled by VNC, without guest input devices. */
++    for (unsigned int i = 0; i < ARRAY_SIZE(keys); i++) {
++        stl_be_p(buf + 4, keys[i]);
++        g_assert_cmpint(send(fd, buf, sizeof(buf), 0), ==, sizeof(buf));
++    }
++    buf[1] = 0;
++    for (unsigned int i = 0; i < ARRAY_SIZE(keys); i++) {
++        stl_be_p(buf + 4, keys[i]);
++        g_assert_cmpint(send(fd, buf, sizeof(buf), 0), ==, sizeof(buf));
++    }
++}
++
++static int rfb_connect(struct sockaddr_un *addr, uint32_t encoding, int bpp)
++{
++    struct timeval timeout = { .tv_sec = 10 };
++    const char version[] = "RFB 003.003\n";
++    const uint8_t shared = 1;
++    uint8_t buf[24];
++    /* Explicit little-endian RGB565 or XRGB8888 for RichCursor. */
++    uint8_t format[20] = { 0, 0, 0, 0, bpp, bpp, 0, 1 };
++    int fd = qemu_socket(AF_UNIX, SOCK_STREAM, 0);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
++                              &timeout, sizeof(timeout)), ==, 0);
++    g_assert_cmpint(connect(fd, (struct sockaddr *)addr, sizeof(*addr)), ==, 0);
++    rfb_read(fd, buf, 12);
++    g_assert_cmpmem(buf, 4, "RFB ", 4);
++    g_assert_cmpint(send(fd, version, 12, 0), ==, 12);
++    rfb_read(fd, buf, 4);
++    g_assert_cmpuint(ldl_be_p(buf), ==, 1);
++    g_assert_cmpint(send(fd, &shared, 1, 0), ==, 1);
++    rfb_read(fd, buf, 24);
++    rfb_discard(fd, ldl_be_p(buf + 20));
++    stw_be_p(format + 8, bpp == 16 ? 31 : 255);
++    stw_be_p(format + 10, bpp == 16 ? 63 : 255);
++    stw_be_p(format + 12, bpp == 16 ? 31 : 255);
++    format[14] = bpp == 16 ? 11 : 16;
++    format[15] = bpp == 16 ? 5 : 8;
++    g_assert_cmpint(send(fd, format, sizeof(format), 0), ==, sizeof(format));
++    rfb_encodings(fd, encoding);
++    return fd;
++}
++
++/* A forced raw update fences earlier cursor notifications on this stream. */
++static void rfb_fence(int fd, uint32_t encoding, int bpp,
++                      unsigned int expected, bool visible, int hot_x, int hot_y)
++{
++    const uint8_t request[] = { 3, 0, 0, 0, 0, 0, 0, 1, 0, 1 };
++    uint8_t buf[16];
++    unsigned int cursors = 0;
++    bool last_visible = false;
++    bool raw = false;
++
++    g_assert_cmpint(send(fd, request, sizeof(request), 0), ==, sizeof(request));
++    do {
++        uint16_t rects;
++
++        rfb_read(fd, buf, 4);
++        g_assert_cmpuint(buf[0], ==, 0);
++        rects = lduw_be_p(buf + 2);
++        g_assert_cmpuint(rects, >, 0);
++        for (uint16_t i = 0; i < rects; i++) {
++            uint16_t width, height;
++            uint32_t enc;
++
++            rfb_read(fd, buf, 12);
++            width = lduw_be_p(buf + 4);
++            height = lduw_be_p(buf + 6);
++            enc = ldl_be_p(buf + 8);
++            if (enc == 0) {
++                rfb_discard(fd, (size_t)width * height * (bpp / 8));
++                raw = true;
++                continue;
++            }
++            g_assert_cmphex(enc, ==, encoding);
++            cursors++;
++            last_visible = width != 0;
++            g_assert_cmpuint(width, ==, last_visible ? CURSOR_SIZE : 0);
++            g_assert_cmpuint(height, ==, width);
++            g_assert_cmpuint(lduw_be_p(buf), ==, last_visible ? hot_x : 0);
++            g_assert_cmpuint(lduw_be_p(buf + 2), ==,
++                             last_visible ? hot_y : 0);
++            if (enc == RFB_ALPHA_CURSOR) {
++                rfb_read(fd, buf, 4);
++                g_assert_cmpuint(ldl_be_p(buf), ==, 0); /* Raw subencoding. */
++            }
++            for (unsigned int p = 0; p < width * height; p++) {
++                int bytes = enc == RFB_ALPHA_CURSOR ? 4 : bpp / 8;
++
++                rfb_read(fd, buf, bytes);
++                if (enc == RFB_ALPHA_CURSOR) {
++                    /* QEMU's existing wire format: native ARGB words. */
++                    uint32_t pixel = 0x80402010;
++
++                    g_assert_cmpmem(buf, 4, &pixel, 4);
++                } else if (bpp == 16) {
++                    g_assert_cmphex(lduw_le_p(buf), ==, 0x4102);
++                } else {
++                    g_assert_cmphex(ldl_le_p(buf), ==, 0x00402010);
++                }
++            }
++            if (enc == RFB_RICH_CURSOR) {
++                for (unsigned int p = 0; p < DIV_ROUND_UP(width, 8) * height;
++                     p++) {
++                    rfb_read(fd, buf, 1);
++                    g_assert_cmphex(buf[0], ==, 0xff);
++                }
++            }
++        }
++    } while (!raw);
++    g_assert_cmpuint(cursors, ==, expected);
++    if (expected) {
++        g_assert_cmpint(last_visible, ==, visible);
++    }
++}
++
++static void test_cursor(gconstpointer opaque)
++{
++    uint32_t encoding = GPOINTER_TO_UINT(opaque) == 0 ?
++                        RFB_ALPHA_CURSOR : RFB_RICH_CURSOR;
++    int bpp = GPOINTER_TO_UINT(opaque) == 2 ? 16 : 32;
++    char tmpdir[] = "/tmp/vnc-cursor-XXXXXX";
++    struct sockaddr_un addr = { .sun_family = AF_UNIX };
++    QTestState *qts;
++    QGuestAllocator alloc;
++    QGenericPCIBus bus = { 0 };
++    QVirtioPCIDevice pci;
++    QPCIAddress address = { .devfn = QPCI_DEVFN(1, 0) };
++    QVirtQueue *ctrl, *cursor;
++    uint64_t backing;
++    uint32_t pixels[CURSOR_SIZE * CURSOR_SIZE];
++    int fd;
++    struct virtio_gpu_resource_create_2d create = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
++        .resource_id = cpu_to_le32(1),
++        .format = cpu_to_le32(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM),
++        .width = cpu_to_le32(CURSOR_SIZE),
++        .height = cpu_to_le32(CURSOR_SIZE),
++    };
++    struct {
++        struct virtio_gpu_resource_attach_backing cmd;
++        struct virtio_gpu_mem_entry entry;
++    } attach = {
++        .cmd.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
++        .cmd.resource_id = cpu_to_le32(1),
++        .cmd.nr_entries = cpu_to_le32(1),
++        .entry.length = cpu_to_le32(CURSOR_BYTES),
++    };
++    struct virtio_gpu_transfer_to_host_2d transfer = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
++        .r.width = cpu_to_le32(CURSOR_SIZE),
++        .r.height = cpu_to_le32(CURSOR_SIZE),
++        .resource_id = cpu_to_le32(1),
++    };
++    struct virtio_gpu_update_cursor update = {
++        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_UPDATE_CURSOR),
++        .resource_id = cpu_to_le32(1),
++        .hot_x = cpu_to_le32(3),
++        .hot_y = cpu_to_le32(7),
++    };
++
++    g_assert_nonnull(g_mkdtemp(tmpdir));
++    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/vnc", tmpdir);
++    qts = qtest_initf("-machine virt -cpu max -m 128M -nodefaults "
++                      "-device virtio-gpu-pci,addr=01.0,max_outputs=2 "
++                      "-vnc unix:%s", addr.sun_path);
++    alloc_init(&alloc, ALLOC_LEAK_ASSERT, 0x40000000, 0x48000000, 4096);
++    qpci_init_generic(&bus, qts, &alloc, false);
++    virtio_pci_init(&pci, &bus.bus, &address);
++    qvirtio_pci_start_hw(&pci.obj);
++    qvirtio_set_features(&pci.vdev,
++        qvirtio_get_features(&pci.vdev) & (1ULL << VIRTIO_F_VERSION_1));
++    ctrl = qvirtqueue_setup(&pci.vdev, &alloc, 0);
++    cursor = qvirtqueue_setup(&pci.vdev, &alloc, 1);
++    qvirtio_set_driver_ok(&pci.vdev);
++
++    fd = rfb_connect(&addr, encoding, bpp);
++    rfb_fence(fd, encoding, bpp, 1, false, 0, 0);
++    close(fd);
++
++    backing = guest_alloc(&alloc, CURSOR_BYTES);
++    for (unsigned int i = 0; i < ARRAY_SIZE(pixels); i++) {
++        pixels[i] = cpu_to_le32(0x80402010);
++    }
++    qtest_memwrite(qts, backing, pixels, sizeof(pixels));
++    attach.entry.addr = cpu_to_le64(backing);
++    gpu_command(qts, &alloc, &pci.vdev, ctrl, &create, sizeof(create), true);
++    gpu_command(qts, &alloc, &pci.vdev, ctrl, &attach, sizeof(attach), true);
++    gpu_command(qts, &alloc, &pci.vdev, ctrl, &transfer,
++                sizeof(transfer), true);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++
++    /* Replay a shape defined before connection, including hotspot and bytes. */
++    fd = rfb_connect(&addr, encoding, bpp);
++    rfb_fence(fd, encoding, bpp, 1, true, 3, 7);
++    update.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_MOVE_CURSOR);
++    update.pos.x = cpu_to_le32(40);
++    update.pos.y = cpu_to_le32(50);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 0, true, 3, 7);
++
++    g_test_message("Hide, hidden replay, reconnect, and restore");
++    /* MOVE hides without redefining the cached image, then restores it. */
++    update.resource_id = 0;
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 1, false, 3, 7);
++    rfb_encodings(fd, encoding);
++    rfb_fence(fd, encoding, bpp, 1, false, 0, 0);
++    close(fd);
++    fd = rfb_connect(&addr, encoding, bpp);
++    rfb_fence(fd, encoding, bpp, 1, false, 0, 0);
++    update.resource_id = cpu_to_le32(1);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 1, true, 3, 7);
++
++    /* UPDATE with resource zero defines the old shape before hiding it. */
++    update.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_UPDATE_CURSOR);
++    update.resource_id = 0;
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 2, false, 3, 7);
++    update.hot_x = cpu_to_le32(9);
++    update.hot_y = cpu_to_le32(11);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 1, false, 0, 0);
++    update.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_MOVE_CURSOR);
++    update.resource_id = cpu_to_le32(1);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 1, true, 9, 11);
++    rfb_encodings(fd, encoding);
++    rfb_fence(fd, encoding, bpp, 1, true, 9, 11);
++
++    g_test_message("Switch between equal-sized consoles with distinct cursors");
++    /* A console without a shape must clear the preceding console's cursor. */
++    rfb_switch_console(fd, 1);
++    rfb_fence(fd, encoding, bpp, 1, false, 0, 0);
++    rfb_switch_console(fd, 0);
++    rfb_fence(fd, encoding, bpp, 2, true, 9, 11);
++
++    /* Define and hide a second head while the first head is being displayed. */
++    update.pos.scanout_id = cpu_to_le32(1);
++    update.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_UPDATE_CURSOR);
++    update.hot_x = cpu_to_le32(13);
++    update.hot_y = cpu_to_le32(17);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    update.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_MOVE_CURSOR);
++    update.resource_id = 0;
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 0, true, 9, 11);
++    rfb_switch_console(fd, 1);
++    rfb_fence(fd, encoding, bpp, 2, false, 0, 0);
++    update.resource_id = cpu_to_le32(1);
++    gpu_command(qts, &alloc, &pci.vdev, cursor, &update, sizeof(update), false);
++    rfb_fence(fd, encoding, bpp, 1, true, 13, 17);
++    rfb_switch_console(fd, 0);
++    rfb_fence(fd, encoding, bpp, 2, true, 9, 11);
++
++    close(fd);
++    qvirtio_reset(&pci.vdev);
++    qvirtqueue_cleanup(pci.vdev.bus, cursor, &alloc);
++    qvirtqueue_cleanup(pci.vdev.bus, ctrl, &alloc);
++    qvirtio_pci_destructor(&pci.obj);
++    guest_free(&alloc, backing);
++    alloc_destroy(&alloc);
++    qtest_quit(qts);
++    unlink(addr.sun_path);
++    rmdir(tmpdir);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_data_func("/vnc/cursor/alpha", GUINT_TO_POINTER(0), test_cursor);
++    qtest_add_data_func("/vnc/cursor/rich", GUINT_TO_POINTER(1), test_cursor);
++    qtest_add_data_func("/vnc/cursor/rich-rgb565", GUINT_TO_POINTER(2),
++                       test_cursor);
++    return g_test_run();
++}

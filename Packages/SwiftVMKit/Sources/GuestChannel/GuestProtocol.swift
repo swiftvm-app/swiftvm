@@ -57,6 +57,12 @@ public enum GuestFeature {
     /// For desktops that don't take a new size from the display itself.
     public static let displaySize = "display-size"
     public static let acceleratedDisplay = "accelerated-display"
+    /// The active Windows 3D driver can add a new target mode while the machine is running.
+    public static let liveDisplayResize = "live-display-resize"
+    /// Hands the pointer to the Mac to draw: the guest stops drawing it itself, and says what it is with
+    /// ``AgentMessage/cursor(_:)``, so that it moves as the Mac's own does. Windows guests on QEMU, whose
+    /// display drivers have no pointer of their own the Mac could move.
+    public static let nativePointer = "native-pointer"
     /// Shows the guest's windows one by one on the Mac: reports them with ``AgentMessage/windows(_:)``
     /// while asked to with ``HostMessage/seamless(enabled:)``, brings one forward on
     /// ``HostMessage/activateWindow(_:)``, says what is under a point with ``HostMessage/hitTest(_:)``,
@@ -371,6 +377,41 @@ public struct GuestHit: Codable, Sendable, Hashable {
     }
 }
 
+/// The pointer a guest hands to the Mac to draw, as the guest's system has it: its own shape, at the size
+/// the guest's pixels have on the Mac.
+public struct GuestCursor: Codable, Sendable, Hashable {
+    public var width: Int
+    public var height: Int
+    /// The pixel of the shape that the pointer acts at, from its top left corner.
+    public var hotspotX: Int
+    public var hotspotY: Int
+    /// Premultiplied `BGRA`, four bytes a pixel, row by row from the top, as Windows keeps alpha cursors.
+    public var pixels: Data
+
+    public init(width: Int, height: Int, hotspotX: Int, hotspotY: Int, pixels: Data) {
+        self.width = width
+        self.height = height
+        self.hotspotX = hotspotX
+        self.hotspotY = hotspotY
+        self.pixels = pixels
+    }
+
+    /// The largest shape handed over, so its pixels fit in one message. Larger cursors stay guest-drawn.
+    public static let maximumSide = 128
+
+    /// Whether this is something that can be drawn: a guest can say anything, and a shape that doesn't
+    /// match its pixels would be read past its end.
+    public var isDrawable: Bool {
+        width > 0 && height > 0 && width <= Self.maximumSide && height <= Self.maximumSide
+            && pixels.count == width * height * 4
+    }
+
+    /// The hotspot within the shape, which a guest may put anywhere.
+    public var clampedHotspot: (x: Int, y: Int) {
+        (min(max(hotspotX, 0), width - 1), min(max(hotspotY, 0), height - 1))
+    }
+}
+
 /// The agent's answer to a request.
 public struct GuestRequestResult: Codable, Sendable, Hashable {
     /// The `id` of the request this answers.
@@ -407,6 +448,10 @@ public enum AgentMessage: Sendable, Hashable {
     case windows(GuestWindowList)
     /// What is at a point that the app asked about with ``HostMessage/hitTest(_:)``.
     case hit(GuestHit)
+    /// The pointer the Mac is to draw, or `nil` to draw none: the guest hides it, or draws it itself, as
+    /// on a secure desktop. Only from an agent that offers ``GuestFeature/nativePointer``, and only while
+    /// the guest has handed it over with ``HostMessage/pointerHandoff(enabled:)``.
+    case cursor(GuestCursor?)
     /// A kind of message this build doesn't know. It is ignored.
     case unknown(type: String)
 }
@@ -442,6 +487,10 @@ public enum HostMessage: Sendable, Hashable {
     /// Say what is at a point of the screen with ``AgentMessage/hit(_:)``. Only to an agent that offers
     /// ``GuestFeature/seamless``.
     case hitTest(GuestHitTest)
+    /// Have the guest stop drawing the pointer itself, so that the Mac draws what the agent says instead,
+    /// at the speed of the Mac's own: `true` to hand it over, `false` to have the guest draw it again.
+    /// Only to an agent that offers ``GuestFeature/nativePointer``.
+    case pointerHandoff(enabled: Bool)
     /// Move the window with this ``GuestWindow/id`` so that its top left corner, without its shadow, is
     /// at this point of the screen. Only to an agent that offers ``GuestFeature/seamless``.
     case moveWindow(Int64, x: Int, y: Int)
@@ -496,6 +545,9 @@ extension AgentMessage: Codable {
             self = .windows(try GuestWindowList(from: decoder))
         case "hit":
             self = .hit(try GuestHit(from: decoder))
+        case "cursor":
+            // A shape, or none: the fields of one are all there or it isn't a shape this build can draw.
+            self = .cursor(try? GuestCursor(from: decoder))
         default:
             self = .unknown(type: type)
         }
@@ -527,6 +579,9 @@ extension AgentMessage: Codable {
         case .hit(let hit):
             try container.encode("hit", forKey: .type)
             try hit.encode(to: encoder)
+        case .cursor(let cursor):
+            try container.encode("cursor", forKey: .type)
+            try cursor?.encode(to: encoder)
         case .unknown(let type):
             try container.encode(type, forKey: .type)
         }
@@ -573,6 +628,8 @@ extension HostMessage: Codable {
             self = .activateWindow(try container.decode(Int64.self, forKey: .window))
         case "hit-test":
             self = .hitTest(try GuestHitTest(from: decoder))
+        case "pointer-handoff":
+            self = .pointerHandoff(enabled: try container.decode(Bool.self, forKey: .enabled))
         case "move-window":
             self = .moveWindow(
                 try container.decode(Int64.self, forKey: .window),
@@ -636,6 +693,9 @@ extension HostMessage: Codable {
         case .hitTest(let test):
             try container.encode("hit-test", forKey: .type)
             try test.encode(to: encoder)
+        case .pointerHandoff(let enabled):
+            try container.encode("pointer-handoff", forKey: .type)
+            try container.encode(enabled, forKey: .enabled)
         case .moveWindow(let window, let x, let y):
             try container.encode("move-window", forKey: .type)
             try container.encode(window, forKey: .window)
@@ -659,7 +719,9 @@ extension HostMessage {
     public var requestID: Int? {
         switch self {
         case .setClock(let id, _), .mountSharedFolders(let id, _, _, _), .shutDown(let id), .setTimeZone(let id, _): id
-        case .hello, .clipboard, .displaySize, .seamless, .activateWindow, .hitTest, .moveWindow, .resizeWindow, .unknown: nil
+        case .hello, .clipboard, .displaySize, .seamless, .activateWindow, .hitTest, .pointerHandoff,
+             .moveWindow, .resizeWindow, .unknown:
+            nil
         }
     }
 }

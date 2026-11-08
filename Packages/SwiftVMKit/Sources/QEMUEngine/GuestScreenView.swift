@@ -1,4 +1,5 @@
 import AppKit
+import GuestChannel
 import QuartzCore
 import VMCore
 
@@ -38,7 +39,14 @@ public final class GuestScreenView: NSView, GuestRegionView {
     var onFittingSize: ((DisplayPixels) -> Void)?
 
     private var picture: RFBClient.Picture?
+    private var isClosed = false
     private var guestCursor: RFBClient.Cursor?
+    /// The pointer the guest hands over for the Mac to draw, in its pixels: one its own display driver
+    /// can't move at the Mac's speed. `nil` while the guest draws it itself, or hides it.
+    private var guestPointer: GuestCursor?
+    /// The last handed-over shape made into a cursor, and at what scale, so that one that hasn't changed
+    /// isn't made again: resizing asks for it at every step.
+    private var pointerCursor: (pointer: GuestCursor, scale: CGFloat, cursor: NSCursor)?
     private var cursor: NSCursor
     private var buttons: RFBClient.Buttons = []
     /// The PC keys that are down, by their scancode, to let go of when the view loses the keyboard.
@@ -89,34 +97,30 @@ public final class GuestScreenView: NSView, GuestRegionView {
     }
 
     public func close() {
+        isClosed = true
         releaseEverything()
         onClose?()
         onClose = nil
         onRegionChange = nil
-        picture = nil
-        applyPicture()
+        withExtendedLifetime(picture) {
+            picture = nil
+            applyPicture()
+        }
     }
 
     // MARK: The picture
 
-    /// The display has a new picture, of a new size.
+    /// A completed picture. Keep it alive while the layer can still show it.
     func show(_ picture: RFBClient.Picture) {
-        self.picture = picture
-        displaySize = CGSize(width: picture.width, height: picture.height)
-        applyPicture()
-        updateCursor()
-    }
-
-    /// Part of the picture has changed.
-    func pictureDidChange() {
-        guard let picture, let layer else { return }
-        // The surface was written to where it is. A layer only looks again when it is given its
-        // contents anew.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.contents = nil
-        layer.contents = picture.surface
-        CATransaction.commit()
+        guard !isClosed else { return }
+        let size = CGSize(width: picture.width, height: picture.height)
+        let resized = displaySize != size
+        withExtendedLifetime(self.picture) {
+            self.picture = picture
+            displaySize = size
+            applyPicture()
+        }
+        if resized { updateCursor() }
     }
 
     func show(cursor: RFBClient.Cursor?) {
@@ -124,12 +128,25 @@ public final class GuestScreenView: NSView, GuestRegionView {
         updateCursor()
     }
 
+    /// Shows the pointer the guest hands over in place of its own, or none while it draws or hides it
+    /// itself. The Mac moves it as it moves its own, at the speed of the pointer the user has.
+    func show(pointer: GuestCursor?) {
+        guard pointer != guestPointer else { return }
+        guestPointer = pointer
+        updateCursor()
+    }
+
     private func updateCursor() {
-        if let guestCursor, let picture {
+        if let guestPointer {
+            // A shape the Mac can't draw is no pointer at all, rather than a stale one.
+            if pointerCursor?.pointer != guestPointer || pointerCursor?.scale != shownScale {
+                pointerCursor = Self.cursor(for: guestPointer, scale: shownScale).map { (guestPointer, shownScale, $0) }
+            }
+            cursor = pointerCursor?.cursor ?? Self.hiddenCursor
+        } else if let guestCursor {
             // The guest's cursor and hotspot are in pixels too. On Retina, two guest pixels usually
             // occupy one point of the view, just as they do in the rest of the picture.
-            let width = region?.width ?? CGFloat(picture.width)
-            let scale = width > 0 ? shownRect.width / width : 1
+            let scale = shownScale
             let size = NSSize(width: CGFloat(guestCursor.image.width) * scale, height: CGFloat(guestCursor.image.height) * scale)
             let image = NSImage(cgImage: guestCursor.image, size: size)
             let hotSpot = NSPoint(x: guestCursor.hotSpot.x * scale, y: guestCursor.hotSpot.y * scale)
@@ -138,6 +155,29 @@ public final class GuestScreenView: NSView, GuestRegionView {
             cursor = Self.hiddenCursor
         }
         window?.invalidateCursorRects(for: self)
+    }
+
+    /// The shape as a cursor of the size its pixels take in the view. Windows' alpha cursors already have
+    /// their alpha worked into their colours, as Core Graphics expects.
+    static func cursor(for pointer: GuestCursor, scale: CGFloat) -> NSCursor? {
+        guard pointer.isDrawable else { return nil }
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        guard let provider = CGDataProvider(data: pointer.pixels as CFData),
+              let image = CGImage(
+                  width: pointer.width, height: pointer.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                  bytesPerRow: pointer.width * 4,
+                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(), bitmapInfo: info,
+                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+              )
+        else { return nil }
+        let (x, y) = pointer.clampedHotspot
+        return NSCursor(
+            image: NSImage(
+                cgImage: image,
+                size: NSSize(width: CGFloat(pointer.width) * scale, height: CGFloat(pointer.height) * scale)
+            ),
+            hotSpot: NSPoint(x: CGFloat(x) * scale, y: CGFloat(y) * scale)
+        )
     }
 
     override public func resetCursorRects() {
@@ -200,7 +240,11 @@ public final class GuestScreenView: NSView, GuestRegionView {
 
     // MARK: Places
 
-    func show(size: CGSize) { displaySize = size }
+    func show(size: CGSize) {
+        let resized = displaySize != size
+        displaySize = size
+        if resized { updateCursor() }
+    }
 
     /// The rectangle in the view that the shown part of the picture takes up, letterboxed as the layer
     /// shows it.
@@ -210,6 +254,12 @@ public final class GuestScreenView: NSView, GuestRegionView {
         let scale = min(bounds.width / shown.width, bounds.height / shown.height)
         let size = CGSize(width: shown.width * scale, height: shown.height * scale)
         return CGRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
+    }
+
+    /// How many points of the view a pixel of the shown part of the picture takes up.
+    private var shownScale: CGFloat {
+        let pixels = region?.width ?? (picture.map { CGFloat($0.width) } ?? displaySize.width)
+        return pixels > 0 ? shownRect.width / pixels : 1
     }
 
     /// The pixel of the display under a point of the view. The view counts up from its bottom, and the

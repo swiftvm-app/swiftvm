@@ -1,0 +1,21 @@
+Allow large 2D framebuffer backing attachments alongside pending commands.
+A 5120x2880 32-bit framebuffer has 14,400 4 KiB pages. With one memory
+entry per page, its attachment needs 57 entry-list descriptors plus the
+request and response: 59 descriptors. A 64-entry control queue cannot
+hold that request with even three other two-descriptor commands pending.
+Match the existing 3D queue capacity; leave cursor queues unchanged.
+
+This increases the migratable device's maximum queue size. State saved
+with a queue larger than 64 cannot be loaded by the older 64-entry build.
+
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -241,7 +241,7 @@
+         virtio_add_queue(vdev, 256, ctrl_cb);
+         virtio_add_queue(vdev, 16, cursor_cb);
+     } else {
+-        virtio_add_queue(vdev, 64, ctrl_cb);
++        virtio_add_queue(vdev, 256, ctrl_cb);
+         virtio_add_queue(vdev, 16, cursor_cb);
+     }
+ 

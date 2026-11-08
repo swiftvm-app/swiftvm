@@ -110,6 +110,19 @@ private final class EventLog: @unchecked Sendable {
     }
 }
 
+private final class CursorLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [RFBClient.Cursor?] = []
+
+    func add(_ cursor: RFBClient.Cursor?) {
+        lock.withLock { list.append(cursor) }
+    }
+
+    var events: [RFBClient.Cursor?] {
+        lock.withLock { list }
+    }
+}
+
 @Suite struct RFBClientTests {
     /// Plays a VNC server through its hello, for a display of `width` by `height`.
     private func greet(_ server: Peer, width: UInt16, height: UInt16) {
@@ -144,12 +157,154 @@ private final class EventLog: @unchecked Sendable {
     private func pixels(in picture: RFBClient.Picture) -> Data {
         let surface = picture.surface
         surface.lock(options: .readOnly, seed: nil)
-        defer { surface.unlock(options: .readOnly, seed: nil) }
+        defer {
+            surface.unlock(options: .readOnly, seed: nil)
+            withExtendedLifetime(picture) {}
+        }
         var data = Data()
         for row in 0..<picture.height {
             data.append(Data(bytes: surface.baseAddress + row * surface.bytesPerRow, count: picture.width * 4))
         }
         return data
+    }
+
+    private func connectedDisplay(width: UInt16, height: UInt16) async throws -> (RFBClient, Peer) {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        let greeted = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            self.greet(server, width: width, height: height)
+            greeted.signal()
+        }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        try #require(await Task.detached { waitBriefly(for: greeted) }.value)
+        #expect(server.read(10).prefix(2) == Data([3, 0]))
+        return (client, server)
+    }
+
+    @Test func keepsRetainedPicturesUnchangedAfterPublication() async throws {
+        let (client, server) = try await connectedDisplay(width: 2, height: 2)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        let first = Data(repeating: 17, count: 16)
+        server.write(Data([0, 0, 0, 1]) + rectangle(width: 2, height: 2, payload: first))
+        try #require(await Task.detached { waitBriefly(for: updated) }.value)
+        let retained = try #require(client.picture)
+        let second = Data(repeating: 29, count: 16)
+        server.write(Data([0, 0, 0, 1]) + rectangle(width: 2, height: 2, payload: second))
+        try #require(await Task.detached { waitBriefly(for: updated) }.value)
+        #expect(pixels(in: retained) == first)
+        #expect(pixels(in: try #require(client.picture)) == second)
+    }
+
+    @Test func recyclesSurfacesWithMissedDamageAndOverlappingCopies() async throws {
+        let (client, server) = try await connectedDisplay(width: 4, height: 3)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        var expected = Data(count: 48)
+        var surfaces = Set<ObjectIdentifier>()
+        for index in 0..<9 {
+            let x = index % 4, y = index / 4
+            let pixel = Data(repeating: UInt8(index + 1), count: 4)
+            expected.replaceSubrange(((y * 4 + x) * 4)..<((y * 4 + x + 1) * 4), with: pixel)
+            server.write(Data([0, 0, 0, 1]) + rectangle(x: UInt16(x), y: UInt16(y), width: 1, height: 1, payload: pixel))
+            try #require(await Task.detached { waitBriefly(for: updated) }.value)
+            let picture = try #require(client.picture)
+            surfaces.insert(ObjectIdentifier(picture.surface))
+            #expect(pixels(in: picture) == expected)
+        }
+        #expect(surfaces.count == 3)
+        let beforeCopy = expected
+        for row in 1..<3 {
+            expected.replaceSubrange(((row * 4 + 1) * 4)..<((row * 4 + 4) * 4), with: beforeCopy[((row - 1) * 16)..<((row - 1) * 16 + 12)])
+        }
+        server.write(Data([0, 0, 0, 1]) + rectangle(x: 1, y: 1, width: 3, height: 2, encoding: .copyRect, payload: Data([0, 0, 0, 0])))
+        try #require(await Task.detached { waitBriefly(for: updated) }.value)
+        #expect(pixels(in: try #require(client.picture)) == expected)
+        // Copy upwards and leftwards too, after another pool slot has missed the previous copy.
+        let beforeSecondCopy = expected
+        for row in 0..<2 {
+            expected.replaceSubrange((row * 16)..<(row * 16 + 12), with: beforeSecondCopy[((row + 1) * 16 + 4)..<((row + 2) * 16)])
+        }
+        server.write(Data([0, 0, 0, 1]) + rectangle(width: 3, height: 2, encoding: .copyRect, payload: Data([0, 1, 0, 1])))
+        try #require(await Task.detached { waitBriefly(for: updated) }.value)
+        #expect(pixels(in: try #require(client.picture)) == expected)
+    }
+
+    @Test func heldPicturesApplyBackpressureWithoutBlockingInputOrClose() async throws {
+        let (client, server) = try await connectedDisplay(width: 1, height: 1)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        let closed = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        client.onClose = { closed.signal() }
+        var retained = [try #require(client.picture)]
+        for value: UInt8 in [1, 2] {
+            server.write(Data([0, 0, 0, 1]) + rectangle(width: 1, height: 1, payload: Data(repeating: value, count: 4)))
+            try #require(await Task.detached { waitBriefly(for: updated) }.value)
+            retained.append(try #require(client.picture))
+            _ = server.read(10)
+        }
+        server.write(Data([0, 0, 0, 1]) + rectangle(width: 1, height: 1, payload: Data(repeating: 3, count: 4)))
+        #expect(server.read(10).prefix(2) == Data([3, 1]))
+        #expect(await Task.detached { !waitBriefly(for: updated, timeout: .now() + 0.05) }.value)
+        client.key(0xCD, down: true)
+        #expect(server.read(12) == Data([255, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xCD]))
+        #expect(pixels(in: retained[0]) == Data(count: 4))
+        #expect(pixels(in: retained[1]) == Data(repeating: 1, count: 4))
+        retained.removeFirst()
+        try #require(await Task.detached { waitBriefly(for: updated) }.value)
+        retained.append(try #require(client.picture))
+        #expect(pixels(in: retained[2]) == Data(repeating: 3, count: 4))
+        server.write(Data([0, 0, 0, 1]) + rectangle(width: 1, height: 1, payload: Data(repeating: 4, count: 4)))
+        _ = server.read(10)
+        #expect(await Task.detached { !waitBriefly(for: updated, timeout: .now() + 0.05) }.value)
+        client.close()
+        #expect(await Task.detached { waitBriefly(for: closed) }.value)
+        #expect(!waitBriefly(for: updated, timeout: .now()))
+        #expect(pixels(in: retained[2]) == Data(repeating: 3, count: 4))
+    }
+
+    @Test func resizingStartsANewPoolWhileOldPicturesAreHeld() async throws {
+        let (client, server) = try await connectedDisplay(width: 1, height: 1)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        var retained = [try #require(client.picture)]
+        for value: UInt8 in [1, 2] {
+            server.write(Data([0, 0, 0, 1]) + rectangle(width: 1, height: 1, payload: Data(repeating: value, count: 4)))
+            try #require(await Task.detached { waitBriefly(for: updated) }.value)
+            retained.append(try #require(client.picture))
+        }
+        let pixel = Data([3, 4, 5, 0])
+        server.write(Data([0, 0, 0, 2]) + rectangle(width: 2, height: 1, encoding: .desktopSize)
+            + rectangle(x: 1, width: 1, height: 1, payload: pixel))
+        try #require(await Task.detached { waitBriefly(for: updated) }.value)
+        #expect(pixels(in: try #require(client.picture)) == Data(count: 4) + pixel)
+        for (index, picture) in retained.enumerated() {
+            #expect(picture.width == 1 && picture.height == 1)
+            #expect(pixels(in: picture) == Data(repeating: UInt8(index), count: 4))
+        }
+    }
+
+    @Test func neverPublishesCompleteRectanglesFromATruncatedFrame() async throws {
+        let (client, server) = try await connectedDisplay(width: 2, height: 1)
+        defer { client.close() }
+        let updated = DispatchSemaphore(value: 0)
+        let closed = DispatchSemaphore(value: 0)
+        client.onUpdate = { _ in updated.signal() }
+        client.onClose = { closed.signal() }
+        let retained = try #require(client.picture)
+        server.write(Data([0, 0, 0, 2]) + rectangle(width: 1, height: 1, payload: Data([1, 2, 3, 0]))
+            + rectangle(x: 1, width: 1, height: 1, payload: Data([4, 5])))
+        shutdown(server.descriptor, SHUT_WR)
+        try #require(await Task.detached { waitBriefly(for: closed) }.value)
+        #expect(!waitBriefly(for: updated, timeout: .now()))
+        #expect(pixels(in: retained) == Data(count: 8))
+        #expect(pixels(in: try #require(client.picture)) == Data(count: 8))
     }
 
     @Test func requestsNextFrameWhileReceivingFragmentedPixels() async throws {
@@ -266,6 +421,45 @@ private final class EventLog: @unchecked Sendable {
         client.close()
     }
 
+    @Test(arguments: [RFBClient.Encoding.alphaCursor, .cursor])
+    func keepsCursorPayloadsAndVisibilityInStepWithTheFramebuffer(_ encoding: RFBClient.Encoding) async throws {
+        let (app, server) = Peer.pair()
+        let client = RFBClient(descriptor: app)
+        defer { client.close() }
+        let cursors = CursorLog()
+        let updated = DispatchSemaphore(value: 0)
+        client.onCursor = { cursors.add($0) }
+        client.onUpdate = { _ in updated.signal() }
+        // QEMU sends native ARGB words, blue first on this Mac, even for AlphaCursor. The alpha
+        // payload is not in the client's negotiated pixel format and has no separate mask.
+        let alpha = encoding == .alphaCursor
+        let prefix = alpha ? Data([0, 0, 0, 0]) : Data()
+        let shape = prefix + Data([160, 64, 32, 128, 9, 8, 7, 0]) + (alpha ? Data() : Data([0x80]))
+        let thread = Thread {
+            self.greet(server, width: 8, height: 8)
+            _ = server.read(10)
+            var update = Data([0, 0, 0, 4])
+            update += self.rectangle(x: 1, width: 2, height: 1, encoding: encoding, payload: shape)
+            update += self.rectangle(width: 0, height: 0, encoding: encoding, payload: prefix)
+            update += self.rectangle(x: 1, width: 2, height: 1, encoding: encoding, payload: shape)
+            update += self.rectangle(width: 1, height: 1, payload: Data([1, 2, 3, 0]))
+            server.write(update)
+        }
+        thread.start()
+        try await Task.detached { try client.open() }.value
+        #expect(await Task.detached { waitBriefly(for: updated) }.value)
+        let events = cursors.events
+        try #require(events.count == 3)
+        #expect(events[1] == nil)
+        for index in [0, 2] {
+            let cursor = try #require(events[index])
+            #expect(cursor.hotSpot == CGPoint(x: 1, y: 0))
+            let bytes = try #require(cursor.image.dataProvider?.data) as Data
+            #expect(bytes == (alpha ? Data([80, 32, 16, 128, 0, 0, 0, 0]) : Data([160, 64, 32, 255, 0, 0, 0, 0])))
+        }
+        #expect(pixels(in: try #require(client.picture)).prefix(4) == Data([1, 2, 3, 0]))
+    }
+
     @Test func pressesKeysByTheirPlaceOnAPCKeyboard() async throws {
         let (app, server) = Peer.pair()
         let client = RFBClient(descriptor: app)
@@ -354,7 +548,7 @@ private final class EventLog: @unchecked Sendable {
         let client = RFBClient(descriptor: app)
         defer { client.close() }
         client.requestSize(width: 2048, height: 1152)
-        client.requestSize(width: 2560, height: 1440)
+        client.requestSize(width: 5120, height: 2880)
         // The handshake is read to its end before this test reads on: `open` can return while the
         // encodings it sent are still unread, and they would be read here instead.
         let greeted = DispatchSemaphore(value: 0)
@@ -385,12 +579,12 @@ private final class EventLog: @unchecked Sendable {
         server.write(desktopSize(width: 640, height: 480))
         // The next update is asked for before this one is read, and then the latest size goes out.
         #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 2, 128, 1, 224]))
-        #expect(server.read(24) == Data([251, 0, 10, 0, 5, 160, 1, 0, 0, 0, 0, 42, 0, 0, 0, 0, 10, 0, 5, 160, 0, 0, 0, 0]))
-        server.write(desktopSize(width: 2560, height: 1440))
+        #expect(server.read(24) == Data([251, 0, 20, 0, 11, 64, 1, 0, 0, 0, 0, 42, 0, 0, 0, 0, 20, 0, 11, 64, 0, 0, 0, 0]))
+        server.write(desktopSize(width: 5120, height: 2880))
         #expect(server.read(10) == Data([3, 1, 0, 0, 0, 0, 2, 128, 1, 224]))
         // Acknowledging a size must not send it again and start a resize feedback loop: what follows is
         // a request for the whole picture at the new size.
-        #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 10, 0, 5, 160]))
+        #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 20, 0, 11, 64]))
     }
 }
 

@@ -700,6 +700,7 @@ struct DisplayResolution: Hashable, Identifiable {
 
     private static let standard = [
         (1280, 800), (1440, 900), (1680, 1050), (1920, 1080), (1920, 1200), (2560, 1440), (2560, 1600), (3840, 2160),
+        (5120, 2880),
     ].map { DisplayResolution(width: $0.0, height: $0.1) }
 
     /// A macOS guest draws at twice the size on a display as dense as its own, so its sizes are larger.
