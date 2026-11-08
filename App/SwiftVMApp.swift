@@ -45,6 +45,7 @@ struct SwiftVMApp: App {
                 .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
+        .settingsWindow()
 
         WindowGroup(id: WindowID.snapshots, for: UUID.self) { $machineID in
             SnapshotsWindow(machineID: machineID)
@@ -68,6 +69,7 @@ struct SwiftVMApp: App {
                 .background(WindowSpaceBehavior())
         }
         .auxiliaryWindow()
+        .settingsWindow()
     }
 }
 
@@ -79,5 +81,11 @@ private extension Scene {
             .restorationBehavior(.disabled)
             .defaultLaunchBehavior(.suppressed)
             .commandsRemoved()
+    }
+
+    /// A window of settings, laid out as System Settings is: its sidebar goes up to the top, with the
+    /// window's buttons on it, and no title bar runs across the sidebar and the page.
+    func settingsWindow() -> some Scene {
+        windowStyle(.hiddenTitleBar)
     }
 }
