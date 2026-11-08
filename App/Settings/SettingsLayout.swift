@@ -53,7 +53,9 @@ struct SettingsSplitView<Pane: SettingsPane, SidebarHeader: View, Detail: View>:
                 .frame(width: Self.sidebarWidth)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .background(.primary.opacity(0.035))
+            // Up to the top, as the sidebar's colour goes: in a window, past the buttons on it.
             Divider()
+                .ignoresSafeArea(edges: .top)
             detail(selection)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Each pane starts at its top, rather than where the last one was scrolled to.
