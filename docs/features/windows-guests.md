@@ -116,21 +116,30 @@ then.
 
 ### Window size and sharpness
 
-The 3D driver gives Windows a new screen size only when Windows starts. So that
-the picture is sharp, Windows starts at the size of the machine's window in your
-Mac's pixels, at the matching scale (200% on a Retina display). A new machine's
-window is sized to fit your screen, and the window takes Windows' size whenever
-it opens.
+SwiftVM requests the window's size in your Mac's pixels and sets Windows' scale
+separately (200% on a Retina display), rather than enlarging a smaller desktop.
+Machines without graphics acceleration use the display-only driver's resizing.
+With graphics acceleration, guest tools 1.9 or newer enable live resizing once
+they confirm the bundled v0.5 3D driver is active. After updating the tools,
+shut Windows down and start it again to finish any driver changes.
 
-If you resize the window, Windows keeps its size and the window shows it
-scaled. **Sharpen Display** then appears in the window's title bar:
+Older or unrecognized 3D drivers keep the pixel-for-pixel startup size instead.
+A new machine's window is sized to fit your screen, and the window takes Windows'
+size when it opens. If you resize that window, Windows keeps its size and the
+window shows it scaled. **Sharpen Display** then appears in the title bar:
 
 - **Restart at This Size** restarts Windows, which then starts at the window's
   new size. Open apps close, as in any restart.
 - **Return to Sharp Size** gives the window back the size Windows is sharp at.
 
-Machines without graphics acceleration use the display-only driver, which
-follows the window as you resize it and stays sharp at any size.
+For a fixed 5K desktop, turn off **Resize to Fit Window** in the machine's
+Hardware settings and choose **5120 × 2880** under **Resolution**, then restart
+Windows. SwiftVM requests that resolution and its configured scale with either
+driver. A fixed desktop is only shown pixel for pixel when the window's backing
+size matches it; shrinking the window still scales the picture.
+
+After updating SwiftVM, shut Windows down and start it again before switching
+to 5K. Resuming a suspended machine keeps its previous display-device settings.
 
 The experimental graphics stack can produce missing text, rendering failures,
 hangs, Windows crashes, or unexpected VM stops, including during shutdown. Use
@@ -150,6 +159,24 @@ switch.
 
 Accelerated machines cannot suspend or save running graphics state. Shut
 Windows down before taking a snapshot or quitting SwiftVM.
+
+## Mouse pointer
+
+SwiftVM draws Windows' pointer as the Mac's own: the same shapes Windows uses,
+including the text, hand and resize pointers that apps give it, moved by the Mac
+at the speed of the Mac's pointer. Windows' display drivers draw the pointer into
+the desktop themselves, a frame or more behind the mouse, so the pointer in a
+machine without current guest tools can feel less immediate, with or without
+graphics acceleration.
+
+Windows keeps drawing the pointer on its lock screen and on the questions it
+asks over the desktop, such as the one an elevation asks. Cursors that invert the
+background, or are larger than 128 × 128 guest pixels, also stay Windows-drawn
+rather than losing their appearance or accessibility size. These fallback
+pointers still move with Windows' display updates.
+
+The guest tools draw it this way from 1.10 on. **Install Guest Tools…** updates
+them in a machine that has older ones.
 
 ## Seamless Mode
 
@@ -182,9 +209,10 @@ unavailable, choose **Install Guest Tools…** to
 
 - Windows' screen is laid over the area between the menu bar and the Dock on
   your Mac's main display. Its taskbar is not shown, and maximized windows fill
-  that area. Without graphics acceleration, Windows' screen is resized to fit
-  that area exactly. With it, Windows keeps the size it started at, and its
-  windows are scaled to fit; see [Window size and sharpness](#window-size-and-sharpness).
+  that area. Windows' screen is resized to fit that area when its driver supports
+  live resizing. With an older or unrecognized 3D driver, Windows keeps its
+  startup size and its windows are scaled to fit; see
+  [Window size and sharpness](#window-size-and-sharpness).
 - Windows appear on the main display only, and stay in the area between the
   menu bar and the Dock.
 - Menus and the Start menu close when you switch to another app.

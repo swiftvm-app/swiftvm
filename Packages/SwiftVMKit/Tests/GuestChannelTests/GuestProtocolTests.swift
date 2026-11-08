@@ -164,7 +164,7 @@ import Testing
             .clipboard(text: "Über “quotes”\n\ttab \u{1F642} \\ / \u{0}"), .unknown(type: "later"),
             .seamless(enabled: true), .activateWindow(.max),
             .hitTest(GuestHitTest(request: 7, window: 197_402, x: -8, y: 40)), .moveWindow(197_402, x: -300, y: 12),
-            .resizeWindow(197_402, x: -300, y: 12, width: 1200, height: 800),
+            .resizeWindow(197_402, x: -300, y: 12, width: 1200, height: 800), .pointerHandoff(enabled: true),
         ]
         for message in fromTheApp {
             #expect(GuestMessageCoding.message(HostMessage.self, from: GuestMessageCoding.line(for: message).dropLast()) == message)
@@ -181,6 +181,8 @@ import Testing
                 GuestWindow(id: 9, title: "Start", x: 600, y: 200, width: 700, height: 800, isPopup: true, isMaximized: true, isResizable: true, isFocused: true),
             ])),
             .hit(GuestHit(request: 7, area: GuestHit.titleBar)),
+            .cursor(nil),
+            .cursor(GuestCursor(width: 2, height: 1, hotspotX: 1, hotspotY: 0, pixels: Data([0, 0, 255, 255, 255, 255, 255, 128]))),
         ]
         for message in fromTheAgent {
             let line = GuestMessageCoding.line(for: message)
@@ -196,6 +198,38 @@ import Testing
         #expect(text(.activateWindow(197_402)) == #"{"type":"activate-window","window":197402}"# + "\n")
         #expect(HostMessage.seamless(enabled: false).requestID == nil)
         #expect(HostMessage.activateWindow(5).requestID == nil)
+    }
+
+    @Test func handsThePointerOverWithoutRequests() {
+        // What the agent for Windows parses. A handoff neither waits for an answer nor carries an id.
+        #expect(text(.pointerHandoff(enabled: true)) == #"{"enabled":true,"type":"pointer-handoff"}"# + "\n")
+        #expect(text(.pointerHandoff(enabled: false)) == #"{"enabled":false,"type":"pointer-handoff"}"# + "\n")
+        #expect(HostMessage.pointerHandoff(enabled: true).requestID == nil)
+    }
+
+    @Test func readsThePointerAGuestHandsOver() throws {
+        // A shape as the agent for Windows sends one: premultiplied BGRA.
+        let shape = decode(##"{"type":"cursor","width":2,"height":1,"hotspotX":1,"hotspotY":0,"pixels":"AAD///8A//8="}"##)
+        #expect(shape == .cursor(GuestCursor(
+            width: 2, height: 1, hotspotX: 1, hotspotY: 0, pixels: Data([0, 0, 255, 255, 255, 0, 255, 255])
+        )))
+        // No pointer to draw: the guest hides it, or draws it itself.
+        #expect(decode(##"{"type":"cursor"}"##) == .cursor(nil))
+        // A shape without one of its parts is no shape, and no pointer is drawn rather than half of one.
+        #expect(decode(##"{"type":"cursor","width":2,"height":1,"hotspotX":0,"hotspotY":0}"##) == .cursor(nil))
+        // A shape whose pixels aren't its size is drawn as nothing either.
+        #expect(!GuestCursor(width: 4, height: 4, hotspotX: 0, hotspotY: 0, pixels: Data([0, 0, 0, 255])).isDrawable)
+        #expect(GuestCursor(width: 2, height: 1, hotspotX: 1, hotspotY: 0, pixels: Data(repeating: 0, count: 8)).isDrawable)
+        let side = GuestCursor.maximumSide
+        let largest = GuestCursor(width: side, height: side, hotspotX: 0, hotspotY: 0, pixels: Data(repeating: 255, count: side * side * 4))
+        let line = GuestMessageCoding.line(for: AgentMessage.cursor(largest))
+        #expect(line.count <= GuestProtocol.maximumLineLength)
+        var framer = GuestMessageFramer()
+        #expect(try framer.receive(line).count == 1)
+        #expect(decode(String(decoding: line, as: UTF8.self)) == .cursor(largest))
+        #expect(!GuestCursor(width: Int.max, height: Int.max, hotspotX: 0, hotspotY: 0, pixels: Data()).isDrawable)
+        // A hotspot a guest puts outside its shape is brought inside.
+        #expect(GuestCursor(width: 4, height: 4, hotspotX: 9, hotspotY: -2, pixels: Data(repeating: 0, count: 64)).clampedHotspot == (3, 0))
     }
 
     @Test func readsTheGuestsWindows() throws {

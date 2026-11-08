@@ -1,0 +1,200 @@
+Exercise live RAMFB surface resizing through the VNC wire protocol.
+Check 5K landscape, portrait, and shrinking back to Full HD without gtk-vnc,
+guest firmware, or a running guest OS; this also runs on Darwin.
+
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -420,6 +420,10 @@
+ }
+ 
+ if vnc.found()
++  if host_os != 'windows' and config_all_devices.has_key('CONFIG_ARM_VIRT') and \
++     config_all_devices.has_key('CONFIG_FW_CFG_DMA')
++    qtests_aarch64 += ['vnc-resolution-test']
++  endif
+   gvnc = dependency('gvnc-1.0', method: 'pkg-config', required: false)
+   if gvnc.found()
+     qtests += {'vnc-display-test': [gvnc, keymap_targets]}
+--- /dev/null
++++ b/tests/qtest/vnc-resolution-test.c
+@@ -0,0 +1,180 @@
++/*
++ * VNC framebuffer resize regression tests.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "qemu/sockets.h"
++#include "standard-headers/linux/qemu_fw_cfg.h"
++#include "libqtest.h"
++
++#define FW_CFG_BASE 0x09020000
++#define DMA_ADDR 0x40000000
++#define CFG_ADDR 0x40001000
++#define FB_ADDR 0x41000000
++#define RFB_DESKTOP_SIZE ((uint32_t)-223)
++
++static void fw_cfg_read(QTestState *qts, void *buf, size_t size)
++{
++    uint8_t *bytes = buf;
++
++    for (size_t i = 0; i < size; i++) {
++        bytes[i] = qtest_readb(qts, FW_CFG_BASE);
++    }
++}
++
++static uint16_t ramfb_selector(QTestState *qts)
++{
++    uint32_t count;
++    struct fw_cfg_file file;
++
++    qtest_writew(qts, FW_CFG_BASE + 8, cpu_to_be16(FW_CFG_FILE_DIR));
++    fw_cfg_read(qts, &count, sizeof(count));
++    for (uint32_t i = 0; i < be32_to_cpu(count); i++) {
++        fw_cfg_read(qts, &file, sizeof(file));
++        if (!strcmp(file.name, "etc/ramfb")) {
++            return be16_to_cpu(file.select);
++        }
++    }
++    g_assert_not_reached();
++}
++
++static void ramfb_resize(QTestState *qts, uint32_t selector,
++                         uint32_t width, uint32_t height)
++{
++    uint8_t cfg[28] = { 0 };
++    struct fw_cfg_dma_access dma = {
++        .control = cpu_to_be32((selector << 16) | FW_CFG_DMA_CTL_SELECT |
++                               FW_CFG_DMA_CTL_WRITE),
++        .length = cpu_to_be32(sizeof(cfg)),
++        .address = cpu_to_be64(CFG_ADDR),
++    };
++
++    stq_be_p(cfg, FB_ADDR);
++    stl_be_p(cfg + 8, 0x34325258); /* DRM_FORMAT_XRGB8888 */
++    stl_be_p(cfg + 16, width);
++    stl_be_p(cfg + 20, height);
++    stl_be_p(cfg + 24, width * 4);
++    qtest_memwrite(qts, CFG_ADDR, cfg, sizeof(cfg));
++    qtest_memwrite(qts, DMA_ADDR, &dma, sizeof(dma));
++    qtest_writeq(qts, FW_CFG_BASE + 16, cpu_to_be64(DMA_ADDR));
++    g_assert_cmphex(qtest_readl(qts, DMA_ADDR), ==, 0);
++}
++
++static void rfb_read(int fd, void *buf, size_t size)
++{
++    uint8_t *bytes = buf;
++
++    while (size) {
++        ssize_t len = recv(fd, bytes, size, 0);
++
++        if (len < 0 && errno == EINTR) {
++            continue;
++        }
++        g_assert_cmpint(len, >, 0);
++        bytes += len;
++        size -= len;
++    }
++}
++
++static void rfb_discard(int fd, size_t size)
++{
++    uint8_t buf[4096];
++
++    while (size) {
++        size_t len = MIN(size, sizeof(buf));
++
++        rfb_read(fd, buf, len);
++        size -= len;
++    }
++}
++
++static void rfb_handshake(int fd)
++{
++    uint8_t buf[24];
++    const char version[] = "RFB 003.003\n";
++    const uint8_t shared = 1;
++    /* Negotiate DesktopSize and raw; use the first update as a fence. */
++    const uint8_t encodings[] = { 2, 0, 0, 2, 255, 255, 255, 33, 0, 0, 0, 0 };
++    const uint8_t request[] = { 3, 0, 0, 0, 0, 0, 0, 1, 0, 1 };
++    uint16_t rects;
++
++    rfb_read(fd, buf, 12);
++    g_assert_cmpmem(buf, 4, "RFB ", 4);
++    g_assert_cmpint(send(fd, version, 12, 0), ==, 12);
++    rfb_read(fd, buf, 4);
++    g_assert_cmpuint(ldl_be_p(buf), ==, 1); /* No authentication. */
++    g_assert_cmpint(send(fd, &shared, 1, 0), ==, 1);
++    rfb_read(fd, buf, 24);
++    g_assert_cmpuint(buf[4], ==, 32);
++    rfb_discard(fd, ldl_be_p(buf + 20));
++    g_assert_cmpint(send(fd, encodings, sizeof(encodings), 0), ==,
++                    sizeof(encodings));
++    g_assert_cmpint(send(fd, request, sizeof(request), 0), ==, sizeof(request));
++    rfb_read(fd, buf, 4);
++    g_assert_cmpuint(buf[0], ==, 0);
++    rects = lduw_be_p(buf + 2);
++    g_assert_cmpuint(rects, >, 0);
++    for (uint16_t i = 0; i < rects; i++) {
++        rfb_read(fd, buf, 12);
++        g_assert_cmpuint(ldl_be_p(buf + 8), ==, 0);
++        rfb_discard(fd, (size_t)lduw_be_p(buf + 4) * lduw_be_p(buf + 6) * 4);
++    }
++}
++
++static void rfb_expect_resize(int fd, uint16_t width, uint16_t height)
++{
++    uint8_t buf[16];
++
++    rfb_read(fd, buf, sizeof(buf));
++    g_assert_cmpuint(buf[0], ==, 0); /* FramebufferUpdate */
++    g_assert_cmpuint(lduw_be_p(buf + 2), ==, 1);
++    g_assert_cmphex((uint32_t)ldl_be_p(buf + 12), ==, RFB_DESKTOP_SIZE);
++    g_assert_cmpuint(lduw_be_p(buf + 8), ==, width);
++    g_assert_cmpuint(lduw_be_p(buf + 10), ==, height);
++}
++
++static void test_vnc_5k_resize(void)
++{
++    char tmpdir[] = "/tmp/vnc-resolution-XXXXXX";
++    struct sockaddr_un addr = { .sun_family = AF_UNIX };
++    struct timeval timeout = { .tv_sec = 10 };
++    QTestState *qts;
++    uint16_t selector;
++    int fd;
++
++    g_assert_nonnull(g_mkdtemp(tmpdir));
++    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/vnc", tmpdir);
++    qts = qtest_initf("-machine virt -cpu max -m 128M -device ramfb "
++                      "-vnc unix:%s", addr.sun_path);
++    selector = ramfb_selector(qts);
++    fd = qemu_socket(AF_UNIX, SOCK_STREAM, 0);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
++                              &timeout, sizeof(timeout)), ==, 0);
++    g_assert_cmpint(connect(fd, (struct sockaddr *)&addr, sizeof(addr)), ==, 0);
++    rfb_handshake(fd);
++
++    /* Exercise the live surface switch, not just advertised device limits. */
++    ramfb_resize(qts, selector, 5120, 2880);
++    rfb_expect_resize(fd, 5120, 2880);
++    ramfb_resize(qts, selector, 2880, 5120);
++    rfb_expect_resize(fd, 2880, 5120);
++    ramfb_resize(qts, selector, 1920, 1080);
++    rfb_expect_resize(fd, 1920, 1080);
++
++    close(fd);
++    qtest_quit(qts);
++    unlink(addr.sun_path);
++    rmdir(tmpdir);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/vnc/resize/5k", test_vnc_5k_resize);
++    return g_test_run();
++}

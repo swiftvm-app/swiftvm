@@ -9,16 +9,103 @@ import IOSurface
 /// (`add_client`) and speaks the remote framebuffer protocol (RFB, RFC 6143) over the other, so no other
 /// program on the Mac can look at the screen.
 ///
-/// The picture is kept in an `IOSurface` that the protocol's updates are written straight into, and a
-/// layer shows the surface as it is: whatever shows the display, all of it or one window's part of it,
-/// shows the same surface. Keys go by where they are on a PC keyboard (QEMU's extended key event), so
-/// that what they type is up to the guest's own keyboard layout.
+/// Updates are decoded privately, then complete pictures are published through a small `IOSurface`
+/// pool. A picture stays unchanged while a view or the compositor uses it, whether showing the whole
+/// display or one window's part of it. Keys go by where they are on a PC keyboard (QEMU's extended key
+/// event), so that what they type is up to the guest's own keyboard layout.
 public final class RFBClient: @unchecked Sendable {
     /// The picture, and what it is the picture of.
     public struct Picture: @unchecked Sendable {
-        public var surface: IOSurface
-        public var width: Int
-        public var height: Int
+        public let surface: IOSurface
+        public let width: Int
+        public let height: Int
+        private let lease: SurfaceLease
+
+        init(surface: IOSurface, width: Int, height: Int) {
+            self.surface = surface
+            self.width = width
+            self.height = height
+            lease = SurfaceLease(surface)
+        }
+    }
+
+    /// Covers the time before Core Animation commits the surface too. Copies of a picture share one
+    /// lease, and the pool holds only surfaces, so releasing the last picture makes its slot reusable.
+    private final class SurfaceLease {
+        let surface: IOSurface
+
+        init(_ surface: IOSurface) {
+            self.surface = surface
+            surface.incrementUseCount()
+        }
+
+        deinit {
+            surface.decrementUseCount()
+        }
+    }
+
+    /// Used only by the reader. Each slot remembers all damage since it last held a complete picture.
+    private final class FrameBuffer {
+        let width: Int
+        let height: Int
+        var pixels: [UInt8]
+        var slots: [(surface: IOSurface, damage: CGRect)] = []
+        var nextSlot = 0
+
+        var bounds: CGRect { CGRect(x: 0, y: 0, width: width, height: height) }
+
+        init(width: Int, height: Int) throws {
+            guard width > 0, height > 0 else { throw RFBError.malformed }
+            self.width = width
+            self.height = height
+            pixels = [UInt8](repeating: 0, count: width * height * 4)
+            let properties: [IOSurfacePropertyKey: any Sendable] = [
+                .width: width, .height: height, .bytesPerElement: 4, .pixelFormat: RFBClient.pixelFormat,
+            ]
+            for _ in 0..<3 {
+                guard let surface = IOSurface(properties: properties) else { throw RFBError.malformed }
+                slots.append((surface, bounds))
+            }
+        }
+
+        func record(_ damage: CGRect) {
+            let clipped = damage.intersection(bounds)
+            guard !clipped.isEmpty else { return }
+            for index in slots.indices {
+                slots[index].damage = slots[index].damage.union(clipped)
+            }
+        }
+
+        func nextPicture() throws -> Picture? {
+            for offset in slots.indices {
+                let index = (nextSlot + offset) % slots.count
+                let slot = slots[index]
+                guard !slot.surface.isInUse else { continue }
+                let surface = slot.surface
+                let damage = slot.damage
+                if !damage.isEmpty {
+                    guard surface.lock(options: [], seed: nil) == 0 else { throw RFBError.malformed }
+                    defer { surface.unlock(options: [], seed: nil) }
+                    let x = Int(damage.minX), y = Int(damage.minY)
+                    let rowLength = Int(damage.width) * 4
+                    pixels.withUnsafeBytes { bytes in
+                        let source = bytes.baseAddress! + (y * width + x) * 4
+                        let destination = surface.baseAddress + y * surface.bytesPerRow + x * 4
+                        if rowLength == width * 4, rowLength == surface.bytesPerRow {
+                            destination.copyMemory(from: source, byteCount: rowLength * Int(damage.height))
+                        } else {
+                            for row in 0..<Int(damage.height) {
+                                (destination + row * surface.bytesPerRow).copyMemory(from: source + row * width * 4, byteCount: rowLength)
+                            }
+                        }
+                    }
+                }
+                slots[index].damage = .null
+                nextSlot = (index + 1) % slots.count
+                return Picture(surface: surface, width: width, height: height)
+            }
+            return nil
+        }
     }
 
     /// The pointer as the guest draws it, when the guest has one of its own that it hands over rather
@@ -90,8 +177,8 @@ public final class RFBClient: @unchecked Sendable {
     /// The latest window size, including one requested before the server advertised resizing.
     private var requestedSize: (width: UInt16, height: UInt16)?
     private var buttons: UInt8 = 0
-    /// Reused by the reader thread. Socket reads must finish before locking the displayed surface.
-    private var rectanglePixels = [UInt8]()
+    /// The reader's backing pixels and this size's bounded pool, never the pixels a view is using.
+    private var framebuffer: FrameBuffer?
 
     /// Takes over `descriptor`, one end of a connected socket pair whose other end QEMU has.
     public init(descriptor: Int32) {
@@ -289,17 +376,25 @@ public final class RFBClient: @unchecked Sendable {
     }
 
     private func makePicture(width: Int, height: Int) throws {
-        guard width > 0, height > 0 else { throw RFBError.malformed }
-        let properties: [IOSurfacePropertyKey: any Sendable] = [
-            .width: width, .height: height, .bytesPerElement: 4, .pixelFormat: Self.pixelFormat,
-        ]
-        guard let surface = IOSurface(properties: properties) else { throw RFBError.malformed }
-        let picture = Picture(surface: surface, width: width, height: height)
+        framebuffer = try FrameBuffer(width: width, height: height)
+        let picture = try completedPicture(changed: .null)
         let handler = lock.withLock { () -> (@Sendable (Picture) -> Void)? in
             currentPicture = picture
             return resizeHandler
         }
         handler?(picture)
+    }
+
+    private func completedPicture(changed: CGRect) throws -> Picture {
+        guard let framebuffer else { throw RFBError.malformed }
+        framebuffer.record(changed)
+        while !lock.withLock({ isClosed }) {
+            if let picture = try framebuffer.nextPicture() { return picture }
+            // All three frames are still in use. Keep memory bounded without holding the input
+            // writer up, and check for close even if the views never release their pictures.
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        throw RFBError.disconnected
     }
 
     /// `BGRA`, as the pixel format above lays the bytes out.
@@ -340,7 +435,7 @@ public final class RFBClient: @unchecked Sendable {
     private func readUpdate(_ reader: Reader) throws {
         _ = try reader.byte()
         let count = Int(try reader.uint16())
-        let previousPicture = picture
+        let previousSize = framebuffer.map { ($0.width, $0.height) }
         // Keep one update ahead while this one is received. Waiting until its pixels are copied can
         // miss QEMU's next refresh and make it back off even while the guest is drawing continuously.
         requestUpdate(incremental: true)
@@ -399,11 +494,16 @@ public final class RFBClient: @unchecked Sendable {
                 throw RFBError.malformed
             }
         }
-        if !changed.isNull {
-            let handler = lock.withLock { updateHandler }
+        changed = changed.intersection(framebuffer?.bounds ?? .null)
+        if !changed.isEmpty {
+            let picture = try completedPicture(changed: changed)
+            let handler = lock.withLock { () -> (@Sendable (CGRect) -> Void)? in
+                currentPicture = picture
+                return updateHandler
+            }
             handler?(changed)
         }
-        if let picture, picture.width != previousPicture?.width || picture.height != previousPicture?.height {
+        if let framebuffer, framebuffer.width != previousSize?.0 || framebuffer.height != previousSize?.1 {
             // The request above used the old bounds. Fetch the whole new display, including any part
             // outside them; QEMU coalesces this with the pending incremental request.
             requestUpdate(incremental: false)
@@ -413,36 +513,25 @@ public final class RFBClient: @unchecked Sendable {
     private func readRaw(_ reader: Reader, x: Int, y: Int, width: Int, height: Int) throws {
         let rowLength = width * 4
         let byteCount = rowLength * height
-        guard let picture, x + width <= picture.width, y + height <= picture.height else {
+        guard let framebuffer, x + width <= framebuffer.width, y + height <= framebuffer.height else {
             // A rectangle off the picture, as one that was on its way while the size changed may be.
             try reader.skip(byteCount)
             return
         }
         guard byteCount > 0 else { return }
-        if rectanglePixels.count < byteCount {
-            rectanglePixels = [UInt8](repeating: 0, count: byteCount)
-        }
-        try rectanglePixels.withUnsafeMutableBytes { buffer in
-            try reader.read(into: UnsafeMutableRawBufferPointer(rebasing: buffer[..<byteCount]))
-        }
-        if clearsBackdrop {
-            rectanglePixels.withUnsafeMutableBytes { buffer in
-                Self.clearBackdrop(UnsafeMutableRawBufferPointer(rebasing: buffer[..<byteCount]))
-            }
-        }
-        let surface = picture.surface
-        let stride = surface.bytesPerRow
-        surface.lock(options: [], seed: nil)
-        defer { surface.unlock(options: [], seed: nil) }
-        let destination = surface.baseAddress + y * stride + x * 4
-        // Lock once for the rectangle, not once per scanline. Apart from the syscall overhead, each
-        // lock can wait for the compositor that is showing this same surface.
-        rectanglePixels.withUnsafeBytes { pixels in
+        let stride = framebuffer.width * 4
+        let clearing = clearsBackdrop
+        try framebuffer.pixels.withUnsafeMutableBytes { pixels in
+            let destination = pixels.baseAddress! + y * stride + x * 4
             if stride == rowLength {
-                destination.copyMemory(from: pixels.baseAddress!, byteCount: byteCount)
+                let bytes = UnsafeMutableRawBufferPointer(start: destination, count: byteCount)
+                try reader.read(into: bytes)
+                if clearing { Self.clearBackdrop(bytes) }
             } else {
-                for line in 0..<height {
-                    (destination + line * stride).copyMemory(from: pixels.baseAddress! + line * rowLength, byteCount: rowLength)
+                for row in 0..<height {
+                    let bytes = UnsafeMutableRawBufferPointer(start: destination + row * stride, count: rowLength)
+                    try reader.read(into: bytes)
+                    if clearing { Self.clearBackdrop(bytes) }
                 }
             }
         }
@@ -458,19 +547,18 @@ public final class RFBClient: @unchecked Sendable {
     }
 
     private func copy(fromX: Int, fromY: Int, toX: Int, toY: Int, width: Int, height: Int) {
-        guard let picture, fromX + width <= picture.width, fromY + height <= picture.height,
-              toX + width <= picture.width, toY + height <= picture.height
+        guard let framebuffer, fromX + width <= framebuffer.width, fromY + height <= framebuffer.height,
+              toX + width <= framebuffer.width, toY + height <= framebuffer.height
         else { return }
-        let surface = picture.surface
-        surface.lock(options: [], seed: nil)
-        defer { surface.unlock(options: [], seed: nil) }
         // Rows go from the bottom up when the rectangle moves down, so that none is overwritten
-        // before it is copied.
-        let rows = toY > fromY ? Array((0..<height).reversed()) : Array(0..<height)
-        for line in rows {
-            let source = surface.baseAddress + (fromY + line) * surface.bytesPerRow + fromX * 4
-            let destination = surface.baseAddress + (toY + line) * surface.bytesPerRow + toX * 4
-            memmove(destination, source, width * 4)
+        // before it is copied. memmove also handles horizontal overlap within a row.
+        framebuffer.pixels.withUnsafeMutableBytes { pixels in
+            for row in 0..<height {
+                let line = toY > fromY ? height - row - 1 : row
+                let source = pixels.baseAddress! + ((fromY + line) * framebuffer.width + fromX) * 4
+                let destination = pixels.baseAddress! + ((toY + line) * framebuffer.width + toX) * 4
+                memmove(destination, source, width * 4)
+            }
         }
     }
 
@@ -502,7 +590,8 @@ public final class RFBClient: @unchecked Sendable {
         report(cursor: Self.cursor(bgra: image, width: width, height: height, hotSpot: hotSpot))
     }
 
-    /// A pointer with an alpha channel: RGBA, whatever the pixel format.
+    /// QEMU sends its native ARGB cursor words unchanged: BGRA bytes on this Mac, not the RGBA
+    /// specified by AlphaCursor. This is independent of the negotiated framebuffer pixel format.
     private func readAlphaCursor(_ reader: Reader, width: Int, height: Int, hotSpot: CGPoint) throws {
         let encoding = Int32(bitPattern: try reader.uint32())
         guard encoding == Encoding.raw.rawValue else { throw RFBError.malformed }
@@ -515,9 +604,9 @@ public final class RFBClient: @unchecked Sendable {
         var image = pixels
         for index in stride(from: 0, to: image.count, by: 4) {
             let alpha = UInt16(pixels[index + 3])
-            image[index] = UInt8(UInt16(pixels[index + 2]) * alpha / 255)
+            image[index] = UInt8(UInt16(pixels[index]) * alpha / 255)
             image[index + 1] = UInt8(UInt16(pixels[index + 1]) * alpha / 255)
-            image[index + 2] = UInt8(UInt16(pixels[index]) * alpha / 255)
+            image[index + 2] = UInt8(UInt16(pixels[index + 2]) * alpha / 255)
         }
         report(cursor: Self.cursor(bgra: image, width: width, height: height, hotSpot: hotSpot))
     }

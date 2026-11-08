@@ -142,7 +142,7 @@ struct WindowsMachineForm: View {
             Toggle("Graphics acceleration (experimental)", isOn: $settings.acceleratesGraphics)
         } footer: {
             Text(settings.acceleratesGraphics
-                ? "Draws with your Mac's GPU, for smooth 3D and video. Windows is sharp at the size its window opens at; after you resize the window, restart Windows to make it sharp at the new size."
+                ? "Draws with your Mac's GPU, for smooth 3D and video. With current guest tools and the bundled driver, Windows follows the window as you resize it. Older drivers need a restart to make it sharp at a new size."
                 : "Windows is sharp at any window size, and follows the window as you resize it. Graphics are drawn by the processors, so 3D apps and video are slower.")
         }
     }

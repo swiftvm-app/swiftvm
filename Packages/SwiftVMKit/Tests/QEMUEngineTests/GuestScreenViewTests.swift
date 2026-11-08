@@ -1,4 +1,5 @@
 import AppKit
+import GuestChannel
 import IOSurface
 import Testing
 @testable import QEMUEngine
@@ -41,6 +42,25 @@ private final class NoInput: GuestScreenInput, @unchecked Sendable {
         return pixel[0] > 200 && pixel[2] < 60 ? "red" : pixel[2] > 200 && pixel[0] < 60 ? "blue" : "neither"
     }
 
+    @Test func closingReleasesThePictureAndRejectsLaterFrames() throws {
+        let view = GuestScreenView(input: NoInput())
+        let first = try autoreleasepool {
+            let picture = try picture()
+            view.show(picture)
+            return picture.surface
+        }
+        #expect(first.isInUse)
+        view.close()
+        #expect(!first.isInUse)
+        let next = try autoreleasepool {
+            let picture = try picture()
+            view.show(picture)
+            return picture.surface
+        }
+        #expect(!next.isInUse)
+        #expect(view.layer?.contents == nil)
+    }
+
     @Test func aRegionShowsItsOwnPartOfTheDisplay() throws {
         let view = GuestScreenView(input: NoInput())
         view.frame = NSRect(x: 0, y: 0, width: 40, height: 20)
@@ -51,5 +71,23 @@ private final class NoInput: GuestScreenInput, @unchecked Sendable {
         #expect(try shownColor(of: view) == "red")
         view.region = CGRect(x: 0, y: 2, width: 4, height: 2)
         #expect(try shownColor(of: view) == "blue")
+    }
+
+    @Test func aPointerAGuestHandsOverIsTheMacsCursorOfTheShownSize() throws {
+        // Two pixels of a pointer at 2x: an opaque red one, and a white one that is half there.
+        let pointer = GuestCursor(
+            width: 2, height: 1, hotspotX: 1, hotspotY: 0,
+            pixels: Data([0, 0, 255, 255, 128, 128, 128, 128])
+        )
+        let cursor = try #require(GuestScreenView.cursor(for: pointer, scale: 2))
+        #expect(cursor.image.size == NSSize(width: 4, height: 2))
+        #expect(cursor.hotSpot == NSPoint(x: 2, y: 0))
+        // Alpha is already worked in: multiplying again would darken translucent cursor artwork.
+        let image = try #require(cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let data = try #require(image.dataProvider?.data) as Data
+        #expect([UInt8](data) == [0, 0, 255, 255, 128, 128, 128, 128])
+        // A shape that isn't one is no cursor at all.
+        let empty = GuestCursor(width: 2, height: 1, hotspotX: 0, hotspotY: 0, pixels: Data())
+        #expect(GuestScreenView.cursor(for: empty, scale: 1) == nil)
     }
 }
