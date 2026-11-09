@@ -43,11 +43,14 @@ public struct QEMUCommandLine: Sendable {
     public var spiceSocket: URL?
     /// The machine has a TPM, whose emulator is at the other end of ``tpmDescriptor``.
     public var attachesTPM: Bool
+    /// How many frames a second a guest on the GPU draws, which is what the Mac's screen shows
+    /// (``displayRefreshRate(forScreens:)``). Without it the guest is told QEMU's own 75.
+    public var displayRefreshRate: Int?
 
     public init(
         configuration: VMConfiguration, bundle: VMBundle, installation: QEMUInstallation, diskSources: [UUID: DiskSource],
         display: Display, restoresSavedState: Bool = false, usbPorts: [UUID: Int] = [:], spiceSocket: URL? = nil,
-        attachesTPM: Bool = false
+        attachesTPM: Bool = false, displayRefreshRate: Int? = nil
     ) {
         self.configuration = configuration
         self.bundle = bundle
@@ -58,6 +61,7 @@ public struct QEMUCommandLine: Sendable {
         self.usbPorts = usbPorts
         self.spiceSocket = spiceSocket
         self.attachesTPM = attachesTPM
+        self.displayRefreshRate = displayRefreshRate
     }
 
     /// Whether a machine starts with a TPM. One that resumes has the one it was saved with, as QEMU only
@@ -95,6 +99,26 @@ public struct QEMUCommandLine: Sendable {
 
     /// The name the agent's serial port has in the guest, which is how the agent finds it.
     public static let agentPortName = "org.swiftvm.agent"
+
+    // MARK: Refresh rate
+
+    /// The most frames a second a guest is asked for: what a Mac's own screen shows at its fastest.
+    public static let highestDisplayRefreshRate = 120
+
+    /// The frames a second a guest draws on a Mac whose screens show `rates`: as many as the fastest of
+    /// them shows, up to ``highestDisplayRefreshRate``, and 60 on a Mac without a screen. The guest
+    /// keeps it for as long as QEMU runs: Windows' 3D driver reads it once, as it starts.
+    public static func displayRefreshRate(forScreens rates: [Int]) -> Int {
+        guard let fastest = rates.max(), fastest > 0 else { return 60 }
+        return min(fastest, highestDisplayRefreshRate)
+    }
+
+    /// A GPU whose EDID names `rate` frames a second, in mHz, which the guest's display mode and
+    /// Windows' vertical sync follow. QEMU has the property through qemu-virtio-gpu-refresh-rate.patch.
+    static func withRefreshRate(_ rate: Int?, _ gpu: [String: QMPValue]) -> [String: QMPValue] {
+        guard let rate else { return gpu }
+        return gpu.merging(["refresh_rate": .number(Double(rate * 1000))]) { _, new in new }
+    }
 
     // MARK: USB ports
 
@@ -224,18 +248,18 @@ public struct QEMUCommandLine: Sendable {
         case .virtioGPU3D where configuration.os.family == .linux:
             // Linux draws with OpenGL, which virglrenderer replays on the Mac's GPU. Its size follows
             // the window through the guest's own display settings.
-            devices.append([
+            devices.append(Self.withRefreshRate(displayRefreshRate, [
                 "driver": "virtio-gpu-gl-pci", "id": "gpu",
                 "xres": .number(Double(configuration.display.widthInPixels)),
                 "yres": .number(Double(configuration.display.heightInPixels)),
-            ])
+            ]))
         case .virtioGPU3D:
-            devices.append([
+            devices.append(Self.withRefreshRate(displayRefreshRate, [
                 "driver": "virtio-ramfb-gl", "id": "gpu", "hostmem": .number(Double(8 << 30)),
                 "blob": true, "neptune": true,
                 "xres": .number(Double(configuration.display.widthInPixels)),
                 "yres": .number(Double(configuration.display.heightInPixels)),
-            ])
+            ]))
         }
 
         for (index, disk) in configuration.disks.enumerated() {

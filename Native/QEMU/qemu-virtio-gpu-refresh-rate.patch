@@ -1,0 +1,43 @@
+Let a virtio GPU be told its display's refresh rate when it is made.
+The EDID a guest reads carries the rate its display reports, which only the GTK
+display does. SPICE's reports a size and no rate, and the EDID then says QEMU's
+default of 75 Hz. Windows' 3D driver times its vertical sync by that EDID, so a
+guest drew 75 frames a second for a Mac that shows 60 or 120.
+
+refresh_rate is in mHz, as it is for the VGA devices. A display that reports a
+rate of its own still decides.
+
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -67,6 +67,11 @@
+         .refresh_rate = g->req_state[scanout].refresh_rate,
+     };
+
++    /* A display that names no rate of its own, as SPICE's doesn't. */
++    if (!info.refresh_rate) {
++        info.refresh_rate = g->conf.refresh_rate;
++    }
++
+     for (output_idx = 0, node = g->conf.outputs;
+          output_idx <= scanout && node; output_idx++, node = node->next) {
+         if (output_idx == scanout && node->value->name) {
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -134,6 +134,7 @@
+     uint32_t flags;
+     uint32_t xres;
+     uint32_t yres;
++    uint32_t refresh_rate;
+     uint64_t hostmem;
+     VirtIOGPUOutputList *outputs;
+ };
+@@ -181,7 +182,8 @@
+     DEFINE_PROP_BIT("edid", _state, _conf.flags, \
+                     VIRTIO_GPU_FLAG_EDID_ENABLED, true), \
+     DEFINE_PROP_UINT32("xres", _state, _conf.xres, 1280), \
+-    DEFINE_PROP_UINT32("yres", _state, _conf.yres, 800)
++    DEFINE_PROP_UINT32("yres", _state, _conf.yres, 800), \
++    DEFINE_PROP_UINT32("refresh_rate", _state, _conf.refresh_rate, 0)
+
+ typedef struct VGPUDMABuf {
+     QemuDmaBuf *buf;

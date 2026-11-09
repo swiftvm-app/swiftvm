@@ -149,6 +149,24 @@ swift build --package-path Packages/SwiftVMKit --product swiftvm
 Never build `swiftvm` at the repository's root. The file system takes `swiftvm`
 and `SwiftVM` for one name, and the tool would replace the app's program.
 
+## Native display checks
+
+`Tests/Native/SpiceRendererTests.m` checks SPICE renderer invalidation and frame
+completion ordering without a guest, window, or GPU submission. After building
+QEMU so its cached CocoaSpice sources include the current patches, run from the
+repository root:
+
+```bash
+renderer="$PWD/.build/qemu/sources/cocoaspice/Sources/CocoaSpiceRenderer"
+test_binary=$(mktemp -t swiftvm-spice-renderer)
+xcrun clang -fobjc-arc -fmodules -O2 -arch arm64 -mmacosx-version-min=27.0 \
+  -I"$renderer" -I"$renderer/include" \
+  "$renderer/CSMetalRenderer.m" Tests/Native/SpiceRendererTests.m \
+  -framework Foundation -framework AppKit -framework Metal \
+  -framework MetalKit -framework QuartzCore -o "$test_binary" && "$test_binary"
+rm "$test_binary"
+```
+
 ## Layout
 
 | Path | What |
