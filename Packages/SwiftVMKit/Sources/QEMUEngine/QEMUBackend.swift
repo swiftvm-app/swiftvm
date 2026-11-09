@@ -309,7 +309,8 @@ public final class QEMUBackend: VMBackend {
         let commandLine = QEMUCommandLine(
             configuration: configuration, bundle: bundle, installation: installation, diskSources: sources,
             display: adapter == .virtioGPU3D ? .virtioGPU3D : adapter == .virtioGPU ? .virtioGPU : .framebuffer, restoresSavedState: savedState != nil,
-            usbPorts: header?.usbPorts ?? [:], spiceSocket: spice?.socket, attachesTPM: attachesTPM
+            usbPorts: header?.usbPorts ?? [:], spiceSocket: spice?.socket, attachesTPM: attachesTPM,
+            displayRefreshRate: QEMUCommandLine.displayRefreshRate(forScreens: NSScreen.screens.map(\.maximumFramesPerSecond))
         )
         let arguments = try commandLine.arguments()
         usbPorts = try commandLine.startingUSBPorts()

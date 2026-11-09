@@ -128,6 +128,9 @@ through virglrenderer to your Mac's GPU. That changes a few things:
 - The display follows the window at your Mac's full resolution: on a Retina
   display, twice its size in points at a scale of 2. GNOME and KDE Plasma
   follow it through `spice-vdagent`, and Hyprland through the guest tools.
+- The display has your Mac's refresh rate: 120 Hz on a ProMotion display, 60 on
+  most others. The machine takes it when it starts or restarts, from the fastest
+  screen connected to your Mac then, up to 120 Hz.
 - Programs get OpenGL ES 3.0 and OpenGL 2.1, translated to Metal. A program
   that needs a later desktop OpenGL doesn't start with it; started with
   `LIBGL_ALWAYS_SOFTWARE=1` it draws on the machine's processors instead.

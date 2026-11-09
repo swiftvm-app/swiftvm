@@ -141,6 +141,20 @@ size matches it; shrinking the window still scales the picture.
 After updating SwiftVM, shut Windows down and start it again before switching
 to 5K. Resuming a suspended machine keeps its previous display-device settings.
 
+### Refresh rate
+
+With graphics acceleration, Windows draws as many frames a second as your Mac's
+screen shows: 120 on a ProMotion display, 60 on most others. **Settings →
+System → Display → Advanced display** in Windows shows the rate.
+
+Windows takes the rate when it starts or restarts, from the fastest screen
+connected to your Mac then, up to 120 Hz, and keeps it until the next time. A
+machine started with only a 60 Hz screen connected stays at 60 on a ProMotion
+display you connect or open later, until you restart Windows.
+
+This needs the bundled v0.5 3D driver, which guest tools 1.9 or newer install.
+Machines without graphics acceleration draw at up to 60 frames a second.
+
 The experimental graphics stack can produce missing text, rendering failures,
 hangs, Windows crashes, or unexpected VM stops, including during shutdown. Use
 a disposable guest, not a machine you rely on, and keep important files backed

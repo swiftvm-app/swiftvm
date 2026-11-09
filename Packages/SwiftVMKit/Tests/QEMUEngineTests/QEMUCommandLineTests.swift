@@ -210,9 +210,20 @@ import VMCore
         let gpu = try #require(objects("-device", in: arguments).first { $0["id"] as? String == "gpu" })
         #expect(gpu["driver"] as? String == "virtio-ramfb-gl")
         #expect(gpu["neptune"] as? Bool == true && gpu["blob"] as? Bool == true)
+        #expect(gpu["refresh_rate"] == nil)
+        line.displayRefreshRate = 120
+        let fast = try #require(objects("-device", in: try line.arguments()).first { $0["id"] as? String == "gpu" })
+        #expect(fast["refresh_rate"] as? Int == 120_000)
         line.restoresSavedState = true
         #expect(throws: QEMUError.self) { try line.arguments() }
         #expect(values(of: "-machine", in: try commandLine(restoring: true).arguments()) == [QEMUCommandLine.machineType])
+    }
+
+    @Test func aGuestDrawsAsFastAsTheFastestScreenUpToTheLimit() {
+        #expect(QEMUCommandLine.displayRefreshRate(forScreens: [60, 120]) == 120)
+        #expect(QEMUCommandLine.displayRefreshRate(forScreens: [60]) == 60)
+        #expect(QEMUCommandLine.displayRefreshRate(forScreens: [144]) == 120)
+        #expect(QEMUCommandLine.displayRefreshRate(forScreens: []) == 60)
     }
 
     @Test func aRestoredMachineHasEachDriveInThePortItWasSavedIn() throws {
