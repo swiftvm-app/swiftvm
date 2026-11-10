@@ -100,6 +100,10 @@ swiftvm eject web-server data.img
 share unchanged disk blocks. Copies across volumes or on other file systems
 are full copies.
 
+For automation that must avoid an unexpected full copy, use `swiftvm clone <machine> [name] --require-cow`. Every disk and firmware file copied into the new package must be a regular file that supports native copy-on-write cloning, normally on the same APFS volume. Symbolic links refuse because they could leave two machines writing to the same storage. The copy operation itself enforces the requirement; unsupported storage or cross-volume copying fails instead of falling back. The new configuration and machine identity are still written independently, and later guest writes allocate their own blocks. This is not a fixed disk-space limit.
+
+On failure or cancellation, SwiftVM removes the new partial package and leaves the source and any pre-existing destination untouched. Disconnecting the CLI does not cancel the app's copy operation; wait for the command's successful response before treating the clone as finished. Without `--require-cow`, ordinary clone behavior still permits full copies and preserves sparse disk data. The option applies to cloning machines; template and snapshot commands retain their existing behavior. An older app that does not support required cloning rejects its control command.
+
 A machine that [moves to another disk](virtual-machines.md#where-machines-are-kept)
 takes its snapshots along. They are copied in full then, since two disks can't
 share anything.
