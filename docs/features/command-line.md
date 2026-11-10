@@ -89,6 +89,21 @@ apply. `--disk` then grows the disk beyond the template's.
 | `force-stop <machine>` | Stop immediately |
 | `discard-state <machine>` | Throw away a suspended machine's saved state |
 
+For automation that needs one graceful attempt with no escalation:
+
+```bash
+swiftvm stop web-server --once --via agent --timeout 30
+swiftvm stop web-server --once --via power-button --timeout 10
+```
+
+`--once` requires `--via agent` or `--via power-button`. It sends at most one request through that mechanism, with no fallback, repeated button press or force-stop. An unavailable mechanism leaves the machine alone. Ordinary `stop` keeps its existing policy: it can fall back between mechanisms and to force-stop, and can repeat power-button requests while waiting. `force-stop` is an explicit immediate stop.
+
+The single-request command reports request delivery separately from the app's observed lifecycle state. `accepted` means the guest agent acknowledged the request; `rejected` means it answered negatively; `unknown` means no acknowledgment established delivery. Power-button requests always have unknown guest delivery because a backend may enqueue them. `unsupported`, `already-stopped` and `busy` mean this invocation sent no request. Available request diagnostics are reported without clearing the machine's existing error.
+
+The timeout covers requesting and observing, defaults to 30 seconds and must be greater than zero and at most 86400 seconds. Exit 0 means the app observed `stopped`, 124 means the observation deadline expired, and 1 means it ended otherwise. An acknowledgment alone is not success. Observed state describes the app's lifecycle view; it is not independent proof that every backend resource was released.
+
+During observation the machine remains in its existing lifecycle state until its backend reports a change. Timeout leaves it available for inspection; a client disconnect cancels its observation. Neither triggers a retry or forced stop, nor undoes the request already sent. A later invocation is an explicit new request, even after an earlier request with unknown delivery; inspect before repeating. Older apps reject the distinct single-request command instead of treating it as ordinary stop.
+
 ## Connecting
 
 | Command | What it does |

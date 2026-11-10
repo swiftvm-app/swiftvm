@@ -879,6 +879,45 @@ public final class VirtualMachine: Identifiable {
         return .forced
     }
 
+    /// Sends at most one request and observes for `timeout`, without arming the ordinary shutdown's
+    /// retry/expiry task or changing its UI state. Another invocation is an explicit new request.
+    public func shutDownOnce(using mechanism: ShutdownMechanism, timeout: Duration = .seconds(30)) async -> SingleShutdownResult {
+        guard state != .stopped else { return SingleShutdownResult(delivery: .alreadyStopped, state: state) }
+        guard activity == nil else { return SingleShutdownResult(delivery: .busy, state: state) }
+        guard state == .running, let backend else { return SingleShutdownResult(delivery: .unsupported, state: state) }
+        guard timeout > .zero, !Task.isCancelled else { return SingleShutdownResult(delivery: .unknown, state: state) }
+        let deadline = ContinuousClock.now + timeout
+        let delivery: SingleShutdownResult.Delivery
+        var requestError: String?
+        switch mechanism {
+        case .agent:
+            guard agent.isConnected else { return SingleShutdownResult(delivery: .unsupported, state: state) }
+            if let answer = await agent.shutDownResult(timeout: min(timeout, agent.requestTimeout)) {
+                delivery = answer.ok ? .accepted : .rejected
+                requestError = answer.error.map { ShownText.line($0, limit: 500) }
+            } else {
+                delivery = .unknown
+            }
+        case .powerButton:
+            guard backend.canRequestStop else { return SingleShutdownResult(delivery: .unsupported, state: state) }
+            // Some backends enqueue the button press and return before its delivery is known.
+            // Even a throw cannot establish that a backend sent nothing.
+            do {
+                try backend.requestStop()
+            } catch {
+                requestError = error.localizedDescription
+            }
+            delivery = .unknown
+        }
+        while state != .stopped, delivery != .rejected, ContinuousClock.now < deadline, !Task.isCancelled {
+            do {
+                try await Task.sleep(until: min(deadline, ContinuousClock.now + .milliseconds(50)))
+            } catch { break }
+        }
+        return SingleShutdownResult(delivery: delivery, state: state,
+                                    timedOut: state != .stopped && ContinuousClock.now >= deadline, requestError: requestError)
+    }
+
     private func expireShutdownRequest(after timeout: Duration) {
         shutdownRequestExpiry?.cancel()
         let repeatInterval = configuration.asksBeforeShuttingDown ? nil : shutdownRequestRepeatInterval

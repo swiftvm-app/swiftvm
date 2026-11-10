@@ -43,6 +43,10 @@ Usage: swiftvm <command> [arguments]
   scripts [<system>]                List the setup scripts for --script, or those for one Linux image
   start <machine>                   Start, or resume a suspended machine
   stop <machine>                    Shut down and wait
+       [--once --via agent|power-button [--timeout <seconds>]]
+                                    Send one selected graceful request and observe, for 30 seconds by
+                                    default. No retry, fallback or force-stop. Reports request delivery
+                                    separately from observed state; timeout leaves the machine available
   force-stop <machine>              Stop immediately
   suspend <machine>                 Save state to disk
   discard-state <machine>           Throw away a suspended machine's saved state, to start it up fresh
@@ -463,6 +467,24 @@ case "help", "--help", "-h":
 case "list", "ls":
     let listed = send(ControlRequest(command: .list))
     printTable(listed.machines, creations: listed.creations ?? [])
+
+case "stop":
+    let request: ControlRequest
+    do {
+        request = try Stop.parse(arguments)
+    } catch {
+        fail(error.localizedDescription)
+    }
+    let response = send(request)
+    if request.command == .shutdownOnce {
+        guard let result = response.shutdown else { fail("The app didn't return the single-request shutdown outcome.") }
+        print("Shutdown request (\(request.shutdownMechanism ?? "")): \(result.delivery)")
+        print("Observed state: \(result.observedState)")
+        print("Observation timed out: \(result.timedOut ? "yes" : "no")")
+        if let error = result.requestError { print("Request error: \(error)") }
+        exit(Stop.status(for: result))
+    }
+    printTable(response.machines)
 
 case "create":
     // What the machine is made from: a system to install, which comes first, or a template.
@@ -907,7 +929,7 @@ default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
     let others: [ControlRequest.Command] = [
         .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .control, .allowAccessibility, .move,
-        .templates, .saveTemplate, .deleteTemplate, .renameTemplate,
+        .templates, .saveTemplate, .deleteTemplate, .renameTemplate, .shutdownOnce,
     ]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(overview)")

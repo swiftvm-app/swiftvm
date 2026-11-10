@@ -138,11 +138,24 @@ extension AppModel {
             return ControlResponse(ok: true, note: note)
         }
         guard let machine = findMachine(identifier) else { return notFound(identifier) }
-        machine.lastError = nil
+        if request.command != .shutdownOnce { machine.lastError = nil }
 
         switch request.command {
         case .start:
             await machine.start()
+        case .shutdownOnce:
+            guard let raw = request.shutdownMechanism, let mechanism = ShutdownMechanism(rawValue: raw) else {
+                return .failure("Choose one shutdown mechanism: agent or power-button.")
+            }
+            let timeout = request.timeout ?? 30
+            guard timeout.isFinite, timeout > 0, timeout <= ControlRequest.longestWait else {
+                return .failure("Shutdown observation needs a timeout greater than zero and at most 86400 seconds.")
+            }
+            let result = await machine.shutDownOnce(using: mechanism, timeout: .seconds(timeout))
+            return ControlResponse(ok: true, machines: [summary(of: machine)], shutdown: .init(
+                delivery: result.delivery.rawValue, observedState: result.state.rawValue, timedOut: result.timedOut,
+                requestError: result.requestError
+            ))
         case .stop:
             let request = await shutDown(machine)
             // The machine goes back to running when the guest doesn't act on the request.
@@ -620,9 +633,16 @@ extension AppModel {
         let work = Task { await controller.perform(call) }
         // The tool says nothing after its request, so that what shows on the connection is that it has
         // gone. What it asked for is called off then: a wait of ten minutes has nobody to wait for.
-        let watch = ControlHangUp.watch(connection) { work.cancel() }
-        let outcome = await work.value
-        watch.cancel()
+        let outcome: ControlOutcome
+        do {
+            let watch = try ControlHangUp.watch(connection) { work.cancel() }
+            outcome = await work.value
+            watch.cancel()
+        } catch {
+            work.cancel()
+            _ = await work.value
+            outcome = ControlOutcome(results: [.init(action: call.steps[0].action, error: error.localizedDescription)])
+        }
         let data = ControlOutcomeCoding.data(for: outcome)
         // Writing waits for the tool to read, and holds a thread of its own for that.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
