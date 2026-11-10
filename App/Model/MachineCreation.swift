@@ -101,6 +101,12 @@ struct MacInstallRequest {
     var setsUpDesktopPermissions = true
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
+
+    func validateToolsSetup(for image: MacRestoreImage) throws {
+        guard setsUpDesktopPermissions || image.supportsProvisioning else {
+            throw VMError.invalidConfiguration("--no-desktop-permissions needs macOS 27 or newer, which provisions the account and SSH sign-in.")
+        }
+    }
 }
 
 /// Everything needed to install Windows, from Microsoft's download or a disc of the user's, without
@@ -380,6 +386,8 @@ extension AppModel {
                 )
             }
         }
+        // The resolved image, including a downloaded one, decides whether tool bootstrap can run.
+        try request.validateToolsSetup(for: image)
         guard let requirements = image.requirements else {
             throw MacOSInstaller.InstallError.unsupportedImage(image.productName)
         }

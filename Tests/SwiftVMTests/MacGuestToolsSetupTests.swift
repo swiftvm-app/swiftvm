@@ -1,9 +1,34 @@
+import Foundation
 import Testing
+import VMCore
 @testable import SwiftVM
 
 @MainActor
 @Suite struct MacGuestToolsSetupTests {
     private enum Failure: Error { case install, allow }
+
+    @Test func automaticToolsOnlyUsesTheResolvedImagesProvisioningSupport() throws {
+        var request = MacInstallRequest(
+            name: "Box", image: nil, cpuCount: 2, memorySize: 4 << 30, diskCapacity: 64 << 30,
+            account: .init(fullName: "Username", userName: "username", password: "password"),
+            installsSSHKey: true, setsUpDesktopPermissions: false, location: nil
+        )
+        #expect(throws: VMError.self) {
+            try request.validateToolsSetup(for: .init(
+                url: URL(fileURLWithPath: "/tmp/restore.ipsw"), majorVersion: 26, minorVersion: 0,
+                patchVersion: 0, buildVersion: "old", requirements: nil
+            ))
+        }
+        try request.validateToolsSetup(for: .init(
+            url: URL(fileURLWithPath: "/tmp/restore.ipsw"), majorVersion: 27, minorVersion: 0,
+            patchVersion: 0, buildVersion: "new", requirements: nil
+        ))
+        request.setsUpDesktopPermissions = true
+        try request.validateToolsSetup(for: .init(
+            url: URL(fileURLWithPath: "/tmp/restore.ipsw"), majorVersion: 26, minorVersion: 0,
+            patchVersion: 0, buildVersion: "old", requirements: nil
+        ))
+    }
 
     @Test(arguments: [false, true])
     func installationRunsBeforeOptionalPermissionSetup(_ setsUpDesktopPermissions: Bool) async throws {
