@@ -45,9 +45,7 @@ public struct SSHKeyManager: Sendable {
             try fileManager.createDirectory(at: sshDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         let privateKey = sshDirectory.appending(path: Self.generatedKeyName)
-        try ProcessRunner.run("/usr/bin/ssh-keygen", [
-            "-q", "-t", "ed25519", "-N", "", "-C", "swiftvm", "-f", privateKey.path,
-        ])
+        try Self.generate(at: privateKey)
         let line = try String(contentsOf: sshDirectory.appending(path: "\(Self.generatedKeyName).pub"), encoding: .utf8)
         return KeyPair(publicKey: line.trimmingCharacters(in: .whitespacesAndNewlines), privateKeyPath: privateKey.path)
     }
@@ -56,5 +54,11 @@ public struct SSHKeyManager: Sendable {
         let parts = line.split(separator: " ")
         guard parts.count >= 2 else { return false }
         return parts[0].hasPrefix("ssh-") || parts[0].hasPrefix("ecdsa-") || parts[0].hasPrefix("sk-")
+    }
+
+    static func generate(at privateKey: URL) throws {
+        try ProcessRunner.run("/usr/bin/ssh-keygen", [
+            "-q", "-t", "ed25519", "-N", "", "-C", "swiftvm", "-f", privateKey.path,
+        ])
     }
 }

@@ -38,6 +38,29 @@ up to date.
 - The guests' host keys are kept apart from your own `known_hosts`. A guest's
   key is accepted the first time you connect and checked from then on.
 
+### Choose a key for a new machine
+
+To use an existing key pair for the new account, give the private key's path:
+
+```bash
+swiftvm create debian-13 --ssh-identity "$HOME/.ssh/project_ed25519"
+```
+
+To keep SwiftVM's key apart from your personal keys, create or reuse a managed pair in `SSH Identity` inside the selected SwiftVM data folder:
+
+```bash
+swiftvm create debian-13 --managed-ssh-key
+```
+
+- Without either option, SwiftVM uses the automatic selection above. Managed selection does not consult personal keys.
+- Choose one option. Neither can be combined with `--no-ssh-key` or used with templates, which keep their existing account. An older app refuses explicit selection instead of falling back to another key.
+- An explicit key must be unencrypted and have a matching adjacent `.pub` file. Encrypted keys refuse without prompting, even if an SSH agent has them loaded. Automatic selection keeps its existing passphrase and agent behavior.
+- Both files and their folder must belong to you. Symbolic or multiple links refuse. The private key must not be accessible to other users; the public key and folder must not be writable by them.
+- Paths may contain ordinary spaces. Control characters, quotes, backslashes, `#`, `$` and `%` refuse because SSH configuration can parse or expand them.
+- Missing, mismatched, invalid, unsafe or partial managed identities fail without selecting another key or overwriting existing material. A new managed pair has no passphrase and is published as a complete pair in its private directory, then reused.
+- Only the public key is installed in the guest; private material stays on your Mac. Bootstrap and generated SSH configuration use the selected private-key path with `IdentitiesOnly yes`.
+- For macOS guests, explicit selection needs an image that provisions an account with Remote Login, as macOS 27 does.
+
 ## Guests you installed yourself
 
 A guest installed from a disc may have no SSH server. Install one in the
