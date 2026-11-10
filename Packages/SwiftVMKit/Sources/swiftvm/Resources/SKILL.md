@@ -37,7 +37,7 @@ swiftvm cp ./notes.txt box:Documents/           # as cp -R does, either way
 swiftvm cp box:/var/log/syslog ./syslog.txt
 ```
 
-Exit status: the command's own, 124 for `--timeout`, 125 on setup/connection failure. For automation, `--result-fd 3` with `3>completion.json` writes a separate versioned JSON completion record: `exited` with `status`, `signaled` with `signal`, or `unknown`. Missing/partial records also mean unknown; inspect before retrying a mutation. Guest output stays on stdout/stderr.
+Exit status: the command's own, 124 for `--timeout`, 125 on setup, transport or completion-reporting failure. `--timeout` uses one deadline from connection setup through result consumption, with at most 50 milliseconds of reporting cleanup; client timeout does not prove guest termination. For automation, `--result-fd 3` with `3>completion.json` writes a separate versioned JSON completion record: `exited` with `status`, `signaled` with `signal`, or `unknown`. Missing/partial records also mean unknown; inspect before retrying a mutation. Guest output stays on stdout/stderr.
 
 ## The desktop
 
