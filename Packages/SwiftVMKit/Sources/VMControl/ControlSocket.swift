@@ -6,6 +6,8 @@ public enum ControlSocketError: Error, LocalizedError {
     case appNotRunning
     case connectionClosed
     case invalidMessage
+    case endpointInUse
+    case unsafeEndpoint
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +16,8 @@ public enum ControlSocketError: Error, LocalizedError {
         case .appNotRunning: "\(AppIdentity.current.name) isn't running. Open the app first."
         case .connectionClosed: "The app closed the connection before answering."
         case .invalidMessage: "Received a message that couldn't be understood."
+        case .endpointInUse: "A controller is already listening in this SwiftVM data folder. Use a separate SWIFTVM_HOME."
+        case .unsafeEndpoint: "The existing control socket is unsafe or could not be shown to be stale."
         }
     }
 }
@@ -35,6 +39,7 @@ public enum ControlSocket {
     /// Creates a listening socket at `url`, replacing a stale one. Only the current user can connect.
     public static func listen(at url: URL) throws -> Int32 {
         var address = try address(for: url)
+        try requireStaleEndpoint(at: url)
         unlink(url.path)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw ControlSocketError.system("socket", errno) }
@@ -55,6 +60,34 @@ public enum ControlSocket {
             throw ControlSocketError.system("listen", code)
         }
         return descriptor
+    }
+
+    /// Only a refused or vanished endpoint is safe to replace. Nonblocking connect also refuses a
+    /// live controller whose backlog is full, without waiting for it or mistaking it for a stale file.
+    static func requireStaleEndpoint(at url: URL) throws {
+        var information = stat()
+        guard lstat(url.path, &information) == 0 else {
+            if errno == ENOENT { return }
+            throw ControlSocketError.system("inspect control socket", errno)
+        }
+        guard information.st_mode & S_IFMT == S_IFSOCK, information.st_uid == getuid() else {
+            throw ControlSocketError.unsafeEndpoint
+        }
+        var address = try address(for: url)
+        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard probe >= 0 else { throw ControlSocketError.system("probe control socket", errno) }
+        defer { close(probe) }
+        let flags = fcntl(probe, F_GETFL)
+        guard flags >= 0, fcntl(probe, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw ControlSocketError.system("probe control socket", errno)
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(probe, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if connected == 0 { throw ControlSocketError.endpointInUse }
+        guard errno == ECONNREFUSED || errno == ENOENT else { throw ControlSocketError.unsafeEndpoint }
     }
 
     public static func connect(to url: URL) throws -> Int32 {
@@ -187,19 +220,25 @@ public final class ControlServer: @unchecked Sendable {
     private let descriptor: Int32
     private let socketURL: URL
     private let handler: Handler
-    /// Which file the socket was when this server made it. A copy of the app that starts later puts its
-    /// own socket at the same path, and that one isn't this server's to remove.
+    private let ownership: LibraryOwnership
+    /// The inode bound here: cleanup must not remove an externally replaced pathname.
     private let socketFile: (device: dev_t, inode: ino_t)?
 
-    public init(socketURL: URL = ControlPaths.socket, handler: @escaping Handler, streamHandler: StreamHandler? = nil) throws {
-        try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    public init(socketURL: URL = ControlPaths.socket, ownership: LibraryOwnership? = nil,
+                handler: @escaping Handler, streamHandler: StreamHandler? = nil) throws {
+        let directory = socketURL.deletingLastPathComponent()
+        let ownership = try ownership ?? LibraryOwnership(at: directory)
+        guard ownership.directory.path == directory.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw LibraryOwnership.Problem.wrongDirectory
+        }
+        self.ownership = ownership
         self.socketURL = socketURL
         self.handler = handler
         self.descriptor = try ControlSocket.listen(at: socketURL)
         var information = stat()
         socketFile = stat(socketURL.path, &information) == 0 ? (information.st_dev, information.st_ino) : nil
         signal(SIGPIPE, SIG_IGN)
-        let thread = Thread { [descriptor, handler] in
+        let thread = Thread { [descriptor, handler, ownership] in
             while true {
                 let connection = accept(descriptor, nil, nil)
                 if connection < 0 {
@@ -207,6 +246,7 @@ public final class ControlServer: @unchecked Sendable {
                     return
                 }
                 Task.detached {
+                    defer { withExtendedLifetime(ownership) {} }
                     await Self.serve(connection, handler: handler, streamHandler: streamHandler)
                 }
             }
@@ -216,14 +256,14 @@ public final class ControlServer: @unchecked Sendable {
     }
 
     deinit {
+        // Wake accept before releasing its descriptor or the ownership held by its thread.
+        shutdown(descriptor, SHUT_RDWR)
         close(descriptor)
         invalidate()
     }
 
-    /// Removes the socket file so clients see that the app is gone.
-    ///
-    /// Only if it is still this server's: an app that is quit and opened again at once has its new copy
-    /// listening before the old one is done leaving, and the old one must not take the new socket with it.
+    /// Removes this server's socket path. Ownership remains held until the server and its requests
+    /// finish, and a replacement at the same pathname is never removed.
     public func invalidate() {
         var information = stat()
         guard let socketFile, stat(socketURL.path, &information) == 0,
