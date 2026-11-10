@@ -184,6 +184,7 @@ swiftvm exec desk -- sh -s < setup.sh
 | `--cwd <folder>` | Where to run it. Otherwise the account's home folder |
 | `--env <name>=<value>` | Add a variable to its environment. Give it again for more |
 | `--timeout <seconds>` | Stop the command if it takes longer |
+| `--result-fd <descriptor>` | Write one separate JSON completion line to an inherited writable descriptor greater than 2 |
 
 - Without `--root` or `--user`, the command runs as the machine's own account:
   its [SSH user](ssh.md), or whoever is logged in at its screen.
@@ -206,8 +207,24 @@ For shell commands, use `powershell.exe -Command '…'`.
 | Status | Meaning |
 | --- | --- |
 | 124 | The time given with `--timeout` was up |
-| 125 | The command never ran: the machine is down, has no guest tools, or automation is off |
+| 125 | Setup or connection failed; guest completion may be unknown |
 | 126, 127 | The command couldn't be run, or isn't there |
+
+A guest can itself exit with 124, 125, or any other status. To distinguish its completion from a CLI failure, give a separate descriptor for a completion record:
+
+```bash
+swiftvm exec desk --result-fd 3 -- sh -c 'exit 125' 3>completion.json
+```
+
+The record is one newline-terminated JSON object with `schemaVersion: 1`, `machine` (the selector exactly as given), and `completion`. When the app accepts the job, `machineID` is the UUID it resolved, including when `machine` is a name. If setup fails before that answer, the UUID is omitted. Older apps that omit machine identity also leave it absent; no separate lookup guesses which machine ran the command.
+
+- `completion: "exited"` includes `status`, the exit status reported by the guest tools. Unix commands usually report 0 through 255; Windows can report a wider signed 32-bit value. The CLI's own process status may truncate that value.
+- `completion: "signaled"` includes `signal`, the signal number reported by the guest, separately from an exit status.
+- `completion: "unknown"` includes neither. A timeout, lost connection, agent error, or malformed completion cannot establish whether a guest mutation happened.
+
+The record contains no command, environment, guest output, or diagnostic text. Guest stdout and stderr remain separate byte streams. The CLI keeps its exit-status conventions; if writing the record fails, it reports that failure on stderr and exits 125, even after guest success. Closed, read-only, or standard input/output/error descriptors are rejected before dispatch. Use a separate file or a pipe whose reader drains it: writing to a full pipe can wait for its reader.
+
+Only a complete line from this invocation is evidence. Missing or partial records, including after client cancellation or termination, mean completion is unknown. Closing the connection asks the guest tools to cancel; it does not prove that the command or its children stopped. Inspect before retrying a command with side effects. The existing `--timeout` starts after the app accepts the job; it does not bound setup or writing the record.
 
 ## Files
 

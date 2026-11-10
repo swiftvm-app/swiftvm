@@ -41,7 +41,8 @@ enum GuestJobs {
     ///   - output: Takes what the job puts out. Returning `false` says nobody is listening any more.
     ///   - errorOutput: The same for what a command prints as errors.
     static func run(
-        _ descriptor: Int32, input: Input = .none, output: (Data) -> Bool, errorOutput: (Data) -> Bool = { write($0, to: STDERR_FILENO) }
+        _ descriptor: Int32, input: Input = .none, output: (Data) -> Bool, errorOutput: (Data) -> Bool = { write($0, to: STDERR_FILENO) },
+        outputFailure: () -> Never = { exit(brokenPipeStatus) }
     ) -> JobEnd {
         if input != .none {
             // Nobody else writes to the connection, so the frames of the input can't get mixed up with others.
@@ -67,9 +68,9 @@ enum GuestJobs {
             }
             switch frame.kind {
             case .output:
-                guard output(frame.payload) else { exit(brokenPipeStatus) }
+                guard output(frame.payload) else { outputFailure() }
             case .errorOutput:
-                guard errorOutput(frame.payload) else { exit(brokenPipeStatus) }
+                guard errorOutput(frame.payload) else { outputFailure() }
             case .end:
                 return frame.end ?? .success
             case .input:
@@ -123,7 +124,7 @@ enum GuestJobs {
 
     // MARK: exec
 
-    static let execUsage = "Usage: swiftvm exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>] [--timeout <seconds>] [--] <command> [arguments]"
+    static let execUsage = "Usage: swiftvm exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>] [--timeout <seconds>] [--result-fd <descriptor>] [--] <command> [arguments]"
 
     /// `swiftvm exec`: runs a command in the guest, and ends the way the command did.
     static func exec(_ arguments: [String]) -> Never {
@@ -132,6 +133,7 @@ enum GuestJobs {
         var directory: String?
         var environment: [String: String] = [:]
         var timeout: Double?
+        var resultDescriptor: Int32?
         var index = 1
         func value(for option: String) -> String {
             index += 1
@@ -159,6 +161,11 @@ enum GuestJobs {
                     fail("--timeout needs a number of seconds.", status: failedStatus)
                 }
                 timeout = seconds
+            case "--result-fd":
+                guard resultDescriptor == nil, let descriptor = Int32(value(for: option)), descriptor > STDERR_FILENO else {
+                    fail("Give --result-fd once, with a descriptor greater than 2.", status: failedStatus)
+                }
+                resultDescriptor = descriptor
             default:
                 guard !option.hasPrefix("-") else { fail("Unknown option \(option).\n\(execUsage)", status: failedStatus) }
                 break options
@@ -171,20 +178,39 @@ enum GuestJobs {
         let job = GuestJob.exec(.init(
             arguments: command, user: account.name, directory: directory, environment: environment.isEmpty ? nil : environment
         ))
-        let descriptor = open(job, in: machine, failureStatus: failedStatus)
+        let completion: ExecCompletionWriter
+        do {
+            completion = try ExecCompletionWriter(descriptor: resultDescriptor)
+        } catch {
+            fail(error.localizedDescription, status: failedStatus)
+        }
+        signal(SIGPIPE, SIG_IGN)
+        let descriptor: Int32
+        let machineID: UUID?
+        do {
+            let opened = try ControlClient().openStream(ControlRequest(command: .job, machine: machine, job: job))
+            guard let stream = opened.descriptor else {
+                completion.finish(ExecCompletion(machine: machine, machineID: nil, end: nil), status: failedStatus,
+                                  diagnostic: opened.response.error ?? "The guest tools didn't take that on.")
+            }
+            descriptor = stream
+            machineID = opened.response.machines.first?.id
+        } catch {
+            completion.finish(ExecCompletion(machine: machine, machineID: nil, end: nil), status: failedStatus, diagnostic: error.localizedDescription)
+        }
         if let timeout {
             // Leaving is what calls the command off in the guest.
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                FileHandle.standardError.write(Data("swiftvm: The command didn't finish in \(timeout.formatted()) seconds, and was stopped.\n".utf8))
-                exit(timedOutStatus)
+                completion.finish(ExecCompletion(machine: machine, machineID: machineID, end: nil), status: timedOutStatus,
+                                  diagnostic: "The command didn't finish in \(timeout.formatted()) seconds; guest completion is unknown.")
             }
         }
         // What is typed at a terminal isn't the command's to read: it has no terminal of its own.
-        let end = run(descriptor, input: isatty(STDIN_FILENO) == 1 ? .empty : .from(STDIN_FILENO)) { write($0, to: STDOUT_FILENO) }
-        if let error = end.shownError {
-            FileHandle.standardError.write(Data("swiftvm: \(error)\n".utf8))
-        }
-        exit(end.status ?? end.signal.map { 128 + $0 } ?? failedStatus)
+        let end = run(descriptor, input: isatty(STDIN_FILENO) == 1 ? .empty : .from(STDIN_FILENO), output: { write($0, to: STDOUT_FILENO) }, outputFailure: {
+            completion.finish(ExecCompletion(machine: machine, machineID: machineID, end: nil), status: brokenPipeStatus)
+        })
+        completion.finish(ExecCompletion(machine: machine, machineID: machineID, end: end),
+                          status: end.status ?? end.signal.flatMap { (1...127).contains($0) ? 128 + $0 : nil } ?? failedStatus, diagnostic: end.shownError)
     }
 
     /// The account a command runs as, the way `--root` and `--user` name it.

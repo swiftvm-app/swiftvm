@@ -115,11 +115,13 @@ Usage: swiftvm <command> [arguments]
                                     setup that failed is said why. 300 seconds by default; on a time-out
                                     it says what it is still waiting for, and waiting again carries on
   exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>]
-       [--timeout <seconds>] [--] <command> [arguments]
+       [--timeout <seconds>] [--result-fd <descriptor>] [--] <command> [arguments]
                                     Run a command in the machine, as its own account or another. No
                                     shell reads it: for pipes and the like, run sh -c '...'. What is
                                     piped in goes to the command. Ends with the command's own status,
-                                    124 when the time was up, 125 when the command couldn't be run
+                                    124 when the time was up, 125 on setup/connection failure.
+                                    --result-fd writes a separate JSON completion record to an inherited
+                                    writable descriptor greater than 2; missing completion stays unknown
   cp [--root | --user <name>] <from> <to>
                                     Copy a file or a folder into the machine or out of it. The side in
                                     the machine is <machine>:<path>. Works as cp -R does
