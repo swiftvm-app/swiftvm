@@ -17,6 +17,8 @@ Usage: swiftvm <command> [arguments]
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
       --ssh-identity <private-key>   Use this unencrypted key pair, with an adjacent matching .pub
       --managed-ssh-key             Create or reuse a dedicated identity in this SwiftVM data folder
+      --no-desktop-permissions      macOS: install guest tools without automatic desktop permission setup.
+                                    Set it up later with control <machine> allow --password <password>
       --rosetta                     Linux: run x86-64 programs with Rosetta, using Apple's backend without GPU acceleration
       --nested-virt                 Linux: let the guest run virtual machines of its own with KVM, using Apple's
                                     backend without GPU acceleration. Needs an M3 or later
@@ -471,6 +473,7 @@ case "create":
         fail("Missing system: macos, windows, or a Linux image such as ubuntu-26.04. Or a template, with --template <template>.")
     }
     var parameters = ControlRequest.CreateParameters(distribution: system ?? "")
+    var setsUpDesktopPermissions = true
     var options: [String] = []
     var index = system == nil ? 0 : 1
     func value(for option: String) -> String {
@@ -505,6 +508,9 @@ case "create":
         case "--managed-ssh-key":
             guard parameters.usesManagedSSHKey != true else { fail("Give --managed-ssh-key once.") }
             parameters.usesManagedSSHKey = true
+        case "--no-desktop-permissions":
+            guard setsUpDesktopPermissions else { fail("Give --no-desktop-permissions once.") }
+            setsUpDesktopPermissions = false
         case "--rosetta": parameters.rosetta = true
         case "--nested-virt": parameters.nestedVirtualization = true
         case "--gpu": parameters.acceleratesGraphics = true
@@ -526,6 +532,7 @@ case "create":
         fail("Use --gpu or --no-gpu, not both.")
     }
     if let problem = parameters.sshIdentityProblem { fail(problem) }
+    if !setsUpDesktopPermissions, let problem = parameters.toolsOnlyProblem { fail(problem) }
     if parameters.template != nil {
         guard system == nil else { fail("Give a system to install or a template, not both.") }
         // A template brings its system, its account and whatever was set up in it.
@@ -559,7 +566,14 @@ case "create":
         source.resume()
         return (signalNumber, previous, source)
     }
-    let created = send(ControlRequest(command: parameters.hasExplicitSSHIdentity ? .createWithSSHIdentity : .create, create: parameters))
+    // The combined command requires both capabilities, so an older app cannot ignore either choice.
+    let creationCommand: ControlRequest.Command
+    if setsUpDesktopPermissions {
+        creationCommand = parameters.hasExplicitSSHIdentity ? .createWithSSHIdentity : .create
+    } else {
+        creationCommand = parameters.hasExplicitSSHIdentity ? .createToolsOnlyWithSSHIdentity : .createToolsOnly
+    }
+    let created = send(ControlRequest(command: creationCommand, create: parameters))
     for (signalNumber, previous, source) in interruptions {
         source.cancel()
         signal(signalNumber, previous)
@@ -917,7 +931,7 @@ case "ssh":
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
     let others: [ControlRequest.Command] = [
-        .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .control, .allowAccessibility, .move,
+        .create, .createWithSSHIdentity, .createToolsOnly, .createToolsOnlyWithSSHIdentity, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .control, .allowAccessibility, .move,
         .templates, .saveTemplate, .deleteTemplate, .renameTemplate,
     ]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {

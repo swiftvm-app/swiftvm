@@ -97,6 +97,8 @@ struct MacInstallRequest {
     /// Add the host's SSH key to the account once the guest is up.
     var installsSSHKey: Bool
     var selectedSSHKey: SSHKeyManager.KeyPair? = nil
+    /// Installation still runs when false; only automatic desktop permission setup is skipped.
+    var setsUpDesktopPermissions = true
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
@@ -413,7 +415,7 @@ extension AppModel {
             let machine = try addToLibrary(staged: bundle)
             machine.pendingProvisioning = account
             if let account, let keyPair {
-                finishSetup(of: machine, account: account, keyPair: keyPair)
+                finishSetup(of: machine, account: account, keyPair: keyPair, setsUpDesktopPermissions: request.setsUpDesktopPermissions)
             }
             return machine
         } catch {
@@ -534,7 +536,7 @@ extension AppModel {
     /// macOS turns on Remote Login for password sign-in only, so the key is installed by signing in once
     /// with the password as soon as the guest answers. Installing the guest tools takes the password
     /// too, for `sudo`. It stays in memory until then, and nowhere else.
-    private func finishSetup(of machine: VirtualMachine, account: GuestProvisioning, keyPair: SSHKeyManager.KeyPair) {
+    private func finishSetup(of machine: VirtualMachine, account: GuestProvisioning, keyPair: SSHKeyManager.KeyPair, setsUpDesktopPermissions: Bool) {
         machinesBeingSetUp.insert(machine.id)
         Task {
             defer { machinesBeingSetUp.remove(machine.id) }
@@ -557,7 +559,7 @@ extension AppModel {
                         )) != nil
                     }.value
                     if isInstalled {
-                        await installGuestTools(afterSetupOf: machine, password: account.password)
+                        await installGuestTools(afterSetupOf: machine, password: account.password, setsUpDesktopPermissions: setsUpDesktopPermissions)
                         return
                     }
                 }
@@ -575,20 +577,20 @@ extension AppModel {
     /// Installs the guest tools in a macOS guest whose key has just been installed, with the password the
     /// app still holds from creating it. Nothing here is worth failing the setup over: a guest that ends
     /// up without the tools works as macOS guests did before there were any, and says so.
-    private func installGuestTools(afterSetupOf machine: VirtualMachine, password: String) async {
-        do {
-            try await installGuestTools(on: machine, password: password)
-            // From here on the machine sees to the rest by itself, through the agent.
-        } catch {
+    private func installGuestTools(afterSetupOf machine: VirtualMachine, password: String, setsUpDesktopPermissions: Bool) async {
+        let result = await MacGuestToolsSetup.run(
+            setsUpDesktopPermissions: setsUpDesktopPermissions,
+            install: { try await self.installGuestTools(on: machine, password: password) },
+            allow: { try await self.allowAutomation(on: machine, password: password, sessionPatience: .seconds(120)) }
+        )
+        switch result {
+        case .success:
+            break
+        case .failure(.installation(let error)):
             automationSetupProblems[machine.id] = "The guest tools couldn't be installed: \(error.localizedDescription) `swiftvm install-tools \(machine.configuration.ssh.alias) --password <password>` tries again."
             await setTimeZoneWithoutGuestTools(of: machine, password: password, after: error)
             return
-        }
-        // Knowing what is on the guest's screen needs macOS to let the guest tools read it. Only now
-        // does the app still have the password for that.
-        do {
-            try await allowAutomation(on: machine, password: password, sessionPatience: .seconds(120))
-        } catch {
+        case .failure(.permissions(let error)):
             guard machine.state.isActive else { return }
             automationSetupProblems[machine.id] = "\(error.localizedDescription) `swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
             machine.notice = VMErrorInfo(
@@ -596,6 +598,8 @@ extension AppModel {
                 message: "\(error.localizedDescription)\n\n`swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
             )
         }
+        // Tools-only setup must leave the desktop alone, including its installation notices.
+        guard setsUpDesktopPermissions else { return }
         // Installing the tools and discovering bundled extensions can leave persistent banners over
         // the desktop. Clear those once, while setup still owns the screen. A cleanup failure must
         // not undo successful setup or replace a more useful permission error.

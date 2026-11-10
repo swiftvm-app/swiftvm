@@ -19,6 +19,10 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Creation with an explicit SSH identity. Older apps must reject instead of selecting their
         /// usual identity after ignoring the new parameters.
         case createWithSSHIdentity = "create-with-ssh-identity"
+        /// Create a macOS guest with tools, without automatically setting up desktop permissions.
+        case createToolsOnly = "create-tools-only"
+        /// Requires both tools-only setup and explicit SSH selection; older single-capability apps refuse.
+        case createToolsOnlyWithSSHIdentity = "create-tools-only-with-ssh-identity"
         case delete
         /// Quit the app. Refused while a machine is running, and while one is being created unless
         /// ``ControlRequest/cancelsCreations`` is set.
@@ -187,6 +191,14 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public static let macOS = "macos"
         /// The `distribution` value that installs Windows.
         public static let windows = "windows"
+
+        /// Refuses a tools-only request that cannot use macOS's existing account and SSH bootstrap.
+        public var toolsOnlyProblem: String? {
+            guard template == nil else { return "A template keeps its existing account and desktop permissions." }
+            guard distribution == Self.macOS else { return "--no-desktop-permissions is for new macOS guests." }
+            guard installsSSHKey != false else { return "Installing macOS guest tools needs SSH key setup. Leave out --no-ssh-key." }
+            return nil
+        }
 
         public init(
             distribution: String, name: String? = nil, cpuCount: Int? = nil, memoryGigabytes: Int? = nil,

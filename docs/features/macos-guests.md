@@ -50,6 +50,29 @@ A macOS 27 or newer guest sets itself up on its first start:
 Versions before macOS 27 can't be set up automatically. Create the account in
 the setup assistant when the machine first starts.
 
+### Install tools before desktop permissions
+
+To install the guest tools for commands and file transfer while leaving desktop permission setup for later:
+
+```bash
+swiftvm create macos --name "Build Mac" --password 'a password for the account' --no-desktop-permissions
+swiftvm wait build-mac
+```
+
+SwiftVM installs and starts the tools through the usual SSH bootstrap, then finishes setup without asking for desktop permission or clearing the desktop's installation notices. This option needs macOS 27 or newer and SSH key setup. It cannot be combined with `--no-ssh-key` or used with templates or other guest systems. An older app refuses the mode instead of ignoring it. Creation without the option keeps its automatic permission setup.
+
+To use a dedicated bootstrap identity, combine the option with `--managed-ssh-key` or `--ssh-identity <private-key-path>`; see [Choose a key for a new machine](ssh.md#choose-a-key-for-a-new-machine). An app that supports only one of the two requested capabilities refuses the combined mode.
+
+The tools can run commands and copy files before desktop consent. Advertised automation features describe what the tools support, not whether macOS has allowed accessibility access. `wait` accepts connected, working tools even when that access is unavailable. Guest accessibility requests then explain the required permission; `control` can still use the screen's pixels and the virtual mouse and keyboard.
+
+When you choose to enable guest accessibility, use the existing permission setup:
+
+```bash
+swiftvm control build-mac allow --password 'the account password'
+```
+
+This follows the guest's normal consent in System Settings. The creation option does not change the later permission command or the normal behavior of `install-tools --password`.
+
 ## Shutting down
 
 - **With the guest tools**, **Shut Down** turns the Mac off at once, the way

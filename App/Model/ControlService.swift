@@ -34,13 +34,15 @@ extension AppModel {
                 note: BridgedNetworking.isEntitled ? nil : BridgedNetworking.Failure.notEntitled.localizedDescription,
                 networkInterfaces: BridgedNetworking.interfaces.map { .init(identifier: $0.id, name: $0.name) }
             )
-        case .create, .createWithSSHIdentity:
+        case .create, .createWithSSHIdentity, .createToolsOnly, .createToolsOnlyWithSSHIdentity:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
             if let problem = parameters.sshIdentityProblem { return .failure(problem) }
-            guard (request.command == .createWithSSHIdentity) == parameters.hasExplicitSSHIdentity else {
-                return .failure("Explicit SSH selection requires an identity and the create-with-ssh-identity command.")
+            let usesExplicitIdentity = request.command == .createWithSSHIdentity || request.command == .createToolsOnlyWithSSHIdentity
+            guard usesExplicitIdentity == parameters.hasExplicitSSHIdentity else {
+                return .failure("Explicit SSH selection needs an identity and a creation command that supports it.")
             }
-            return await createMachine(parameters)
+            let toolsOnly = request.command == .createToolsOnly || request.command == .createToolsOnlyWithSSHIdentity
+            return await createMachine(parameters, setsUpDesktopPermissions: !toolsOnly)
         case .usbList:
             guard usb.availability == .available else {
                 return .failure(USBPassthrough.Failure.unavailable(usb.availability).localizedDescription)
@@ -542,7 +544,7 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return templatesResponse()
-        case .list, .info, .console, .vsock, .job, .control, .create, .createWithSSHIdentity, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
+        case .list, .info, .console, .vsock, .job, .control, .create, .createWithSSHIdentity, .createToolsOnly, .createToolsOnlyWithSSHIdentity, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
             break
         }
 
@@ -846,7 +848,8 @@ extension AppModel {
         return nil
     }
 
-    private func createMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
+    private func createMachine(_ parameters: ControlRequest.CreateParameters, setsUpDesktopPermissions: Bool) async -> ControlResponse {
+        if !setsUpDesktopPermissions, let problem = parameters.toolsOnlyProblem { return .failure(problem) }
         if let template = parameters.template {
             return await createMachine(fromTemplate: template, parameters)
         }
@@ -985,6 +988,9 @@ extension AppModel {
                     return .failure("Couldn't read the restore image: \(error.localizedDescription)")
                 }
             }
+            guard setsUpDesktopPermissions || (image?.supportsProvisioning ?? true) else {
+                return .failure("--no-desktop-permissions needs macOS 27 or newer, which provisions the account and SSH sign-in.")
+            }
             // Without an image the latest macOS is installed, which sets up the account by itself.
             var account: GuestProvisioning?
             if image?.supportsProvisioning ?? true {
@@ -1022,6 +1028,7 @@ extension AppModel {
                 account: account,
                 installsSSHKey: installsSSHKey,
                 selectedSSHKey: selectedKey,
+                setsUpDesktopPermissions: setsUpDesktopPermissions,
                 location: location
             )
             start = { self.create(request) }
