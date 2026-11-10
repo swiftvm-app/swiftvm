@@ -4,9 +4,7 @@ import VMControl
 // swiftvm: control the running SwiftVM app from the command line.
 
 let outputCommand = CommandLine.arguments.dropFirst().first ?? ""
-// Guest commands and their arguments are opaque here. In particular, a guest's `--json` is data.
-let printsControlJSON = ControlJSONResult.commands.contains(outputCommand)
-    && CommandLine.arguments.dropFirst(2).contains { $0 == "--json" || $0.hasPrefix("--json=") }
+let printsControlJSON = ControlJSONArguments.isRequested(command: outputCommand, arguments: Array(CommandLine.arguments.dropFirst(2)))
 
 let usage = """
 Usage: swiftvm <command> [arguments]
@@ -459,26 +457,12 @@ guard let commandName = arguments.first else {
 }
 arguments.removeFirst()
 
-// Unsupported control commands must not mistake the output option for a snapshot name or a folder.
-// Creation parses option values itself, including passwords; streams and desktop control own theirs.
-if !ControlJSONResult.commands.contains(commandName), !["create", "exec", "cp", "ssh", "control"].contains(commandName),
-   arguments.contains(where: { $0 == "--json" || $0.hasPrefix("--json=") }) {
-    fail("--json isn't available for \(commandName). Supported control commands: \(ControlJSONResult.commands.sorted().joined(separator: ", ")).")
-}
-
-if printsControlJSON {
-    guard arguments.last == "--json", arguments.filter({ $0 == "--json" }).count == 1 else {
-        fail("Put --json once, at the end of the command.")
-    }
-    arguments.removeLast()
-    if commandName == "list" || commandName == "ls" {
-        guard arguments.isEmpty else { fail("Usage: swiftvm list --json") }
-    } else {
-        guard let machine = arguments.first, !machine.hasPrefix("--") else { fail("Missing machine name.") }
-        if commandName != "wait" && commandName != "network", arguments.count != 1 {
-            fail("Usage: swiftvm \(commandName) <machine> --json")
-        }
-    }
+do {
+    arguments = try ControlJSONArguments.parse(command: commandName, arguments: arguments)
+} catch ControlJSONArguments.ParseError.invalid(let reason) {
+    fail(reason)
+} catch {
+    fail(error.localizedDescription)
 }
 
 @MainActor func requireMachine() -> String {
