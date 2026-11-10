@@ -46,6 +46,14 @@ Stopping `create` with Ctrl-C doesn't stop the creation: the app goes on with it
 and `create` says so as it stops. `swiftvm list` shows the machines still being created,
 and `swiftvm delete <machine>` cancels one, which frees its name.
 
+For a creation password, prefer stdin so the password does not enter the tool's process arguments or shell history:
+
+```bash
+swiftvm create debian-13 --name web-server --user username --password-stdin < /secure/path/guest-password
+```
+
+`--password-stdin` reads one UTF-8 line through EOF. It accepts up to 4096 password bytes, excluding one optional final LF or CRLF, and preserves spaces, tabs and other Unicode characters. Empty input, invalid UTF-8, NUL, additional line breaks (including Unicode separators) and oversized input fail before provisioning starts. Close the pipe after writing the password. The password is passed as creation data and is not printed by the tool. `--password <password>` remains supported; give either password option once, with no duplicates or combination of both.
+
 `swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
 SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 [your own](setup-scripts.md#your-own-scripts). With a Linux image, as in
@@ -59,8 +67,9 @@ SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and
 | `--disk <GB>` | Disk size |
 | `--user <name>` | The account's name |
 | `--password <password>` | The account's password. Required for automatic macOS setup, Windows, and Linux desktop scripts |
+| `--password-stdin` | Read the account's password as one UTF-8 line through EOF; use instead of `--password` |
 | `--location <folder>` | Keep the machine in this folder instead of the one for new machines |
-| `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs `--password`; macOS leaves Remote Login off |
+| `--no-ssh-key` | Don't install your SSH key in the account. Linux then needs a password; macOS leaves Remote Login off |
 | `--rosetta` | Linux: run x86-64 programs with [Rosetta](linux-guests.md#rosetta), using Apple's backend without GPU acceleration; can't be combined with `--gpu` |
 | `--nested-virt` | Linux: let the guest run virtual machines of its own with KVM ([nested virtualization](linux-guests.md#nested-virtualization)). Needs an M3 or later; can't be combined with `--gpu` |
 | `--gpu` | Linux: enable [graphics acceleration](linux-guests.md#graphics-acceleration). Windows: install the experimental [3D driver](windows-guests.md#graphics-acceleration). Off by default for both, including Omarchy |
