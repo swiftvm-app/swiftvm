@@ -38,11 +38,28 @@ up to date.
 - The guests' host keys are kept apart from your own `known_hosts`. A guest's
   key is accepted the first time you connect and checked from then on.
 
-For a new account made with `swiftvm create`, `--ssh-identity <private-key-path>` selects an existing pair, or `--managed-ssh-key` creates or reuses a dedicated pair in `SSH Identity` inside the selected SwiftVM data folder. Managed selection does not consult personal keys. Without either option, the automatic selection above is unchanged. The two options are mutually exclusive, conflict with `--no-ssh-key`, and cannot be used with templates, which keep their existing account. An older app rejects explicit selection rather than falling back to its automatic choice.
+### Choose a key for a new machine
 
-Explicit selection requires an unencrypted private key and its matching adjacent `.pub` file. Both files and their folder must belong to the current user. Symbolic or multiple links refuse; the private key must not be accessible to other users, and the public key and folder must not be writable by them. Paths with control characters, quotes, backslashes, `#`, `$` or `%` refuse because SSH configuration can parse or expand them. Ordinary spaces are supported. Missing, mismatched, invalid, partial managed or unsafe identities fail without selecting another key or overwriting existing material.
+To use an existing key pair for the new account, give the private key's path:
 
-Explicit encrypted keys refuse without prompting, including when an SSH agent has them loaded. Automatic selection retains its existing passphrase/agent behavior. A managed pair is generated without a passphrase in its private directory; it is published as a complete pair and reused thereafter. Only the public key is installed in the guest. The selected private-key path is used for bootstrap and generated SSH configuration with `IdentitiesOnly yes`; the private key stays on the host. macOS explicit selection needs an image that provisions an account with Remote Login, as macOS 27 does.
+```bash
+swiftvm create debian-13 --ssh-identity "$HOME/.ssh/project_ed25519"
+```
+
+To keep SwiftVM's key apart from your personal keys, create or reuse a managed pair in `SSH Identity` inside the selected SwiftVM data folder:
+
+```bash
+swiftvm create debian-13 --managed-ssh-key
+```
+
+- Without either option, SwiftVM uses the automatic selection above. Managed selection does not consult personal keys.
+- Choose one option. Neither can be combined with `--no-ssh-key` or used with templates, which keep their existing account. An older app refuses explicit selection instead of falling back to another key.
+- An explicit key must be unencrypted and have a matching adjacent `.pub` file. Encrypted keys refuse without prompting, even if an SSH agent has them loaded. Automatic selection keeps its existing passphrase and agent behavior.
+- Both files and their folder must belong to you. Symbolic or multiple links refuse. The private key must not be accessible to other users; the public key and folder must not be writable by them.
+- Paths may contain ordinary spaces. Control characters, quotes, backslashes, `#`, `$` and `%` refuse because SSH configuration can parse or expand them.
+- Missing, mismatched, invalid, unsafe or partial managed identities fail without selecting another key or overwriting existing material. A new managed pair has no passphrase and is published as a complete pair in its private directory, then reused.
+- Only the public key is installed in the guest; private material stays on your Mac. Bootstrap and generated SSH configuration use the selected private-key path with `IdentitiesOnly yes`.
+- For macOS guests, explicit selection needs an image that provisions an account with Remote Login, as macOS 27 does.
 
 ## Guests you installed yourself
 
