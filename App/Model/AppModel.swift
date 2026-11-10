@@ -16,6 +16,7 @@ final class AppModel {
     static let shared = AppModel()
 
     let library: VMLibrary
+    private let libraryOwnership: LibraryOwnership
     /// The machines that were saved to make new machines from.
     let templates: VMTemplateLibrary
     /// Downloads Linux images and macOS restore images, into a folder the user can change.
@@ -122,6 +123,12 @@ final class AppModel {
     }
 
     private init() {
+        do {
+            libraryOwnership = try LibraryOwnership(at: ControlPaths.applicationSupport)
+        } catch {
+            FileHandle.standardError.write(Data("SwiftVM: \(error.localizedDescription)\n".utf8))
+            exit(1)
+        }
         library = VMLibrary(rootDirectory: ControlPaths.applicationSupport)
         templates = VMTemplateLibrary(rootDirectory: ControlPaths.applicationSupport)
         downloader = ImageDownloader(
@@ -267,6 +274,7 @@ final class AppModel {
     private func startControlServer() {
         do {
             controlServer = try ControlServer(
+                ownership: libraryOwnership,
                 handler: { [weak self] request in
                     await self?.handle(request) ?? .failure("\(AppIdentity.current.name) is shutting down.")
                 },

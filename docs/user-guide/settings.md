@@ -81,6 +81,7 @@ for Windows guests.
 | --- | --- |
 | `~/Library/Application Support/SwiftVM/Machines/` | One `<name>.swiftvm` package per machine, unless you [keep them elsewhere](#storage) |
 | `~/Library/Application Support/SwiftVM/library.json` | The list of your machines and where each one is |
+| `~/Library/Application Support/SwiftVM/library.lock` | Exclusive controller ownership. Leave this file in place; it is reusable after the owner exits |
 | `~/Library/Application Support/SwiftVM/Templates/` | One `<name>.swiftvmtemplate` package per [template](../features/templates.md), unless you [keep them elsewhere](#storage) |
 | `~/Library/Application Support/SwiftVM/templates.json` | Where templates are kept, once you have chosen another folder for them |
 | `~/Library/Application Support/SwiftVM/ssh_config` | The SSH configuration SwiftVM generates |

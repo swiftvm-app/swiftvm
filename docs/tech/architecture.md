@@ -80,6 +80,12 @@ can connect. `swiftvm` sends JSON requests and waits for their results.
 Console sessions and guest jobs switch to streaming data after the app
 accepts the request.
 
+Before loading the library, the app takes exclusive ownership through `library.lock`. A second controller using the same data folder fails before loading its machines or replacing its socket, regardless of app identity. Command-line clients continue to use the owning app's endpoint. Standalone control servers take the same ownership and retain it until their listener and active requests have finished.
+
+The ownership file is persistent: closing its descriptor or exiting releases the lock; the file itself stays in place for the next owner. Do not delete it to bypass a collision. The data folder must belong to the current user and must not be writable by other users. Symlinked, multiply linked or otherwise unsafe ownership files, live existing endpoints and unsafe socket paths are refused. A stale socket can be replaced after ownership is acquired.
+
+This protects the data folder and control endpoint. It does not prove that a guest backend has released its resources, or make it safe to use another data folder to open the same running VM package.
+
 The bundled command-line tool locates its app from its executable path.
 `SWIFTVM_HOME` can select a different data folder; see
 [Building](building.md#the-development-copy).
