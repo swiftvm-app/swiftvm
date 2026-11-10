@@ -153,6 +153,12 @@ public final class GuestAgent {
         await request { .shutDown(id: $0) }
     }
 
+    /// A negative acknowledgment differs from a request whose answer was lost.
+    public func shutDownResult(timeout: Duration) async -> GuestRequestResult? {
+        guard isConnected, let connection else { return nil }
+        return await connection.request(timeout: timeout) { .shutDown(id: $0) }
+    }
+
     /// Gives the guest a time zone, named as in the time zone database (`Europe/Berlin`).
     public func setTimeZone(_ identifier: String) async -> Bool {
         guard setsTimeZone, let connection else { return false }

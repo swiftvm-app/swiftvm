@@ -8,6 +8,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case start
         /// Ask the guest to shut down and wait until it has.
         case stop
+        /// One selected graceful request, without fallback or repetition. Older apps must reject it.
+        case shutdownOnce = "shutdown-once"
         case forceStop = "force-stop"
         case suspend
         case pause
@@ -245,8 +247,10 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var job: GuestJob?
     /// For `control`: what to do on the machine's desktop.
     public var control: ControlCall?
-    /// For `wait`: how many seconds to wait at most.
+    /// For `wait` and `shutdown-once`: how many seconds to wait at most.
     public var timeout: Double?
+    /// For `shutdown-once`: `agent` or `power-button`, with no fallback to another mechanism.
+    public var shutdownMechanism: String?
     /// For `move`: absolute path of the folder the machine is to be kept in.
     public var location: String?
 
@@ -261,7 +265,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
         control: ControlCall? = nil, timeout: Double? = nil, location: String? = nil, template: String? = nil,
-        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil, macAddress: String? = nil
+        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil, macAddress: String? = nil,
+        shutdownMechanism: String? = nil
     ) {
         self.command = command
         self.machine = machine
@@ -287,6 +292,7 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         self.networkMode = networkMode
         self.bridgedInterfaceIdentifier = bridgedInterfaceIdentifier
         self.macAddress = macAddress
+        self.shutdownMechanism = shutdownMechanism
     }
 }
 
@@ -589,6 +595,20 @@ public struct TemplateSummary: Codable, Sendable, Equatable {
 }
 
 public struct ControlResponse: Codable, Sendable, Equatable {
+    public struct Shutdown: Codable, Sendable, Equatable {
+        public var delivery: String
+        public var observedState: String
+        public var timedOut: Bool
+        public var requestError: String?
+
+        public init(delivery: String, observedState: String, timedOut: Bool, requestError: String? = nil) {
+            self.delivery = delivery
+            self.observedState = observedState
+            self.timedOut = timedOut
+            self.requestError = requestError
+        }
+    }
+
     public struct NetworkInterface: Codable, Sendable, Equatable {
         public var identifier: String
         public var name: String
@@ -618,11 +638,13 @@ public struct ControlResponse: Codable, Sendable, Equatable {
     /// than this.
     public var creations: [CreationSummary]?
     public var networkInterfaces: [NetworkInterface]?
+    /// The selected request's delivery, separately from what the app observed afterwards.
+    public var shutdown: Shutdown?
 
     public init(
         ok: Bool, error: String? = nil, machines: [MachineSummary] = [], snapshots: [SnapshotSummary]? = nil, note: String? = nil,
         usbDevices: [USBDeviceSummary]? = nil, setupScripts: [SetupScriptSummary]? = nil, templates: [TemplateSummary]? = nil,
-        creations: [CreationSummary]? = nil, networkInterfaces: [NetworkInterface]? = nil
+        creations: [CreationSummary]? = nil, networkInterfaces: [NetworkInterface]? = nil, shutdown: Shutdown? = nil
     ) {
         self.ok = ok
         self.error = error
@@ -634,6 +656,7 @@ public struct ControlResponse: Codable, Sendable, Equatable {
         self.templates = templates
         self.creations = creations
         self.networkInterfaces = networkInterfaces
+        self.shutdown = shutdown
     }
 
     public static func failure(_ message: String) -> ControlResponse {
