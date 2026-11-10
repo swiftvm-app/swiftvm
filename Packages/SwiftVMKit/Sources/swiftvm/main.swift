@@ -11,7 +11,10 @@ Usage: swiftvm <command> [arguments]
   create <system> [options]         Create a machine and start it. Then `swiftvm wait` until it is ready
       <system> is macos, windows, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
-      --user <name>  --password <password>  --no-start
+      --user <name>  --password <password> | --password-stdin  --no-start
+      --password-stdin             Read one UTF-8 line through EOF, up to 4096 password bytes. Removes
+                                    one final LF or CRLF, preserving other whitespace. No NUL or other
+                                    line breaks. Give one password option, once; prefer stdin in scripts
       --location <folder>           Keep the machine in this folder, on an external disk for one, instead
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
@@ -470,6 +473,7 @@ case "create":
     }
     var parameters = ControlRequest.CreateParameters(distribution: system ?? "")
     var options: [String] = []
+    var passwordOption: String?
     var index = system == nil ? 0 : 1
     func value(for option: String) -> String {
         index += 1
@@ -490,7 +494,10 @@ case "create":
         case "--memory": parameters.memoryGigabytes = number(for: option)
         case "--disk": parameters.diskGigabytes = number(for: option)
         case "--user": parameters.user = value(for: option)
-        case "--password": parameters.password = value(for: option)
+        case "--password", "--password-stdin":
+            guard passwordOption == nil else { fail("Give --password or --password-stdin, once.") }
+            passwordOption = option
+            if option == "--password" { parameters.password = value(for: option) }
         case "--location": parameters.location = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--no-ssh-key": parameters.installsSSHKey = false
         case "--rosetta": parameters.rosetta = true
@@ -519,6 +526,13 @@ case "create":
         let allowed: Set = ["--template", "--name", "--cpus", "--memory", "--disk", "--location", "--no-start"]
         if let option = options.first(where: { !allowed.contains($0) }) {
             fail("\(option) isn't for a machine made from a template, which keeps the template's system and account.")
+        }
+    }
+    if passwordOption == "--password-stdin" {
+        do {
+            parameters.password = try PasswordInput.read()
+        } catch {
+            fail(error.localizedDescription)
         }
     }
     // The app creates the machine, and goes on with it when this tool is stopped while it waits.
