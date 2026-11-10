@@ -759,17 +759,17 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         let daemon = AgentDaemon(system: system, queue: queue)
         let (agent, mac) = FarEnd.makeLine()
         defer { mac.hangUp() }
-        var size: Int32 = 4096
+        var size: Int32 = 256
         for descriptor in [agent, mac.descriptor] {
-            setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
-            setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+            try #require(setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size)) == 0)
+            try #require(setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size)) == 0)
         }
         daemon.serveJob(on: agent)
         let script = """
             if [ "$2" = stderr ]; then exec 1>&2; fi
-            dd if=/dev/zero bs=8192 count=1 2>/dev/null
+            dd if=/dev/zero bs=512 count=1 2>/dev/null
             sleep 0.2
-            dd if=/dev/zero bs=8192 count=1 2>/dev/null
+            dd if=/dev/zero bs=512 count=1 2>/dev/null
             : > "$1"
             """
         mac.send(GuestJob.exec(.init(arguments: ["sh", "-c", script, "output", finished.path, standardError ? "stderr" : "stdout"])))
@@ -777,6 +777,7 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         mac.send(JobFrame(.input).encoded)
         // The command has printed everything and can exit, but the first frame is still blocked on
         // this reader. Time spent sending must not cost it the bytes still waiting in the pipe.
+        // Each write fits even a minimum-size POSIX pipe, but exceeds the socket's send buffer.
         try #require(await eventually { FileManager.default.fileExists(atPath: finished.path) })
         try await Task.sleep(for: .seconds(CommandJob.outputGrace + 1))
         var printed = Data()
@@ -787,7 +788,7 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
             }
             end = frame.end
         }
-        #expect(printed == Data(repeating: 0, count: 16384))
+        #expect(printed == Data(repeating: 0, count: 1024))
         #expect(end == .success)
     }
 
