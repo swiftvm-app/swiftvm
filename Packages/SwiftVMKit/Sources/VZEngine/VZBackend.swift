@@ -13,6 +13,7 @@ public final class VZBackend: NSObject, VMBackend {
     private let virtualMachine: VZVirtualMachine
     private let vzConfiguration: VZVirtualMachineConfiguration
     private let machineConfiguration: VMConfiguration
+    private let ownership: PackageOwnership
     /// Creates a fresh attachment when an interface is plugged back in.
     private let attachmentProvider: @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment
     private var view: VZVirtualMachineView?
@@ -31,12 +32,14 @@ public final class VZBackend: NSObject, VMBackend {
     init(
         vzConfiguration: VZVirtualMachineConfiguration,
         machineConfiguration: VMConfiguration,
+        ownership: PackageOwnership,
         diskExports: [CompressedDiskExport] = [],
         attachmentProvider: @escaping @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment,
         usbAccessory: @escaping @MainActor (USBDevice.ID) -> AAUSBAccessory? = { _ in nil }
     ) {
         self.vzConfiguration = vzConfiguration
         self.machineConfiguration = machineConfiguration
+        self.ownership = ownership
         self.capturesSystemKeys = machineConfiguration.keyboard.capturesSystemKeys
         self.unpluggedInterfaces = Set(machineConfiguration.networkInterfaces.filter { !$0.isConnected }.map(\.id))
         self.attachmentProvider = attachmentProvider

@@ -376,14 +376,18 @@ public final class VMLibrary {
         if let activity = machine.activity {
             throw VMError.busy(name: machine.name, activity)
         }
-        do {
-            if movingToTrash {
-                try FileManager.default.trashItem(at: machine.bundle.url, resultingItemURL: nil)
-            } else {
-                try FileManager.default.removeItem(at: machine.bundle.url)
+        if Self.presence(of: machine.bundle.url) != .missing {
+            let ownership = try PackageOwnership(in: machine.bundle, configuration: machine.configuration)
+            defer { withExtendedLifetime(ownership) {} }
+            do {
+                if movingToTrash {
+                    try FileManager.default.trashItem(at: machine.bundle.url, resultingItemURL: nil)
+                } else {
+                    try FileManager.default.removeItem(at: machine.bundle.url)
+                }
+            } catch where Self.presence(of: machine.bundle.url) == .missing {
+                // Deleted outside the app before its folder's notification reached us.
             }
-        } catch where Self.presence(of: machine.bundle.url) == .missing {
-            // Deleted outside the app before its folder's notification reached us.
         }
         machines.removeAll { $0.id == machine.id }
         entries.removeAll { $0.details?.id == machine.id || $0.url.path == machine.bundle.url.path }
@@ -417,10 +421,12 @@ public final class VMLibrary {
             let destination = VMBundle(url: availableBundleURL(forName: machine.name, in: folder))
 
             var isCopied = false
+            var destinationOwnership: PackageOwnership?
+            defer { withExtendedLifetime(destinationOwnership) {} }
             if rename(source.url.path, destination.url.path) != 0 {
                 let code = errno
                 guard code == EXDEV else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
-                try await copy(machine, to: destination.url, in: folder)
+                destinationOwnership = try await copy(machine, to: destination.url, in: folder)
                 isCopied = true
             }
 
@@ -467,7 +473,7 @@ public final class VMLibrary {
     }
 
     /// Copies a machine's bundle to `destination` on another disk, by way of that folder's staging directory.
-    private func copy(_ machine: VirtualMachine, to destination: URL, in folder: URL) async throws {
+    private func copy(_ machine: VirtualMachine, to destination: URL, in folder: URL) async throws -> PackageOwnership {
         let source = machine.bundle
         // Looked up off the main actor: a disk that was asleep takes its time to answer.
         let needed = await Task.detached { source.totalAllocatedSize }.value
@@ -487,6 +493,7 @@ public final class VMLibrary {
         let report: @Sendable (Double) -> Void = { fraction in
             Task { @MainActor in machine.reportProgress(fraction, of: .moving) }
         }
+        let ownership: PackageOwnership
         do {
             try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
@@ -495,6 +502,7 @@ public final class VMLibrary {
             } onCancel: {
                 cancellation.set()
             }
+            ownership = try PackageOwnership(in: staged, configuration: staged.loadConfiguration())
             try FileManager.default.moveItem(at: staged.url, to: destination)
         } catch {
             discard(staged: staged)
@@ -502,6 +510,7 @@ public final class VMLibrary {
         }
         rmdir(staged.url.deletingLastPathComponent().path)
         forgetStagedBundle(at: staged.url)
+        return ownership
     }
 
     // MARK: Private

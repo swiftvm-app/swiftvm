@@ -77,7 +77,7 @@ private final class FakeBackend: VMBackend {
 private final class FakeProvider: VMBackendProvider {
     let backend = FakeBackend()
 
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { backend }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { backend }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -90,6 +90,7 @@ private final class FakeProvider: VMBackendProvider {
     private func makeMachine(family: GuestFamily = .macOS) throws -> VirtualMachine {
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: family), cpuCount: 4, memorySize: 8 << 30, disks: [])
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
         machine.isHostLocked = { false }
@@ -120,7 +121,9 @@ private final class FakeProvider: VMBackendProvider {
         let library = VMLibrary(rootDirectory: directory.appending(path: "library"))
         library.backendProvider = provider
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
-        let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration))
+        let bundle = try VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration)
+        try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL)
+        let machine = try library.add(bundle)
         machine.isHostLocked = { false }
 
         library.allowsStarting = false
@@ -146,7 +149,9 @@ private final class FakeProvider: VMBackendProvider {
         let library = VMLibrary(rootDirectory: directory.appending(path: "library"))
         library.backendProvider = provider
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
-        let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration))
+        let bundle = try VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration)
+        try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL)
+        let machine = try library.add(bundle)
         machine.isHostLocked = { false }
         await machine.start()
         try #require(machine.state == .running)
@@ -414,6 +419,7 @@ private final class FakeProvider: VMBackendProvider {
     private func makeRunningMachine(family: GuestFamily = .macOS) async throws -> VirtualMachine {
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: family), cpuCount: 4, memorySize: 8 << 30, disks: [])
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
         machine.isHostLocked = { false }

@@ -29,7 +29,7 @@ private final class StubBackend: VMBackend {
 
 @MainActor
 private final class StubProvider: VMBackendProvider {
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { StubBackend() }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { StubBackend() }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
