@@ -17,6 +17,8 @@ private final class DriveBackend: VMBackend {
     var startError: (any Error)?
     /// Runs while the guest's memory is being saved, for things that happen in the middle of a suspend.
     var whileSaving: (() -> Void)?
+    /// Allows a file to become unwritable only after revert has passed its preflight and staging.
+    var whileStopping: (() throws -> Void)?
     var capturesSystemKeys: Bool?
 
     func start(options: VMStartOptions) async throws {
@@ -24,7 +26,10 @@ private final class DriveBackend: VMBackend {
         if let startError { throw startError }
     }
     func requestStop() throws {}
-    func stop() async throws { stopCount += 1 }
+    func stop() async throws {
+        stopCount += 1
+        try whileStopping?()
+    }
     func pause() async throws {}
     func resume() async throws {}
     func saveState(to url: URL) async throws {
@@ -326,6 +331,37 @@ private struct Scratch {
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: machine.bundle.url.path).filter { $0.hasPrefix(".reverting-") }
         #expect(leftovers.isEmpty)
         await machine.forceStop()
+    }
+
+    @Test func aConfigurationSaveFailureAfterRevertDropsIncompatibleMemory() async throws {
+        defer { scratch.cleanUp() }
+        let machine = try scratch.makeMachine()
+        await machine.start()
+        let snapshot = try await machine.takeSnapshot()
+        try #require(snapshot.includesMemory)
+        await machine.forceStop()
+        try machine.updateConfiguration { $0.cpuCount = 4 }
+        await machine.start()
+        try scratch.writeDisk("second", of: machine)
+        let stops = scratch.provider.backend.stopCount
+        let configurationURL = machine.bundle.configurationURL
+        let obstruction = configurationURL.appending(path: "in the way")
+        scratch.provider.backend.whileStopping = {
+            try FileManager.default.removeItem(at: configurationURL)
+            try FileManager.default.createDirectory(at: obstruction, withIntermediateDirectories: true)
+        }
+
+        await #expect(throws: (any Error).self) { try await machine.revert(to: snapshot) }
+        #expect(scratch.provider.backend.stopCount == stops + 1)
+        #expect(try scratch.diskContents(of: machine) == "first")
+        #expect(machine.configuration.cpuCount == 4)
+        #expect(snapshot.configuration.cpuCount == 2)
+        #expect(FileManager.default.fileExists(atPath: obstruction.path))
+        #expect(machine.state == .stopped)
+        #expect(!machine.bundle.hasSavedState)
+        #expect(machine.activity == nil)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: machine.bundle.url.path).filter { $0.hasPrefix(".reverting-") }
+        #expect(leftovers.isEmpty)
     }
 
     @Test func aBootThrowsAwayMemoryItIsNotResuming() async throws {
