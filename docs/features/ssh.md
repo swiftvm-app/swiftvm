@@ -38,6 +38,12 @@ up to date.
 - The guests' host keys are kept apart from your own `known_hosts`. A guest's
   key is accepted the first time you connect and checked from then on.
 
+For a new account made with `swiftvm create`, `--ssh-identity <private-key-path>` selects an existing pair, or `--managed-ssh-key` creates or reuses a dedicated pair in `SSH Identity` inside the selected SwiftVM data folder. Managed selection does not consult personal keys. Without either option, the automatic selection above is unchanged. The two options are mutually exclusive, conflict with `--no-ssh-key`, and cannot be used with templates, which keep their existing account. An older app rejects explicit selection rather than falling back to its automatic choice.
+
+Explicit selection requires an unencrypted private key and its matching adjacent `.pub` file. Both files and their folder must belong to the current user. Symbolic or multiple links refuse; the private key must not be accessible to other users, and the public key and folder must not be writable by them. Paths with control characters, quotes, backslashes, `#`, `$` or `%` refuse because SSH configuration can parse or expand them. Ordinary spaces are supported. Missing, mismatched, invalid, partial managed or unsafe identities fail without selecting another key or overwriting existing material.
+
+Explicit encrypted keys refuse without prompting, including when an SSH agent has them loaded. Automatic selection retains its existing passphrase/agent behavior. A managed pair is generated without a passphrase in its private directory; it is published as a complete pair and reused thereafter. Only the public key is installed in the guest. The selected private-key path is used for bootstrap and generated SSH configuration with `IdentitiesOnly yes`; the private key stays on the host. macOS explicit selection needs an image that provisions an account with Remote Login, as macOS 27 does.
+
 ## Guests you installed yourself
 
 A guest installed from a disc may have no SSH server. Install one in the

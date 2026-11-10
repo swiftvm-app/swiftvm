@@ -15,6 +15,8 @@ Usage: swiftvm <command> [arguments]
       --location <folder>           Keep the machine in this folder, on an external disk for one, instead
                                     of the folder for new machines
       --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
+      --ssh-identity <private-key>   Use this unencrypted key pair, with an adjacent matching .pub
+      --managed-ssh-key             Create or reuse a dedicated identity in this SwiftVM data folder
       --rosetta                     Linux: run x86-64 programs with Rosetta, using Apple's backend without GPU acceleration
       --nested-virt                 Linux: let the guest run virtual machines of its own with KVM, using Apple's
                                     backend without GPU acceleration. Needs an M3 or later
@@ -493,6 +495,16 @@ case "create":
         case "--password": parameters.password = value(for: option)
         case "--location": parameters.location = URL(fileURLWithPath: value(for: option)).standardizedFileURL.path
         case "--no-ssh-key": parameters.installsSSHKey = false
+        case "--ssh-identity":
+            guard parameters.sshIdentityPath == nil else { fail("Give --ssh-identity once.") }
+            let path = value(for: option)
+            guard !path.isEmpty, !path.hasPrefix("--") else { fail("--ssh-identity needs a private key path.") }
+            parameters.sshIdentityPath = path
+            if let problem = parameters.sshIdentityProblem { fail(problem) }
+            parameters.sshIdentityPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        case "--managed-ssh-key":
+            guard parameters.usesManagedSSHKey != true else { fail("Give --managed-ssh-key once.") }
+            parameters.usesManagedSSHKey = true
         case "--rosetta": parameters.rosetta = true
         case "--nested-virt": parameters.nestedVirtualization = true
         case "--gpu": parameters.acceleratesGraphics = true
@@ -513,6 +525,7 @@ case "create":
     if options.contains("--gpu"), options.contains("--no-gpu") {
         fail("Use --gpu or --no-gpu, not both.")
     }
+    if let problem = parameters.sshIdentityProblem { fail(problem) }
     if parameters.template != nil {
         guard system == nil else { fail("Give a system to install or a template, not both.") }
         // A template brings its system, its account and whatever was set up in it.
@@ -546,7 +559,7 @@ case "create":
         source.resume()
         return (signalNumber, previous, source)
     }
-    let created = send(ControlRequest(command: .create, create: parameters))
+    let created = send(ControlRequest(command: parameters.hasExplicitSSHIdentity ? .createWithSSHIdentity : .create, create: parameters))
     for (signalNumber, previous, source) in interruptions {
         source.cancel()
         signal(signalNumber, previous)

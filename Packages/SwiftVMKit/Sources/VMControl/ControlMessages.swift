@@ -16,6 +16,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Show the machine's window.
         case open
         case create
+        /// Creation with an explicit SSH identity. Older apps must reject instead of selecting their
+        /// usual identity after ignoring the new parameters.
+        case createWithSSHIdentity = "create-with-ssh-identity"
         case delete
         /// Quit the app. Refused while a machine is running, and while one is being created unless
         /// ``ControlRequest/cancelsCreations`` is set.
@@ -170,6 +173,10 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         public var acceleratesGraphics: Bool?
         /// Whether this Mac's SSH key lets into the account. `nil` is yes.
         public var installsSSHKey: Bool?
+        /// Existing unencrypted private key with an adjacent matching .pub file; absolute host path.
+        public var sshIdentityPath: String?
+        /// Use a dedicated identity in this SwiftVM data folder, instead of selecting a personal key.
+        public var usesManagedSSHKey: Bool?
         /// Name or UUID of the template to make the machine from, instead of installing a system. It
         /// brings its system, its account and whatever was set up in it, so of the above only the name,
         /// the processors, the memory, the disk size and the folder are for such a machine.
@@ -186,7 +193,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             diskGigabytes: Int? = nil, user: String? = nil, password: String? = nil, restoreImagePath: String? = nil,
             installerPath: String? = nil,
             scripts: [String]? = nil, location: String? = nil, rosetta: Bool? = nil, nestedVirtualization: Bool? = nil,
-            compressed: Bool? = nil, acceleratesGraphics: Bool? = nil, installsSSHKey: Bool? = nil, template: String? = nil, start: Bool = true
+            compressed: Bool? = nil, acceleratesGraphics: Bool? = nil, installsSSHKey: Bool? = nil,
+            sshIdentityPath: String? = nil, usesManagedSSHKey: Bool? = nil, template: String? = nil, start: Bool = true
         ) {
             self.distribution = distribution
             self.name = name
@@ -204,8 +212,27 @@ public struct ControlRequest: Codable, Sendable, Equatable {
             self.compressed = compressed
             self.acceleratesGraphics = acceleratesGraphics
             self.installsSSHKey = installsSSHKey
+            self.sshIdentityPath = sshIdentityPath
+            self.usesManagedSSHKey = usesManagedSSHKey
             self.template = template
             self.start = start
+        }
+
+        public var hasExplicitSSHIdentity: Bool { sshIdentityPath != nil || usesManagedSSHKey == true }
+
+        /// Shared argument rules, applied before the CLI dispatches and before the app provisions.
+        public var sshIdentityProblem: String? {
+            guard hasExplicitSSHIdentity else { return nil }
+            if sshIdentityPath != nil, usesManagedSSHKey == true { return "Use --ssh-identity or --managed-ssh-key, not both." }
+            if installsSSHKey == false { return "An explicit SSH identity cannot be combined with --no-ssh-key." }
+            if template != nil { return "An SSH identity is for a new account, not a machine made from a template." }
+            if let path = sshIdentityPath {
+                guard !path.isEmpty, path.rangeOfCharacter(from: .controlCharacters.union(.newlines)) == nil,
+                      !path.contains(where: { "\"'\\%$#".contains($0) }) else {
+                    return "SSH identity paths must be nonempty and cannot contain control characters, quotes, backslashes, #, $, or %."
+                }
+            }
+            return nil
         }
     }
 
