@@ -232,7 +232,7 @@ public final class ControlServer: @unchecked Sendable {
         unlink(socketURL.path)
     }
 
-    private static func serve(_ connection: Int32, handler: Handler, streamHandler: StreamHandler?) async {
+    static func serve(_ connection: Int32, handler: @escaping Handler, streamHandler: StreamHandler?) async {
         defer { close(connection) }
         while let line = ControlSocket.readLine(from: connection) {
             let request = try? JSONDecoder().decode(ControlRequest.self, from: line)
@@ -244,6 +244,13 @@ public final class ControlServer: @unchecked Sendable {
                 } else {
                     response = .failure("This command isn't available.")
                 }
+            } else if let request, request.command == .shutdownOnce {
+                // This request only observes after its one attempt; nobody needs that observation
+                // once its client has gone. Cancellation must not send another shutdown request.
+                let work = Task { await handler(request) }
+                let watch = ControlHangUp.watch(connection) { work.cancel() }
+                response = await work.value
+                watch.cancel()
             } else if let request {
                 response = await handler(request)
             }

@@ -102,7 +102,7 @@ The single-request command reports request delivery separately from the app's ob
 
 The timeout covers requesting and observing, defaults to 30 seconds and must be greater than zero and at most 86400 seconds. Exit 0 means the app observed `stopped`, 124 means the observation deadline expired, and 1 means it ended otherwise. An acknowledgment alone is not success. Observed state describes the app's lifecycle view; it is not independent proof that every backend resource was released.
 
-During observation the machine remains in its existing lifecycle state until its backend reports a change. Timeout or client disconnect leaves it available for inspection and triggers no retry or forced stop. A later invocation is an explicit new request, even after an earlier request with unknown delivery; inspect before repeating. Older apps reject the distinct single-request command instead of treating it as ordinary stop.
+During observation the machine remains in its existing lifecycle state until its backend reports a change. Timeout leaves it available for inspection; a client disconnect cancels its observation. Neither triggers a retry or forced stop, nor undoes the request already sent. A later invocation is an explicit new request, even after an earlier request with unknown delivery; inspect before repeating. Older apps reject the distinct single-request command instead of treating it as ordinary stop.
 
 ## Connecting
 

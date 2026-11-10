@@ -1,5 +1,6 @@
 import Foundation
 import GuestChannel
+import Synchronization
 import Testing
 @testable import VMControl
 
@@ -69,6 +70,40 @@ import Testing
         #expect(told.wait(timeout: .now() + .milliseconds(100)) == .timedOut)
         close(ends[1])
         #expect(told.wait(timeout: .now() + 5) == .success)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aDisconnectedShutdownClientCancelsItsObservation() async throws {
+        var ends: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0)
+        let (server, client) = (ends[0], ends[1])
+        _ = fcntl(server, F_SETNOSIGPIPE, 1)
+        let observed = Mutex((started: false, cancelled: false))
+        let serving = Task.detached {
+            await ControlServer.serve(server, handler: { _ in
+                observed.withLock { $0.started = true }
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    observed.withLock { $0.cancelled = true }
+                }
+                return .failure("Observation ended.")
+            }, streamHandler: nil)
+        }
+        try ControlSocket.writeLine(JSONEncoder().encode(ControlRequest(command: .shutdownOnce, machine: "fixture", timeout: 86400, shutdownMechanism: "power-button")), to: client)
+        let startDeadline = ContinuousClock.now + .seconds(2)
+        while !observed.withLock({ $0.started }), ContinuousClock.now < startDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        close(client)
+        #expect(observed.withLock { $0.started })
+        let cancelDeadline = ContinuousClock.now + .seconds(2)
+        while !observed.withLock({ $0.cancelled }), ContinuousClock.now < cancelDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(observed.withLock { $0.cancelled })
+        // Bound cleanup even against the unfixed server, whose observer outlives the client.
+        serving.cancel()
+        await serving.value
     }
 
     @Test func aJobTravelsInItsRequest() throws {

@@ -8,8 +8,8 @@ import VMControl
     }
 
     @Test func theOptInUsesADistinctWireCommandAndOneMechanism() throws {
-        #expect(try Stop.parse(["desk", "--once", "--via", "agent"]) ==
-                ControlRequest(command: .shutdownOnce, machine: "desk", timeout: 30, shutdownMechanism: "agent"))
+        #expect(try Stop.parse(["desk", "--once", "--via", "agent", "--timeout", "2"]) ==
+                ControlRequest(command: .shutdownOnce, machine: "desk", timeout: 2, shutdownMechanism: "agent"))
         #expect(try Stop.parse(["desk", "--timeout", "0.5", "--via", "power-button", "--once"]) ==
                 ControlRequest(command: .shutdownOnce, machine: "desk", timeout: 0.5, shutdownMechanism: "power-button"))
     }
