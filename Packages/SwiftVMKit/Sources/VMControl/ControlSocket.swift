@@ -157,18 +157,30 @@ public struct ControlClient: Sendable {
     }
 }
 
-/// Tells when a tool has gone from a connection on which it says nothing after its request.
+/// Notices peer EOF even when another request is queued and has not been read yet.
 public enum ControlHangUp {
-    /// Calls `gone` once when the other side of `connection` hangs up. Cancel what this returns before
-    /// the connection is closed.
-    public static func watch(_ connection: Int32, gone: @escaping @Sendable () -> Void) -> any DispatchSourceRead {
-        let source = DispatchSource.makeReadSource(fileDescriptor: connection, queue: .global())
+    /// Cancel before closing the connection. The source owns only its event queue, not the socket.
+    public static func watch(_ connection: Int32, gone: @escaping @Sendable () -> Void) throws -> any DispatchSourceRead {
+        let queue = kqueue()
+        guard queue >= 0 else { throw ControlSocketError.system("kqueue", errno) }
+        var change = kevent(ident: UInt(connection), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD | EV_CLEAR), fflags: 0, data: 0, udata: nil)
+        guard fcntl(queue, F_SETFD, FD_CLOEXEC) == 0, kevent(queue, &change, 1, nil, 0, nil) == 0 else {
+            let error = ControlSocketError.system("watch hangup", errno)
+            close(queue)
+            throw error
+        }
+        // EV_CLEAR reports each change once; an unread pipelined request cannot spin the source.
+        let source = DispatchSource.makeReadSource(fileDescriptor: queue, queue: .global())
         source.setEventHandler { [weak source] in
-            var byte: UInt8 = 0
-            guard recv(connection, &byte, 1, MSG_PEEK) == 0 else { return }
+            var event = kevent()
+            var immediate = timespec(tv_sec: 0, tv_nsec: 0)
+            let count = kevent(queue, nil, 0, &event, 1, &immediate)
+            if count < 0, errno == EINTR { return }
+            guard count < 0 || (count > 0 && Int32(event.flags) & (EV_EOF | EV_ERROR) != 0) else { return }
             source?.cancel()
             gone()
         }
+        source.setCancelHandler { close(queue) }
         source.resume()
         return source
     }
@@ -248,9 +260,15 @@ public final class ControlServer: @unchecked Sendable {
                 // This request only observes after its one attempt; nobody needs that observation
                 // once its client has gone. Cancellation must not send another shutdown request.
                 let work = Task { await handler(request) }
-                let watch = ControlHangUp.watch(connection) { work.cancel() }
-                response = await work.value
-                watch.cancel()
+                do {
+                    let watch = try ControlHangUp.watch(connection) { work.cancel() }
+                    response = await work.value
+                    watch.cancel()
+                } catch {
+                    work.cancel()
+                    _ = await work.value
+                    response = .failure(error.localizedDescription)
+                }
             } else if let request {
                 response = await handler(request)
             }

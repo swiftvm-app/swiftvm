@@ -633,9 +633,16 @@ extension AppModel {
         let work = Task { await controller.perform(call) }
         // The tool says nothing after its request, so that what shows on the connection is that it has
         // gone. What it asked for is called off then: a wait of ten minutes has nobody to wait for.
-        let watch = ControlHangUp.watch(connection) { work.cancel() }
-        let outcome = await work.value
-        watch.cancel()
+        let outcome: ControlOutcome
+        do {
+            let watch = try ControlHangUp.watch(connection) { work.cancel() }
+            outcome = await work.value
+            watch.cancel()
+        } catch {
+            work.cancel()
+            _ = await work.value
+            outcome = ControlOutcome(results: [.init(action: call.steps[0].action, error: error.localizedDescription)])
+        }
         let data = ControlOutcomeCoding.data(for: outcome)
         // Writing waits for the tool to read, and holds a thread of its own for that.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
