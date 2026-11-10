@@ -7,7 +7,7 @@ public final class LibraryOwnership: Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .inUse: "This SwiftVM data folder is already in use by another controller."
+            case .inUse: "This SwiftVM data folder is already in use by another controller. Use the app already managing this folder, or choose a separate SWIFTVM_HOME."
             case .unsafeDirectory: "The SwiftVM data folder must be owned by this user and not writable by other users."
             case .unsafeFile: "The SwiftVM library ownership file is unsafe; exclusive ownership could not be established."
             case .wrongDirectory: "The control socket and library ownership belong to different data folders."
