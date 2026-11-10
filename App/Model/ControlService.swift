@@ -143,6 +143,13 @@ extension AppModel {
         switch request.command {
         case .start:
             await machine.start()
+        case .coldBoot:
+            do {
+                try await machine.coldBoot()
+            } catch {
+                machine.lastError = nil
+                return .failure(error.localizedDescription)
+            }
         case .stop:
             let request = await shutDown(machine)
             // The machine goes back to running when the guest doesn't act on the request.

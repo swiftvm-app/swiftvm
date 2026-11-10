@@ -770,8 +770,23 @@ public final class VirtualMachine: Identifiable {
         await performStart(inRecovery: inRecovery)
     }
 
+    /// Boots a stopped machine without saved memory. Success confirms a boot, not guest readiness.
+    /// Saved memory, including an unexpected file in a locally stopped package, is never discarded.
+    public func coldBoot() async throws {
+        if let activity { throw VMError.busy(name: name, activity) }
+        guard state == .stopped, !isAboutToRestart, !isChangingPause else {
+            throw VMError.invalidConfiguration("Shut down “\(name)” before requesting a cold boot. Use start to resume a suspended machine, or explicitly discard its saved state first.")
+        }
+        try bundle.requireNoSavedState()
+        let runs = startCount
+        await performStart(requiresColdBoot: true)
+        guard startCount > runs else {
+            throw VMError.invalidConfiguration(lastError?.message ?? "“\(name)” did not complete its cold boot. Check the machine's state and try again.")
+        }
+    }
+
     /// - Parameter carryingOn: The guest goes back to what it was doing a moment ago, after a snapshot.
-    private func performStart(inRecovery: Bool = false, carryingOn: Bool = false) async {
+    private func performStart(inRecovery: Bool = false, carryingOn: Bool = false, requiresColdBoot: Bool = false) async {
         guard state == .stopped || state == .suspended, isStartAllowed() else { return }
         let restoring = state == .suspended && bundle.hasSavedState
         lastError = nil
@@ -781,6 +796,9 @@ public final class VirtualMachine: Identifiable {
             let backend = try await backendProvider.makeBackend(for: self, console: console.connect(continuing: restoring))
             backend.eventHandler = { [weak self] event in self?.handle(event) }
             self.backend = backend
+            // Backend construction can suspend. Refuse memory that appeared meanwhile, without
+            // removing it or letting the ordinary start path choose a resume instead.
+            if requiresColdBoot { try bundle.requireNoSavedState() }
             let display = configuration.display
             startingDisplaySize = DisplayPixels(
                 width: display.widthInPixels, height: display.heightInPixels, scale: Double(display.pixelsPerInch) / 72
@@ -794,7 +812,7 @@ public final class VirtualMachine: Identifiable {
             } else if !configuration.installation.isProvisioned {
                 options.provisioning = pendingProvisioning
             }
-            if !restoring {
+            if !restoring && !requiresColdBoot {
                 // Saved memory that this boot isn't resuming belongs to a disk that is about to change.
                 // Left behind, it would be offered for resuming later and wreck the file system.
                 bundle.removeSavedState()
