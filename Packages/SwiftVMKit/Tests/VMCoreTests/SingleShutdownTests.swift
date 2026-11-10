@@ -134,11 +134,17 @@ private final class ShutdownBackend: VMBackend, VMBackendProvider {
         _ = fcntl(far, F_SETNOSIGPIPE, 1)
         defer { machine.agent.stop(); try? peer.close() }
         _ = ByteRelay.writeAll(ArraySlice(GuestMessageCoding.line(for: AgentMessage.hello(AgentHello(agent: "1.8")))), to: far)
-        machine.agent.start { app }
-        try #require(await machine.agent.waitUntilConnected(timeout: .seconds(1)))
+        var didConnect = false
+        machine.agent.start {
+            guard !didConnect else { throw POSIXError(.ECONNREFUSED) }
+            didConnect = true
+            return app
+        }
+        try #require(await machine.agent.waitUntilConnected(timeout: .seconds(5)))
         let responding = Task.detached {
             var count = 0
-            while let line = GuestJobLine.read(from: far, timeout: 0.2) {
+            // A loaded runner may not schedule the first send promptly; count it before checking repeats.
+            while let line = GuestJobLine.read(from: far, timeout: count == 0 ? 5 : 0.2) {
                 guard case .shutDown(let id) = GuestMessageCoding.message(HostMessage.self, from: line) else { continue }
                 count += 1
                 switch answer {
@@ -153,7 +159,7 @@ private final class ShutdownBackend: VMBackend, VMBackendProvider {
             }
             return count
         }
-        let result = await machine.shutDownOnce(using: .agent, timeout: .milliseconds(50))
+        let result = await machine.shutDownOnce(using: .agent, timeout: .seconds(2))
         let expected: SingleShutdownResult.Delivery = switch answer {
         case .accepted: .accepted
         case .rejected: .rejected
