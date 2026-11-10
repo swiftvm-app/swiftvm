@@ -17,6 +17,8 @@ private final class DriveBackend: VMBackend {
     var startError: (any Error)?
     /// Runs while the guest's memory is being saved, for things that happen in the middle of a suspend.
     var whileSaving: (() -> Void)?
+    /// Allows a file to become unwritable only after revert has passed its preflight and staging.
+    var whileStopping: (() throws -> Void)?
     var capturesSystemKeys: Bool?
 
     func start(options: VMStartOptions) async throws {
@@ -24,7 +26,10 @@ private final class DriveBackend: VMBackend {
         if let startError { throw startError }
     }
     func requestStop() throws {}
-    func stop() async throws { stopCount += 1 }
+    func stop() async throws {
+        stopCount += 1
+        try whileStopping?()
+    }
     func pause() async throws {}
     func resume() async throws {}
     func saveState(to url: URL) async throws {
@@ -59,7 +64,7 @@ private final class DriveBackend: VMBackend {
 private final class DriveProvider: VMBackendProvider {
     let backend = DriveBackend()
 
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { backend }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { backend }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -80,6 +85,7 @@ private struct Scratch {
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
         try Data("first".utf8).write(to: bundle.diskURL(for: disk))
         try Data("nvram".utf8).write(to: bundle.efiVariableStoreURL)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
         machine.isHostLocked = { false }
@@ -305,23 +311,54 @@ private struct Scratch {
         #expect(machine.activity == nil)
     }
 
-    @Test func aRevertThatFailsHalfwayNeverLeavesMemoryForTheWrongDisk() async throws {
+    @Test func unreadableConfigurationIsRefusedBeforeRevertingFiles() async throws {
         defer { scratch.cleanUp() }
         let machine = try scratch.makeMachine()
         await machine.start()
         let snapshot = try await machine.takeSnapshot()
         try scratch.writeDisk("second", of: machine)
 
-        // The files go back, but the configuration that belongs with the saved memory can't be written.
+        // An unreadable configuration is not evidence that the current files may be replaced.
         let configurationURL = machine.bundle.configurationURL
         try FileManager.default.removeItem(at: configurationURL)
         try FileManager.default.createDirectory(at: configurationURL.appending(path: "in the way"), withIntermediateDirectories: true)
 
         await #expect(throws: (any Error).self) { try await machine.revert(to: snapshot) }
-        // The machine says what its files say: shut down, on the snapshot's disk, with nothing to resume.
+        #expect(machine.state == .running)
+        #expect(!machine.bundle.hasSavedState)
+        #expect(try scratch.diskContents(of: machine) == "second")
+        #expect(machine.activity == nil)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: machine.bundle.url.path).filter { $0.hasPrefix(".reverting-") }
+        #expect(leftovers.isEmpty)
+        await machine.forceStop()
+    }
+
+    @Test func aConfigurationSaveFailureAfterRevertDropsIncompatibleMemory() async throws {
+        defer { scratch.cleanUp() }
+        let machine = try scratch.makeMachine()
+        await machine.start()
+        let snapshot = try await machine.takeSnapshot()
+        try #require(snapshot.includesMemory)
+        await machine.forceStop()
+        try machine.updateConfiguration { $0.cpuCount = 4 }
+        await machine.start()
+        try scratch.writeDisk("second", of: machine)
+        let stops = scratch.provider.backend.stopCount
+        let configurationURL = machine.bundle.configurationURL
+        let obstruction = configurationURL.appending(path: "in the way")
+        scratch.provider.backend.whileStopping = {
+            try FileManager.default.removeItem(at: configurationURL)
+            try FileManager.default.createDirectory(at: obstruction, withIntermediateDirectories: true)
+        }
+
+        await #expect(throws: (any Error).self) { try await machine.revert(to: snapshot) }
+        #expect(scratch.provider.backend.stopCount == stops + 1)
+        #expect(try scratch.diskContents(of: machine) == "first")
+        #expect(machine.configuration.cpuCount == 4)
+        #expect(snapshot.configuration.cpuCount == 2)
+        #expect(FileManager.default.fileExists(atPath: obstruction.path))
         #expect(machine.state == .stopped)
         #expect(!machine.bundle.hasSavedState)
-        #expect(try scratch.diskContents(of: machine) == "first")
         #expect(machine.activity == nil)
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: machine.bundle.url.path).filter { $0.hasPrefix(".reverting-") }
         #expect(leftovers.isEmpty)
@@ -642,7 +679,7 @@ private struct Scratch {
         let copyConfiguration = configuration.duplicated(name: "Mac copy", sshAlias: "mac-copy")
         let copy = try original.duplicate(to: directory.appending(path: "Mac copy.swiftvm"), configuration: copyConfiguration)
         let names = try FileManager.default.contentsOfDirectory(atPath: copy.url.path).sorted()
-        #expect(names == ["aux.img", "config.json", "disk.img", "hardware-model.bin", "logs"])
+        #expect(names == ["aux.img", "config.json", "disk.img", "hardware-model.bin", "logs", "package.lock"])
         #expect(try String(contentsOf: copy.diskURL(for: disk), encoding: .utf8) == "disk.img")
         #expect(try FileManager.default.contentsOfDirectory(atPath: copy.logsDirectory.path).isEmpty)
         #expect(try copy.loadConfiguration().name == "Mac copy")

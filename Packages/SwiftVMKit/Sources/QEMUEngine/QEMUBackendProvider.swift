@@ -37,7 +37,7 @@ public final class QEMUBackendProvider: VMBackendProvider {
         return installation.directXBackend(on: host)
     }
 
-    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
+    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend {
         guard machine.configuration.engine == .qemu else { throw VMError.unsupportedEngine(machine.configuration.engine) }
         guard let installation else { throw QEMUError.notInstalled }
 
@@ -77,7 +77,7 @@ public final class QEMUBackendProvider: VMBackendProvider {
             ? try await networkManager.acquireDefaultNetwork(for: machine.id) : nil
         do {
             return try QEMUBackend(
-                configuration: configuration, bundle: machine.bundle, installation: installation, adapter: adapter,
+                configuration: configuration, bundle: machine.bundle, ownership: ownership, installation: installation, adapter: adapter,
                 directX: directX, network: network, console: console,
                 pressesKeyToBootInstaller: Self.bootsInstaller(configuration, bundle: machine.bundle)
             )

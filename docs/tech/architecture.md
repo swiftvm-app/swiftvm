@@ -26,6 +26,7 @@ in `Packages/SwiftVMKit`.
 | Module | Role |
 | --- | --- |
 | `VMCore` | Machine configuration, state, library, snapshots, templates, and backend interfaces |
+| `ResourceLocks` | Native resource-lock probes isolated from the controller's POSIX record locks |
 | `VZEngine` | macOS and Linux guests using Apple's Virtualization framework |
 | `QEMUEngine` | Windows guests, and Linux guests with graphics acceleration, using QEMU, including display and input |
 | `VMNetworking` | Shared NAT network, address reservations, and port forwarding |
@@ -48,6 +49,7 @@ A `.swiftvm` package contains the machine's files:
 | File | Contents |
 | --- | --- |
 | `config.json` | Machine configuration |
+| `package.lock` | Persistent cross-controller ownership inode; retained after a run ends |
 | `disk.img`, `disk.asif`, or `disk.swiftvmdisk` | Raw, ASIF, or compressed disk |
 | `efi-vars.fd` | Linux and Windows firmware variables |
 | `tpm-state.bin` | Windows TPM state, from swtpm |
@@ -66,12 +68,22 @@ See [Storage](../user-guide/settings.md#storage) for choosing folders and
 
 ## Starting a machine
 
-1. The app loads the configuration and selects the backend.
+1. The app loads the configuration, claims the package and checks its native resource files before constructing the backend.
 2. The machine joins SwiftVM's shared network, creating it if needed.
 3. The backend boots the guest or restores its saved state.
 4. SwiftVM connects to the guest tools, which report the guest's system,
    capabilities, and addresses.
 5. The app synchronizes the clock and applies guest integrations.
+
+## Package ownership
+
+`PackageOwnership` takes a nonblocking exclusive lock on `package.lock`. The directory and ownership file must be safe, owned by the current user, and not writable by other users. Symbolic or multiply linked ownership files refuse. The file is not truncated or unlinked during reuse. Existing packages acquire it on their first safe claim; new and copied packages have independent ownership inodes. The persisted configuration must still match the controller's view before an idle claim can change it.
+
+Ownership precedes the backend factory and is retained by the backend, including asynchronous work and references that outlive the local running state. QEMU and swtpm inherit explicit duplicates so a surviving package-writing child still excludes another controller. Startup's existing QEMU cleanup also requires a package claim. A stopped UI state or a process ID alone does not establish that a package can be changed.
+
+Idle configuration, saved-state, snapshot, clone, move and delete operations use the same guard. Snapshot and revert retain ownership continuously through staging, stopping and copying. After stopping their own backend, they explicitly wait for native file release before touching guest state; holding the controller's lease is not that proof. Apple's installer uses the same resource check. Required disks and macOS auxiliary storage must be accessible regular files. First-boot EFI and TPM files may be absent before use; a backend records when it uses them, after which disappearance refuses teardown proof. Missing, unsafe or unreadable required evidence and unsupported lock queries fail closed.
+
+Native resources can remain locked after a backend object is released, so a new claim checks record and whole-file locks as well as the ownership inode. The check runs in a C child with no Swift or Foundation work after fork: closing a probe descriptor in the controller itself could release that process's POSIX record locks. Controller leases close on incidental forks; explicit child launch uses separate handoff copies. This coordinates participating controllers and checks the named native resources; it does not adopt orphan backends or establish that every host, display or external-tool resource is gone.
 
 ## The control socket
 

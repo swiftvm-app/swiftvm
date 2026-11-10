@@ -47,7 +47,10 @@ enum TPMEmulator {
     }
 
     /// Starts the machine's TPM, and gives back QEMU's end of its line.
-    static func launch(program: URL, bundle: VMBundle) throws -> (process: QEMUProcess, engineEnd: Int32) {
+    static func launch(program: URL, bundle: VMBundle, ownership: PackageOwnership) throws -> (process: QEMUProcess, engineEnd: Int32) {
+        try ownership.expectRuntimeResource("tpm-state.bin")
+        let ownershipDescriptor = try ownership.duplicateDescriptor()
+        defer { close(ownershipDescriptor) }
         var ends: [Int32] = [0, 0]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         for end in ends {
@@ -57,7 +60,7 @@ enum TPMEmulator {
         defer { close(ends[0]) }
         do {
             let process = try QEMUProcess.launch(
-                program: program, arguments: arguments(stateFileName: bundle.tpmStateURL.lastPathComponent), descriptors: [ends[0]],
+                program: program, arguments: arguments(stateFileName: bundle.tpmStateURL.lastPathComponent), descriptors: [ends[0], ownershipDescriptor],
                 log: bundle.logsDirectory.appending(path: "tpm.log"), pidFile: pidFile(in: bundle), directory: bundle.url
             )
             return (process, ends[1])

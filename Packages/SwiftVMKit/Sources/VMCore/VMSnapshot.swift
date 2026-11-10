@@ -153,6 +153,10 @@ extension VMBundle {
         let source = snapshotURL(for: snapshot.id)
         let saved = try fileManager.contentsOfDirectory(atPath: source.path)
             .filter { $0 != Self.snapshotFileName && !$0.hasPrefix(".") }
+        // A case or canonical alias can name the same inode on a Mac's filesystem.
+        guard !saved.contains(where: { $0.caseInsensitiveCompare("package.lock") == .orderedSame }) else {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "A snapshot cannot replace package ownership."])
+        }
         guard snapshot.configuration.disks.filter({ !$0.readOnly }).allSatisfy({ saved.contains($0.fileName) }) else {
             throw CocoaError(.fileReadCorruptFile, userInfo: [
                 NSLocalizedDescriptionKey: "The snapshot “\(snapshot.name)” is missing a disk.",
@@ -177,6 +181,9 @@ extension VMBundle {
     /// goes first and the snapshot's comes back last: if this is cut short, the machine is left shut down
     /// with whatever disk it has by then, never ready to resume memory against the wrong disk.
     public func commitRestore(_ staged: StagedRestore, replacing configuration: VMConfiguration) throws {
+        guard !staged.fileNames.contains(where: { $0.caseInsensitiveCompare("package.lock") == .orderedSame }) else {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "A snapshot cannot replace package ownership."])
+        }
         let fileManager = FileManager.default
         removeSavedState()
         // What the machine has now and the snapshot doesn't.

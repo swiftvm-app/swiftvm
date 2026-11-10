@@ -28,7 +28,7 @@ private final class CountingProvider: VMBackendProvider {
     var made = 0
     var stopped = 0
 
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend {
         made += 1
         return NamedBackend()
     }
@@ -44,7 +44,9 @@ private final class CountingProvider: VMBackendProvider {
 
     private func machine(_ family: GuestFamily) throws -> VirtualMachine {
         let configuration = VMConfiguration(name: family.displayName, os: GuestOS(family: family), cpuCount: 2, memorySize: 4 << 30, disks: [])
-        return try VirtualMachine(bundle: VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration))
+        let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
+        return try VirtualMachine(bundle: bundle)
     }
 
     @Test func handsEachMachineToItsEngine() async throws {

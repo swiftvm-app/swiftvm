@@ -12,6 +12,7 @@ private final class FakeBackend: VMBackend {
     var canSaveState = true
     var pauseCount = 0
     var saveCount = 0
+    var afterSaving: (() throws -> Void)?
     /// The options of every start attempt, in order.
     var starts: [VMStartOptions] = []
     var startError: (any Error)?
@@ -31,6 +32,7 @@ private final class FakeBackend: VMBackend {
     func saveState(to url: URL) async throws {
         saveCount += 1
         try Data("state".utf8).write(to: url)
+        try afterSaving?()
     }
     var networkError: (any Error)?
     var connectionChanges: [Bool] = []
@@ -77,7 +79,7 @@ private final class FakeBackend: VMBackend {
 private final class FakeProvider: VMBackendProvider {
     let backend = FakeBackend()
 
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { backend }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { backend }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -90,6 +92,7 @@ private final class FakeProvider: VMBackendProvider {
     private func makeMachine(family: GuestFamily = .macOS) throws -> VirtualMachine {
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: family), cpuCount: 4, memorySize: 8 << 30, disks: [])
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
         machine.isHostLocked = { false }
@@ -120,7 +123,9 @@ private final class FakeProvider: VMBackendProvider {
         let library = VMLibrary(rootDirectory: directory.appending(path: "library"))
         library.backendProvider = provider
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
-        let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration))
+        let bundle = try VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration)
+        try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL)
+        let machine = try library.add(bundle)
         machine.isHostLocked = { false }
 
         library.allowsStarting = false
@@ -146,7 +151,9 @@ private final class FakeProvider: VMBackendProvider {
         let library = VMLibrary(rootDirectory: directory.appending(path: "library"))
         library.backendProvider = provider
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: .macOS), cpuCount: 4, memorySize: 8 << 30, disks: [])
-        let machine = try library.add(VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration))
+        let bundle = try VMBundle.create(at: library.availableBundleURL(forName: "Mac"), configuration: configuration)
+        try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL)
+        let machine = try library.add(bundle)
         machine.isHostLocked = { false }
         await machine.start()
         try #require(machine.state == .running)
@@ -276,6 +283,24 @@ private final class FakeProvider: VMBackendProvider {
         #expect(machine.state == .running)
         #expect(provider.backend.starts.last == VMStartOptions(savedState: machine.bundle.savedStateURL))
         #expect(!machine.bundle.hasSavedState)
+    }
+
+    @Test(arguments: [false, true])
+    func aFailedSnapshotReleaseProbeStillAttemptsToResume(wasPaused: Bool) async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        await machine.start()
+        if wasPaused { await machine.pause() }
+        // Fail the release probe only after the guest has been suspended for its snapshot.
+        let auxiliaryStorage = machine.bundle.auxiliaryStorageURL
+        provider.backend.afterSaving = {
+            try FileManager.default.removeItem(at: auxiliaryStorage)
+        }
+        await #expect(throws: POSIXError(.ENOENT)) { try await machine.takeSnapshot(named: "Failed") }
+        #expect(provider.backend.starts.count == 2)
+        #expect(provider.backend.starts.last == VMStartOptions(savedState: machine.bundle.savedStateURL))
+        #expect(machine.state == (wasPaused ? .paused : .running))
+        #expect(machine.snapshots.isEmpty)
     }
 
     @Test(arguments: [GuestFamily.linux, .windows])
@@ -414,6 +439,7 @@ private final class FakeProvider: VMBackendProvider {
     private func makeRunningMachine(family: GuestFamily = .macOS) async throws -> VirtualMachine {
         let configuration = VMConfiguration(name: "Mac", os: GuestOS(family: family), cpuCount: 4, memorySize: 8 << 30, disks: [])
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
         machine.isHostLocked = { false }
@@ -543,7 +569,7 @@ private final class FakeProvider: VMBackendProvider {
     @Test func keepsAskingAGuestThatWasNotListeningYet() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try await makeRunningMachine(family: .linux)
-        machine.shutdownRequestTimeout = .milliseconds(400)
+        machine.shutdownRequestTimeout = .seconds(5)
         machine.shutdownRequestRepeatInterval = .milliseconds(30)
 
         await machine.shutDown()

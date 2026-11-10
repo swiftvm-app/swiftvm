@@ -60,7 +60,7 @@ private final class USBBackend: VMBackend {
 private final class USBProvider: VMBackendProvider {
     let backend = USBBackend()
 
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { backend }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { backend }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 

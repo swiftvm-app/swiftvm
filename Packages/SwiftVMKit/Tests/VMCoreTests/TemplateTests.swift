@@ -27,7 +27,7 @@ private final class StubBackend: VMBackend {
 
 @MainActor
 private final class StubProvider: VMBackendProvider {
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { StubBackend() }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { StubBackend() }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -163,7 +163,7 @@ private struct Scratch {
         let source = try #require(library.bundle(of: template))
         let copy = try source.duplicate(to: scratch.directory.appending(path: "Box 2.swiftvm"), configuration: configuration)
         let names = try FileManager.default.contentsOfDirectory(atPath: copy.url.path).sorted()
-        #expect(names == ["aux.img", "config.json", "disk.img", "hardware-model.bin", "logs"])
+        #expect(names == ["aux.img", "config.json", "disk.img", "hardware-model.bin", "logs", "package.lock"])
         #expect(try String(contentsOf: copy.diskURL(for: configuration.disks[0]), encoding: .utf8) == "first")
         #expect(try copy.loadConfiguration().id == configuration.id)
     }

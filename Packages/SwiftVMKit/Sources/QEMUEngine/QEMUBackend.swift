@@ -18,6 +18,7 @@ public final class QEMUBackend: VMBackend {
 
     private let configuration: VMConfiguration
     private let bundle: VMBundle
+    private let ownership: PackageOwnership
     private let installation: QEMUInstallation
     private let adapter: DisplayAdapter
     /// Where a Windows guest's Direct3D is drawn, with the GPU.
@@ -80,11 +81,12 @@ public final class QEMUBackend: VMBackend {
     private var turn = Task<Void, Never> {}
 
     init(
-        configuration: VMConfiguration, bundle: VMBundle, installation: QEMUInstallation, adapter: DisplayAdapter,
+        configuration: VMConfiguration, bundle: VMBundle, ownership: PackageOwnership, installation: QEMUInstallation, adapter: DisplayAdapter,
         directX: DirectXBackend = .dxmt, network: VmnetNetwork?, console: SerialConsole.GuestEnd, pressesKeyToBootInstaller: Bool
     ) throws {
         self.configuration = configuration
         self.bundle = bundle
+        self.ownership = ownership
         self.installation = installation
         self.adapter = adapter
         self.directX = directX
@@ -301,6 +303,7 @@ public final class QEMUBackend: VMBackend {
         if !FileManager.default.fileExists(atPath: bundle.efiVariableStoreURL.path) {
             try installation.makeVariableStore(at: bundle.efiVariableStoreURL)
         }
+        try ownership.expectRuntimeResource("efi-vars.fd")
 
         let header = try savedState.map { try SavedStateHeader.read(from: $0) }
         let attachesTPM = try QEMUCommandLine.attachesTPM(
@@ -312,7 +315,7 @@ public final class QEMUBackend: VMBackend {
             usbPorts: header?.usbPorts ?? [:], spiceSocket: spice?.socket, attachesTPM: attachesTPM,
             displayRefreshRate: QEMUCommandLine.displayRefreshRate(forScreens: NSScreen.screens.map(\.maximumFramesPerSecond))
         )
-        let arguments = try commandLine.arguments()
+        var arguments = try commandLine.arguments()
         usbPorts = try commandLine.startingUSBPorts()
 
         // The lines, in the order QEMU's command line numbers them.
@@ -328,7 +331,7 @@ public final class QEMUBackend: VMBackend {
         // The TPM is up before QEMU, which starts it as soon as it is up itself.
         if attachesTPM {
             do {
-                let tpm = try TPMEmulator.launch(program: installation.tpmEmulator, bundle: bundle)
+                let tpm = try TPMEmulator.launch(program: installation.tpmEmulator, bundle: bundle, ownership: ownership)
                 self.tpm = tpm.process
                 engineEnds.append(tpm.engineEnd)
             } catch {
@@ -338,6 +341,10 @@ public final class QEMUBackend: VMBackend {
         }
         let process: QEMUProcess
         do {
+            let ownershipFD = QEMUProcess.firstDescriptor + Int32(engineEnds.count)
+            engineEnds.append(try ownership.duplicateDescriptor())
+            // QEMU duplicates this into an fdset instead of closing an otherwise unused inherited FD.
+            arguments += ["-add-fd", "fd=\(ownershipFD),set=0,opaque=swiftvm-package-ownership"]
             process = try QEMUProcess.launch(
                 program: installation.program, arguments: arguments, descriptors: engineEnds,
                 log: bundle.logsDirectory.appending(path: "qemu.log"), pidFile: Self.pidFile(in: bundle),
@@ -914,7 +921,12 @@ public final class QEMUBackend: VMBackend {
     /// Ends the QEMU that a machine was left running with by an app that stopped without stopping it,
     /// in a crash. A machine on the Virtualization framework ends with the app; one on QEMU would run on
     /// unseen, writing to its disk.
-    public static func endLeftover(of configuration: VMConfiguration, in bundle: VMBundle) async {
+    public static func endLeftover(of configuration: VMConfiguration, in bundle: VMBundle) async throws {
+        // With no leftover marker there is nothing to end. Avoid briefly competing with this
+        // controller's first start while startup's asynchronous cleanup passes through idle machines.
+        guard FileManager.default.fileExists(atPath: Self.pidFile(in: bundle).path) else { return }
+        let ownership = try PackageOwnership(in: bundle, configuration: configuration)
+        defer { withExtendedLifetime(ownership) {} }
         await QEMUProcess.endLeftover(pidFile: pidFile(in: bundle), machineID: configuration.id)
     }
 
