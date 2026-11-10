@@ -68,16 +68,19 @@ import VMControl
     }
 
     @Test func aRecordHasItsOwnLineAndAFailedWriteIsReported() throws {
-        let pipe = Pipe()
-        let writer = try ExecCompletionWriter(descriptor: pipe.fileHandleForWriting.fileDescriptor)
+        var ends: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0)
+        defer { close(ends[0]); close(ends[1]) }
+        let writer = try ExecCompletionWriter(descriptor: ends[0])
         let record = ExecCompletion(machine: "desk", machineID: nil, end: JobEnd(status: 125))
         try writer.write(record)
-        let line = try #require(ControlSocket.readLine(from: pipe.fileHandleForReading.fileDescriptor))
+        let line = try #require(ControlSocket.readLine(from: ends[1]))
         let json = try #require(try JSONSerialization.jsonObject(with: line) as? [String: Any])
         #expect(json["completion"] as? String == "exited")
         #expect(json["status"] as? Int == 125)
         #expect(json["machineID"] == nil)
-        try pipe.fileHandleForReading.close()
+        // Closing one reader is insufficient if a parallel test process inherited another copy.
+        try #require(shutdown(ends[0], SHUT_WR) == 0)
         #expect(throws: (any Error).self) { try writer.write(record) }
     }
 
