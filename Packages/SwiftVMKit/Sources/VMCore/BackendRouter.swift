@@ -23,4 +23,11 @@ public final class BackendRouter: VMBackendProvider {
     public func backendDidStop(for machine: VirtualMachine) {
         providers[machine.configuration.engine]?.backendDidStop(for: machine)
     }
+
+    public func validateFixedDisplay(_ configuration: VMConfiguration, in bundle: VMBundle) throws {
+        guard let provider = providers[configuration.engine] else {
+            throw VMError.unsupportedEngine(configuration.engine)
+        }
+        try provider.validateFixedDisplay(configuration, in: bundle)
+    }
 }

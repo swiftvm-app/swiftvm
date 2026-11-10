@@ -272,9 +272,18 @@ public protocol VMBackendProvider: AnyObject {
     /// - Parameter ownership: Acquired before construction. The backend must retain it through all
     ///   asynchronous work and pass a duplicate to any child that can outlive the controller.
     func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend
+    /// Validates a fixed panel without constructing a backend or changing the bundle. The caller owns
+    /// the stopped package until validation and configuration saving have both finished.
+    func validateFixedDisplay(_ configuration: VMConfiguration, in bundle: VMBundle) throws
     /// Called when the controller drops its active backend. Retained asynchronous work may still own
     /// resources; this callback is not package-release proof.
     func backendDidStop(for machine: VirtualMachine)
+}
+
+extension VMBackendProvider {
+    public func validateFixedDisplay(_ configuration: VMConfiguration, in bundle: VMBundle) throws {
+        throw VMError.invalidConfiguration("This backend doesn't support setting a fixed display with pixel density.")
+    }
 }
 
 /// Something to tell the user about a specific machine: most often an error, sometimes what is left for
@@ -391,6 +400,7 @@ public enum VMActivity: Sendable, Hashable {
     case reverting
     case duplicating
     case resizingDisk
+    case changingDisplay
     /// Its disk is being written out in another format, compressed or not.
     case convertingDisk
     /// Its bundle is on its way to another folder, which takes a while when that is on another disk.
@@ -405,6 +415,7 @@ public enum VMActivity: Sendable, Hashable {
         case .reverting: "Reverting"
         case .duplicating: "Duplicating"
         case .resizingDisk: "Resizing Disk"
+        case .changingDisplay: "Changing Display"
         case .convertingDisk: "Converting Disk"
         case .moving: "Moving"
         case .savingTemplate: "Saving Template"

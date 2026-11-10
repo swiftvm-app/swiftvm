@@ -27,6 +27,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case unshare
         /// Everything the app knows about one machine.
         case info
+        /// Persist a stopped machine's fixed panel after backend validation.
+        case displayFixed = "display-fixed"
         /// Plug a disc or disk image in as a USB drive (applies to a running guest immediately).
         case attach
         case eject
@@ -209,7 +211,20 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         }
     }
 
+    public struct DisplayParameters: Codable, Sendable, Equatable {
+        public var widthInPixels: Int
+        public var heightInPixels: Int
+        public var pixelsPerInch: Int
+
+        public init(widthInPixels: Int, heightInPixels: Int, pixelsPerInch: Int) {
+            self.widthInPixels = widthInPixels
+            self.heightInPixels = heightInPixels
+            self.pixelsPerInch = pixelsPerInch
+        }
+    }
+
     public var command: Command
+    public var display: DisplayParameters?
     /// Name, SSH alias or UUID of the machine the command applies to.
     public var machine: String?
     public var create: CreateParameters?
@@ -261,9 +276,11 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
         control: ControlCall? = nil, timeout: Double? = nil, location: String? = nil, template: String? = nil,
+        display: DisplayParameters? = nil,
         networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil, macAddress: String? = nil
     ) {
         self.command = command
+        self.display = display
         self.machine = machine
         self.create = create
         self.share = share
@@ -431,6 +448,22 @@ public struct MachineDetails: Codable, Sendable, Equatable {
     public var setup: Setup?
     /// Whether the machine can be given jobs, and which. `nil` from an app that doesn't say.
     public var automation: Automation?
+    /// The saved panel configuration, independently of the guest's current logical display mode.
+    public var display: Display?
+
+    public struct Display: Codable, Sendable, Equatable {
+        public var widthInPixels: Int
+        public var heightInPixels: Int
+        public var pixelsPerInch: Int
+        public var automaticallyResizes: Bool
+
+        public init(widthInPixels: Int, heightInPixels: Int, pixelsPerInch: Int, automaticallyResizes: Bool) {
+            self.widthInPixels = widthInPixels
+            self.heightInPixels = heightInPixels
+            self.pixelsPerInch = pixelsPerInch
+            self.automaticallyResizes = automaticallyResizes
+        }
+    }
 
     public struct Automation: Codable, Sendable, Equatable {
         public var isAllowed: Bool
@@ -475,7 +508,8 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         location: String, macAddress: String?, drives: [Drive], sharedFolders: [Folder], forwards: [Forward]? = nil,
         snapshotCount: Int, guestTools: GuestTools? = nil, sharesClipboard: Bool? = nil,
         usbDevices: [USBDeviceSummary]? = nil, usbAutoConnect: [String]? = nil, setup: Setup? = nil,
-        automation: Automation? = nil, networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil
+        automation: Automation? = nil, networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil,
+        display: Display? = nil
     ) {
         self.location = location
         self.macAddress = macAddress
@@ -489,6 +523,7 @@ public struct MachineDetails: Codable, Sendable, Equatable {
         self.usbAutoConnect = usbAutoConnect
         self.setup = setup
         self.automation = automation
+        self.display = display
         self.networkMode = networkMode
         self.bridgedInterfaceIdentifier = bridgedInterfaceIdentifier
     }

@@ -76,6 +76,13 @@ public final class VZBackendProvider: VMBackendProvider {
         networkManager.release(user: machine.id)
     }
 
+    public func validateFixedDisplay(_ configuration: VMConfiguration, in bundle: VMBundle) throws {
+        // Release the temporary platform's native file references before the caller saves its change.
+        try autoreleasepool {
+            try VZConfigurationBuilder(bundle: bundle, configuration: configuration).validateFixedDisplay()
+        }
+    }
+
     static func attachment(for interface: NetworkInterfaceConfiguration, sharedNetwork: VmnetNetwork?) throws -> VZNetworkDeviceAttachment {
         if let identifier = interface.bridgedInterfaceIdentifier {
             return try VZBridgedNetworkDeviceAttachment(interface: BridgedNetworking.interface(named: identifier))

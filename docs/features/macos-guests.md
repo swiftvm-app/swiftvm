@@ -50,6 +50,21 @@ A macOS 27 or newer guest sets itself up on its first start:
 Versions before macOS 27 can't be set up automatically. Create the account in
 the setup assistant when the machine first starts.
 
+## Fixed display
+
+For a macOS guest on Apple Virtualization, save an exact panel while the machine is shut down:
+
+```bash
+swiftvm display build-mac 2560 1664 220 --fixed
+swiftvm info build-mac
+```
+
+Width and height are physical pixels; the last number is the panel's pixel density in pixels per inch (ppi). These describe the virtual hardware, not the guest's logical workspace. macOS chooses its UI scaling in its own Displays settings, so a 2560-pixel panel need not have 2560 logical points of workspace. `info` reports the saved physical dimensions, density and whether the display follows its window.
+
+The command requires an idle, stopped machine with no saved memory. Shut it down and discard any saved state before changing its panel. SwiftVM holds ownership of the package while Apple's framework validates the candidate and saves it; unsupported dimensions or a package in use refuse without changing the saved configuration. All three values must be positive integers, and Apple's framework determines the supported panel limits. Linux and QEMU displays do not support this density-setting command.
+
+Fixed mode persists across cold boots. Resizing the viewer changes how the saved panel fits in the window, without requesting a different guest display size. Existing interactive display behavior stays the same until fixed mode is selected; the machine's display settings can enable following the window again.
+
 ## Shutting down
 
 - **With the guest tools**, **Shut Down** turns the Mac off at once, the way
