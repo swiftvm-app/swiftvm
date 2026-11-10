@@ -42,6 +42,7 @@ Usage: swiftvm <command> [arguments]
       --disk <GB>                   Grow the disk beyond the template's
   scripts [<system>]                List the setup scripts for --script, or those for one Linux image
   start <machine>                   Start, or resume a suspended machine
+  cold-boot <machine>               Boot only when stopped without saved state; never discard or resume
   stop <machine>                    Shut down and wait
   force-stop <machine>              Stop immediately
   suspend <machine>                 Save state to disk
@@ -154,7 +155,7 @@ Work in a machine
 Machines
   list, info                    What there is
   create, wait                  Make one, and wait until it is ready
-  start, stop, restart, suspend, pause, resume, force-stop, discard-state, open, delete, clone, move
+  start, cold-boot, stop, restart, suspend, pause, resume, force-stop, discard-state, open, delete, clone, move
   snapshot, snapshots, revert, delete-snapshot, rename-snapshot
   templates, save-template, rename-template, delete-template
   resize, compression, share, unshare, attach, eject, usb, install-tools, automation, share-clipboard
@@ -909,6 +910,9 @@ default:
     ]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {
         fail("Unknown command “\(commandName)”.\n\n\(overview)")
+    }
+    if command == .coldBoot, arguments.count != 1 {
+        fail("Usage: swiftvm cold-boot <machine>")
     }
     let response = send(ControlRequest(command: command, machine: requireMachine()))
     // `delete` of a machine that was still being created has no machine to show, only what it did.

@@ -82,12 +82,15 @@ apply. `--disk` then grows the disk beyond the template's.
 | Command | What it does |
 | --- | --- |
 | `start <machine>` | Start, or resume a suspended machine |
+| `cold-boot <machine>` | Boot only a stopped machine with no saved state; refuse rather than resume or discard memory |
 | `stop <machine>` | Shut down and wait |
 | `restart <machine>` | Shut down and start again |
 | `suspend <machine>` | Save the machine's state to disk |
 | `pause <machine>`, `resume <machine>` | Freeze the machine in memory, and continue |
 | `force-stop <machine>` | Stop immediately |
 | `discard-state <machine>` | Throw away a suspended machine's saved state |
+
+`cold-boot` checks the machine in the app, rather than relying on an earlier `info` result. It refuses active or busy machines and packages containing saved state, including memory that appears during backend construction. A successful response means the backend completed its boot request; it does not mean the guest's services or desktop are ready. Use `swiftvm wait <machine>` for guest readiness. Ordinary `start` still resumes suspended machines. These checks do not establish cross-process package ownership or prove that every backend resource has been released.
 
 ## Connecting
 
