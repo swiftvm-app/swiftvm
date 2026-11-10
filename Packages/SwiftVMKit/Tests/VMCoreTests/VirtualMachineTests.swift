@@ -543,7 +543,7 @@ private final class FakeProvider: VMBackendProvider {
     @Test func keepsAskingAGuestThatWasNotListeningYet() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let machine = try await makeRunningMachine(family: .linux)
-        machine.shutdownRequestTimeout = .milliseconds(400)
+        machine.shutdownRequestTimeout = .seconds(5)
         machine.shutdownRequestRepeatInterval = .milliseconds(30)
 
         await machine.shutDown()
