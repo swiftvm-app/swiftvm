@@ -36,6 +36,9 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         case compression
         /// Make a copy of a machine that is shut down.
         case clone
+        /// Require native copy-on-write cloning. A distinct command makes older apps refuse instead
+        /// of ignoring a new request field and falling back to a full copy.
+        case cloneCopyOnWrite = "clone-cow"
         /// Move a machine that is shut down into the folder ``ControlRequest/location``, which may be on
         /// another disk.
         case move

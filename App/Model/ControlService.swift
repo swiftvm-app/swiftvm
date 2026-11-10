@@ -468,9 +468,9 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
-        case .clone:
+        case .clone, .cloneCopyOnWrite:
             do {
-                return success(try await duplicate(machine, named: request.name))
+                return success(try await duplicate(machine, named: request.name, requiresCopyOnWrite: request.command == .cloneCopyOnWrite))
             } catch {
                 return .failure(error.localizedDescription)
             }

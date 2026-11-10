@@ -51,7 +51,7 @@ Usage: swiftvm <command> [arguments]
   open <machine>                    Show the machine's window
   delete <machine>                  Move a stopped machine to the Trash, or delete it for good if set so
                                     in Settings. Cancels a machine still being created
-  clone <machine> [name]            Copy a machine that is shut down
+  clone <machine> [name] [--require-cow] Copy a stopped machine; optionally require copy-on-write
   move <machine> <folder>           Move a machine that is shut down into another folder, which may be on
                                     another disk. Waits until it is there
   share <machine> <folder> [--read-only]   Share a folder with the machine
@@ -763,6 +763,9 @@ case "clone", "duplicate":
     // The name can be given the way `create` takes it or the way `snapshot` does.
     var name: String?
     var rest = Array(arguments.dropFirst())
+    guard rest.filter({ $0 == "--require-cow" }).count <= 1 else { fail("Give --require-cow once.") }
+    let requiresCopyOnWrite = rest.contains("--require-cow")
+    rest.removeAll { $0 == "--require-cow" }
     if let index = rest.firstIndex(of: "--name") {
         guard index + 1 < rest.count else { fail("--name needs a value.") }
         name = rest[index + 1]
@@ -775,7 +778,7 @@ case "clone", "duplicate":
         guard name == nil else { fail("Give the copy's name once.") }
         name = rest.joined(separator: " ")
     }
-    printTable(send(ControlRequest(command: .clone, machine: machine, name: name)).machines)
+    printTable(send(ControlRequest(command: requiresCopyOnWrite ? .cloneCopyOnWrite : .clone, machine: machine, name: name)).machines)
 
 case "snapshot":
     let machine = requireMachine()
