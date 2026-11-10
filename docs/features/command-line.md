@@ -52,7 +52,7 @@ For a creation password, prefer stdin so the password does not enter the tool's 
 swiftvm create debian-13 --name web-server --user username --password-stdin < /secure/path/guest-password
 ```
 
-`--password-stdin` reads one UTF-8 line through EOF. It accepts up to 4096 password bytes, excluding one optional final LF or CRLF, and preserves spaces, tabs and other Unicode characters. Empty input, invalid UTF-8, NUL, additional line breaks and oversized input fail before provisioning starts. Close the pipe after writing the password. The password is passed as creation data and is not printed by the tool. `--password <password>` remains supported; give either password option once, with no duplicates or combination of both.
+`--password-stdin` reads one UTF-8 line through EOF. It accepts up to 4096 password bytes, excluding one optional final LF or CRLF, and preserves spaces, tabs and other Unicode characters. Empty input, invalid UTF-8, NUL, additional line breaks (including Unicode separators) and oversized input fail before provisioning starts. Close the pipe after writing the password. The password is passed as creation data and is not printed by the tool. `--password <password>` remains supported; give either password option once, with no duplicates or combination of both.
 
 `swiftvm scripts` lists the [setup scripts](setup-scripts.md) for `--script`:
 SwiftVM's [built-in scripts](setup-scripts.md#built-in-scripts), and

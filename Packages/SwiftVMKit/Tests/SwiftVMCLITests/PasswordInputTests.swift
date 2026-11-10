@@ -49,6 +49,11 @@ import Testing
         #expect(throws: PasswordInput.Problem.self) { try read([input]) }
     }
 
+    @Test(arguments: ["\u{000B}", "\u{000C}", "\u{0085}", "\u{2028}", "\u{2029}"])
+    func unicodeLineBreaksAreRejected(_ lineBreak: String) {
+        #expect(throws: PasswordInput.Problem.invalidCharacters) { try read([Data(("a" + lineBreak + "b").utf8)]) }
+    }
+
     @Test func anUnreadableDescriptorIsNotTreatedAsEOF() {
         #expect(throws: PasswordInput.Problem.unreadable) { try PasswordInput.read(from: .max) }
     }

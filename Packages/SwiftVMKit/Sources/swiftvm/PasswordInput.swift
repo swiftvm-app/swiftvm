@@ -17,7 +17,7 @@ enum PasswordInput {
         }
     }
 
-    /// Reads to EOF, allowing one final line ending without trimming password whitespace.
+    /// Reading through EOF rejects trailing data instead of accepting only the first line.
     static func read(from descriptor: Int32 = STDIN_FILENO) throws -> String {
         var bytes: [UInt8] = []
         var buffer = [UInt8](repeating: 0, count: 1024)
@@ -40,7 +40,7 @@ enum PasswordInput {
         guard !bytes.isEmpty else { throw Problem.empty }
         guard bytes.count <= maximumLength else { throw Problem.tooLong }
         guard let password = String(validating: bytes, as: UTF8.self) else { throw Problem.invalidEncoding }
-        guard !bytes.contains(0), !bytes.contains(10), !bytes.contains(13) else { throw Problem.invalidCharacters }
+        guard !bytes.contains(0), !password.unicodeScalars.contains(where: { CharacterSet.newlines.contains($0) }) else { throw Problem.invalidCharacters }
         return password
     }
 }
