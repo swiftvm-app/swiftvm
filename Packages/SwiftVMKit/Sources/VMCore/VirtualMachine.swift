@@ -1069,12 +1069,12 @@ public final class VirtualMachine: Identifiable {
         activityOwnership = ownership
         if wasActive {
             try await performSuspend()
-            try await ownership.waitForReleasedResources(for: configuration)
         }
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let snapshotName = trimmed.isEmpty ? VMSnapshot.defaultName(avoiding: snapshots) : trimmed
         let result: Result<VMSnapshot, any Error>
         do {
+            if wasActive { try await ownership.waitForReleasedResources(for: configuration) }
             let (bundle, configuration) = (bundle, configuration)
             let snapshot = try await Task.detached { try bundle.takeSnapshot(named: snapshotName, of: configuration) }.value
             snapshots.append(snapshot)

@@ -12,6 +12,7 @@ private final class FakeBackend: VMBackend {
     var canSaveState = true
     var pauseCount = 0
     var saveCount = 0
+    var afterSaving: (() throws -> Void)?
     /// The options of every start attempt, in order.
     var starts: [VMStartOptions] = []
     var startError: (any Error)?
@@ -31,6 +32,7 @@ private final class FakeBackend: VMBackend {
     func saveState(to url: URL) async throws {
         saveCount += 1
         try Data("state".utf8).write(to: url)
+        try afterSaving?()
     }
     var networkError: (any Error)?
     var connectionChanges: [Bool] = []
@@ -281,6 +283,24 @@ private final class FakeProvider: VMBackendProvider {
         #expect(machine.state == .running)
         #expect(provider.backend.starts.last == VMStartOptions(savedState: machine.bundle.savedStateURL))
         #expect(!machine.bundle.hasSavedState)
+    }
+
+    @Test(arguments: [false, true])
+    func aFailedSnapshotReleaseProbeStillAttemptsToResume(wasPaused: Bool) async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        await machine.start()
+        if wasPaused { await machine.pause() }
+        // Fail the release probe only after the guest has been suspended for its snapshot.
+        let auxiliaryStorage = machine.bundle.auxiliaryStorageURL
+        provider.backend.afterSaving = {
+            try FileManager.default.removeItem(at: auxiliaryStorage)
+        }
+        await #expect(throws: POSIXError(.ENOENT)) { try await machine.takeSnapshot(named: "Failed") }
+        #expect(provider.backend.starts.count == 2)
+        #expect(provider.backend.starts.last == VMStartOptions(savedState: machine.bundle.savedStateURL))
+        #expect(machine.state == (wasPaused ? .paused : .running))
+        #expect(machine.snapshots.isEmpty)
     }
 
     @Test(arguments: [GuestFamily.linux, .windows])

@@ -17,6 +17,8 @@ swiftvm snapshots web-server
 - A running machine pauses for a moment and comes back exactly where it was.
   Its memory is part of the snapshot.
 
+If waiting for the backend to release its files or copying the snapshot fails after suspension, SwiftVM still attempts to resume the machine and restores its paused state when applicable. The snapshot reports its original error; inspect the machine if resuming also fails.
+
 ## Going back
 
 **Revert…** puts the machine back as it was when the snapshot was taken.

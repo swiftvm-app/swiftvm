@@ -15,6 +15,31 @@ import Testing
         return (bundle, configuration)
     }
 
+    @Test(arguments: ["missing", "null"])
+    func aLegacyCreationDateDoesNotLookLikeAnExternalConfigurationChange(_ spelling: String) async throws {
+        let (bundle, _) = try bundle()
+        defer { try? FileManager.default.removeItem(at: bundle.url) }
+        var document = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: bundle.configurationURL)) as? [String: Any])
+        if spelling == "missing" { document.removeValue(forKey: "createdAt") }
+        else { document["createdAt"] = NSNull() }
+        try JSONSerialization.data(withJSONObject: document).write(to: bundle.configurationURL)
+        let loaded = try bundle.loadConfiguration()
+        // ISO-8601 drops fractions, so cross a whole second between loading and claiming.
+        try await Task.sleep(for: .milliseconds(1100))
+        do {
+            let owner = try PackageOwnership(in: bundle, configuration: loaded)
+            withExtendedLifetime(owner) {}
+        }
+        var changed = loaded
+        changed.cpuCount += 1
+        try bundle.save(changed)
+        #expect(throws: PackageOwnership.Problem.changedConfiguration) { try PackageOwnership(in: bundle, configuration: loaded) }
+        changed = loaded
+        changed.createdAt += 3600
+        try bundle.save(changed)
+        #expect(throws: PackageOwnership.Problem.changedConfiguration) { try PackageOwnership(in: bundle, configuration: loaded) }
+    }
+
     @Test func separateProcessesContendAndAbruptExitReusesTheInode() async throws {
         let (bundle, configuration) = try bundle()
         defer { try? FileManager.default.removeItem(at: bundle.url) }

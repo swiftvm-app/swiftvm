@@ -28,8 +28,15 @@ public final class PackageOwnership: Sendable {
     /// Checks the saved configuration and native resources only after acquiring the package lock.
     public convenience init(in bundle: VMBundle, configuration: VMConfiguration) throws {
         try self.init(at: bundle.url)
-        // Compare the persisted representation: ISO-8601 storage drops subsecond creation dates.
-        guard try VMBundle.encoder.encode(bundle.loadConfiguration()) == VMBundle.encoder.encode(configuration) else {
+        let data = try Data(contentsOf: bundle.configurationURL)
+        var saved = try VMBundle.decoder.decode(VMConfiguration.self, from: data)
+        let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        // Legacy documents synthesize a new date on each load. Only a persisted date can change.
+        if fields?["createdAt"] == nil || fields?["createdAt"] is NSNull {
+            saved.createdAt = configuration.createdAt
+        }
+        // ISO-8601 storage drops subsecond creation dates.
+        guard try VMBundle.encoder.encode(saved) == VMBundle.encoder.encode(configuration) else {
             throw Problem.changedConfiguration
         }
         try requireReleasedResources(for: configuration)
