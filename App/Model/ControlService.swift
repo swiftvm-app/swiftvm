@@ -1392,10 +1392,10 @@ extension AppModel {
             ),
             networkMode: configuration.networkInterfaces.first.map { $0.usesSharedNetwork ? "shared" : "bridged" },
             bridgedInterfaceIdentifier: configuration.networkInterfaces.first?.bridgedInterfaceIdentifier,
-            display: .init(
+            display: configuration.os.family == .macOS && configuration.engine == .virtualization ? .init(
                 widthInPixels: configuration.display.widthInPixels, heightInPixels: configuration.display.heightInPixels,
                 pixelsPerInch: configuration.display.pixelsPerInch, automaticallyResizes: configuration.display.automaticallyResizes
-            )
+            ) : nil
         )
         return ControlResponse(ok: true, machines: [summary])
     }
