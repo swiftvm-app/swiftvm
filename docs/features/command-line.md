@@ -79,6 +79,8 @@ apply. `--disk` then grows the disk beyond the template's.
 
 ## Power
 
+For scripts, [structured output](#structured-output) is available for the power commands below and for `list`, `info`, `wait`, and `network`.
+
 | Command | What it does |
 | --- | --- |
 | `start <machine>` | Start, or resume a suspended machine |
@@ -88,6 +90,42 @@ apply. `--disk` then grows the disk beyond the template's.
 | `pause <machine>`, `resume <machine>` | Freeze the machine in memory, and continue |
 | `force-stop <machine>` | Stop immediately |
 | `discard-state <machine>` | Throw away a suspended machine's saved state |
+
+## Structured output
+
+Add `--json` once, at the end of `list` (or `ls`), `info`, `start`, `stop`, `restart`, `suspend`, `pause`, `resume`, `force-stop`, `discard-state`, `wait`, or `network`:
+
+```sh
+swiftvm list --json
+swiftvm info <UUID> --json
+swiftvm stop <UUID> --json
+swiftvm wait <UUID> --timeout 60 --json
+swiftvm network <UUID> shared --json
+```
+
+These commands emit one compact UTF-8 JSON document followed by a newline on stdout, with no table or progress text. Exit status is `0` for success and `1` for failure. Argument errors, an unavailable app/socket or invalid control response, and server refusals use the same result format. Error messages are for people; branch on `error.kind`. Normal failures do not also print to stderr. If stdout itself cannot be written, the tool reports that on stderr and exits `1`.
+
+The version 1 result has these fields. Optional fields are omitted when unavailable; readers should tolerate additional fields.
+
+| Field | Meaning |
+| --- | --- |
+| `schemaVersion` | `1` |
+| `command` | The CLI command; `ls` is reported as `list` |
+| `ok` | Whether the command succeeded |
+| `machines` | The affected machines, or the complete list; always an array, including on failure |
+| `creations` | Optional array of unfinished or failed creations from `list`: `name`, `system`, `status`, optional `fraction` from 0 to 1, and optional `error` message |
+| `note` | Optional explanation or remaining action from the app |
+| `error` | Present on failure: `kind` is `arguments`, `connection`, or `server`, and `message` explains why |
+
+Each machine contains its canonical UUID in `id`, plus `name`, `state`, `system`, `cpuCount`, `memorySize`, `diskAllocated`, and `diskCapacity`. Memory and disk values are integer bytes. `family`, `address`, and `sshAlias` are optional. Use the UUID for later requests rather than relying on a display name. An empty library produces `"machines":[]`.
+
+`info` and `network` can also include `details`, the app's structured information: `location` (the bundle path), `snapshotCount`, `drives` (`path`, `readOnly`), `sharedFolders` (`name`, `path`, `readOnly`), and optional network, forwarding, guest-tools, clipboard, USB, setup, and automation fields. It contains the reported configuration and capabilities, not a credential-bearing creation request. Older apps can omit fields they do not report.
+
+```json
+{"command":"info","error":{"kind":"server","message":"The virtual machine was not found."},"machines":[],"ok":false,"schemaVersion":1}
+```
+
+JSON changes rendering only. `stop` still waits for shutdown, `wait` still waits for guest readiness, and `start` still permits saved-state resume; successful startup is not a readiness guarantee. Unsupported control commands reject `--json` on stderr before dispatch rather than treating it as a name or path. Creation keeps its own option/value parser. `exec`, `cp`, and `ssh` payloads are unchanged, and a guest command's `--json` is passed through. Desktop `control --json` uses its existing separate format. Without `--json`, human-readable output remains unchanged.
 
 ## Connecting
 

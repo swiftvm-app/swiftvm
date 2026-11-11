@@ -3,6 +3,9 @@ import VMControl
 
 // swiftvm: control the running SwiftVM app from the command line.
 
+let outputCommand = CommandLine.arguments.dropFirst().first ?? ""
+let printsControlJSON = ControlJSONArguments.isRequested(command: outputCommand, arguments: Array(CommandLine.arguments.dropFirst(2)))
+
 let usage = """
 Usage: swiftvm <command> [arguments]
 
@@ -138,6 +141,10 @@ Usage: swiftvm <command> [arguments]
 
 <machine> is a name, SSH alias or UUID. <template> is a name or UUID.
 
+Add --json at the end of list, info, start, stop, restart, suspend, pause, resume, force-stop,
+discard-state, wait or network for one structured result, including errors. Other commands keep their
+own output; control has its own --json format.
+
 exec and cp need the guest tools in the machine: swiftvm install-tools. control works without them, by
 reading the screen's pixels; with them, it knows what the screen's parts are.
 """
@@ -194,20 +201,38 @@ func help(on topic: String) -> String? {
     return blocks.isEmpty ? nil : blocks.joined(separator: "\n")
 }
 
-func fail(_ message: String, status: Int32 = 1) -> Never {
-    FileHandle.standardError.write(Data("swiftvm: \(message)\n".utf8))
+func fail(_ message: String, status: Int32 = 1, kind: ControlJSONResult.Failure.Kind = .arguments) -> Never {
+    if printsControlJSON {
+        printJSON(ControlJSONResult(command: outputCommand, kind: kind, message: message))
+    } else {
+        FileHandle.standardError.write(Data("swiftvm: \(message)\n".utf8))
+    }
     exit(status)
+}
+
+func printJSON(_ result: ControlJSONResult) {
+    signal(SIGPIPE, SIG_IGN)
+    do {
+        try FileHandle.standardOutput.write(contentsOf: result.encoded())
+    } catch {
+        FileHandle.standardError.write(Data("swiftvm: Couldn't write the JSON result.\n".utf8))
+        exit(1)
+    }
 }
 
 func send(_ request: ControlRequest) -> ControlResponse {
     do {
         let response = try ControlClient().send(request)
         if !response.ok {
-            fail(response.error ?? "The command failed.")
+            if printsControlJSON {
+                printJSON(ControlJSONResult(command: outputCommand, response: response))
+                exit(1)
+            }
+            fail(response.error ?? "The command failed.", kind: .server)
         }
         return response
     } catch {
-        fail(error.localizedDescription)
+        fail(error.localizedDescription, kind: .connection)
     }
 }
 
@@ -432,6 +457,14 @@ guard let commandName = arguments.first else {
 }
 arguments.removeFirst()
 
+do {
+    arguments = try ControlJSONArguments.parse(command: commandName, arguments: arguments)
+} catch ControlJSONArguments.ParseError.invalid(let reason) {
+    fail(reason)
+} catch {
+    fail(error.localizedDescription)
+}
+
 @MainActor func requireMachine() -> String {
     guard let machine = arguments.first else { fail("Missing machine name.\n\n\(usage)") }
     return machine
@@ -446,7 +479,7 @@ func rejectUnknownOptions(_ options: some Sequence<String>, allowed: Set<String>
 }
 
 // `swiftvm exec --help` is `swiftvm help exec`.
-if let first = arguments.first, first == "--help" || first == "-h", commandName != "help", let text = help(on: commandName) {
+if !printsControlJSON, let first = arguments.first, first == "--help" || first == "-h", commandName != "help", let text = help(on: commandName) {
     print(text)
     exit(0)
 }
@@ -462,7 +495,11 @@ case "help", "--help", "-h":
 
 case "list", "ls":
     let listed = send(ControlRequest(command: .list))
-    printTable(listed.machines, creations: listed.creations ?? [])
+    if printsControlJSON {
+        printJSON(ControlJSONResult(command: commandName, response: listed))
+    } else {
+        printTable(listed.machines, creations: listed.creations ?? [])
+    }
 
 case "create":
     // What the machine is made from: a system to install, which comes first, or a template.
@@ -581,7 +618,10 @@ case "share", "unshare":
     printTable(send(ControlRequest(command: command, machine: machine, share: parameters)).machines)
 
 case "info":
-    if let machine = send(ControlRequest(command: .info, machine: requireMachine())).machines.first {
+    let response = send(ControlRequest(command: .info, machine: requireMachine()))
+    if printsControlJSON {
+        printJSON(ControlJSONResult(command: commandName, response: response))
+    } else if let machine = response.machines.first {
         printDetails(of: machine)
     }
 
@@ -619,7 +659,9 @@ case "network":
         bridgedInterfaceIdentifier: mode == "bridged" ? arguments[2] : nil,
         macAddress: mode == "mac" ? arguments[2] : nil
     ))
-    if let machine = response.machines.first { printDetails(of: machine) }
+    if printsControlJSON {
+        printJSON(ControlJSONResult(command: commandName, response: response))
+    } else if let machine = response.machines.first { printDetails(of: machine) }
 
 case "forward", "unforward":
     let machine = requireMachine()
@@ -691,7 +733,12 @@ case "wait":
         options.removeSubrange(index...(index + 1))
     }
     rejectUnknownOptions(options, allowed: [])
-    printTable(send(ControlRequest(command: .wait, machine: machine, timeout: timeout)).machines)
+    let response = send(ControlRequest(command: .wait, machine: machine, timeout: timeout))
+    if printsControlJSON {
+        printJSON(ControlJSONResult(command: commandName, response: response))
+    } else {
+        printTable(response.machines)
+    }
 
 case "exec":
     GuestJobs.exec(arguments)
@@ -913,6 +960,10 @@ default:
         fail("Unknown command “\(commandName)”.\n\n\(overview)")
     }
     let response = send(ControlRequest(command: command, machine: requireMachine()))
+    if printsControlJSON {
+        printJSON(ControlJSONResult(command: commandName, response: response))
+        break
+    }
     // `delete` of a machine that was still being created has no machine to show, only what it did.
     if !response.machines.isEmpty || response.note == nil {
         printTable(response.machines)
