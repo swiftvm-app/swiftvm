@@ -61,6 +61,8 @@ swiftvm info build-mac
 
 Width and height are physical pixels; the last number is the panel's pixel density in pixels per inch (ppi). These describe the virtual hardware, not the guest's logical workspace. macOS chooses its UI scaling in its own Displays settings, so a 2560-pixel panel need not have 2560 logical points of workspace. `info` reports the saved physical dimensions, density and whether the display follows its window.
 
+The saved panel request and the guest's active display mode are separate. A request accepted by Apple's validator can still produce a different framebuffer size in macOS. When screenshot dimensions matter, check the resulting screenshot as well as `info`; this command does not change the guest's display preferences.
+
 The command requires an idle, stopped machine with no saved memory. Shut it down and discard any saved state before changing its panel. SwiftVM holds ownership of the package while Apple's framework validates the candidate and saves it; unsupported dimensions or a package in use refuse without changing the saved configuration. All three values must be positive integers, and Apple's framework determines the supported panel limits. Linux and QEMU displays do not support this density-setting command.
 
 Fixed mode persists across cold boots. Resizing the viewer changes how the saved panel fits in the window, without requesting a different guest display size. Existing interactive display behavior stays the same until fixed mode is selected; the machine's display settings can enable following the window again.
