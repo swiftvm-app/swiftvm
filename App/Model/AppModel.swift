@@ -193,7 +193,11 @@ final class AppModel {
         let leftovers = library.machines.filter { $0.configuration.engine == .qemu }
         Task {
             for machine in leftovers where !machine.state.isActive {
-                await QEMUBackend.endLeftover(of: machine.configuration, in: machine.bundle)
+                do {
+                    try await QEMUBackend.endLeftover(of: machine.configuration, in: machine.bundle)
+                } catch {
+                    machine.lastError = VMErrorInfo(title: "Couldn't claim “\(machine.name)”", message: error.localizedDescription)
+                }
             }
         }
         templates.removeUnfinished()

@@ -25,7 +25,8 @@ let package = Package(
         // The guest agent for macOS guests. It runs inside a virtual machine, not on the host.
         .target(name: "GuestAgentMac", dependencies: ["GuestChannel"]),
         .executableTarget(name: "swiftvm-agent", dependencies: ["GuestAgentMac"]),
-        .target(name: "VMCore", dependencies: ["GuestChannel"]),
+        .target(name: "ResourceLocks"),
+        .target(name: "VMCore", dependencies: ["GuestChannel", "ResourceLocks"]),
         .target(name: "DiskTools", dependencies: ["VMCore"]),
         .target(name: "VMNetworking", dependencies: ["VMCore"]),
         .target(name: "SSHIntegration", dependencies: ["VMCore"]),

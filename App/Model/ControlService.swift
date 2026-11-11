@@ -310,6 +310,16 @@ extension AppModel {
             } catch {
                 return .failure(error.localizedDescription)
             }
+        case .displayFixed:
+            guard let display = request.display else { return .failure("Missing fixed display dimensions and density.") }
+            do {
+                try await machine.setFixedDisplay(
+                    widthInPixels: display.widthInPixels, heightInPixels: display.heightInPixels, pixelsPerInch: display.pixelsPerInch
+                )
+                return details(machine)
+            } catch {
+                return .failure(error.localizedDescription)
+            }
         case .plug, .unplug:
             guard !machine.configuration.networkInterfaces.isEmpty else {
                 return .failure("“\(machine.name)” has no network interface.")
@@ -1381,7 +1391,11 @@ extension AppModel {
                 features: GuestFeature.jobs.filter(machine.agent.offers)
             ),
             networkMode: configuration.networkInterfaces.first.map { $0.usesSharedNetwork ? "shared" : "bridged" },
-            bridgedInterfaceIdentifier: configuration.networkInterfaces.first?.bridgedInterfaceIdentifier
+            bridgedInterfaceIdentifier: configuration.networkInterfaces.first?.bridgedInterfaceIdentifier,
+            display: configuration.os.family == .macOS && configuration.engine == .virtualization ? .init(
+                widthInPixels: configuration.display.widthInPixels, heightInPixels: configuration.display.heightInPixels,
+                pixelsPerInch: configuration.display.pixelsPerInch, automaticallyResizes: configuration.display.automaticallyResizes
+            ) : nil
         )
         return ControlResponse(ok: true, machines: [summary])
     }

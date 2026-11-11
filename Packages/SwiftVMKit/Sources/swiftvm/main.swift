@@ -8,6 +8,10 @@ Usage: swiftvm <command> [arguments]
 
   list                              List virtual machines, and those still being created
   info <machine>                    Show one machine in detail
+  display <machine> <pixel-width> <pixel-height> <ppi> --fixed
+                                    macOS on Apple Virtualization: save a fixed panel while shut down,
+                                    without saved memory. Physical pixels and pixels per inch describe
+                                    the panel; macOS chooses its logical scaling. The window won't resize it
   create <system> [options]         Create a machine and start it. Then `swiftvm wait` until it is ready
       <system> is macos, windows, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
@@ -363,6 +367,9 @@ func printDetails(of machine: MachineSummary) {
         ("SSH", machine.sshAlias.map { "swiftvm ssh \($0)" } ?? "-"),
     ]
     if let details = machine.details {
+        if let display = details.display {
+            lines.append(("Display", "\(display.widthInPixels) × \(display.heightInPixels) pixels, \(display.pixelsPerInch) ppi, \(display.automaticallyResizes ? "follows window" : "fixed")"))
+        }
         lines.append(("MAC address", details.macAddress ?? "-"))
         if let mode = details.networkMode {
             lines.append(("Network", mode + (details.bridgedInterfaceIdentifier.map { " (\($0))" } ?? "")))
@@ -584,6 +591,12 @@ case "info":
     if let machine = send(ControlRequest(command: .info, machine: requireMachine())).machines.first {
         printDetails(of: machine)
     }
+
+case "display":
+    let request: ControlRequest
+    do { request = try FixedDisplay.request(arguments) }
+    catch { fail(FixedDisplay.usage) }
+    if let machine = send(request).machines.first { printDetails(of: machine) }
 
 case "attach", "eject":
     let machine = requireMachine()
@@ -906,7 +919,7 @@ case "ssh":
 default:
     // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
     let others: [ControlRequest.Command] = [
-        .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .control, .allowAccessibility, .move,
+        .create, .list, .quit, .usbList, .usbAttach, .usbDetach, .usbAuto, .scripts, .job, .control, .allowAccessibility, .move, .displayFixed,
         .templates, .saveTemplate, .deleteTemplate, .renameTemplate,
     ]
     guard let command = ControlRequest.Command(rawValue: commandName), !others.contains(command) else {

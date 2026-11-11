@@ -55,7 +55,10 @@ public struct VMBundle: Sendable, Hashable {
         guard !fileManager.fileExists(atPath: bundle.url.path) else {
             throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: bundle.url.path])
         }
-        try fileManager.createDirectory(at: bundle.url, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: bundle.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard mkdir(bundle.url.path, 0o755) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let ownership = try PackageOwnership.claimNewBundle(bundle)
+        defer { withExtendedLifetime(ownership) {} }
         try fileManager.createDirectory(at: bundle.logsDirectory, withIntermediateDirectories: true)
         try bundle.save(configuration)
         return bundle

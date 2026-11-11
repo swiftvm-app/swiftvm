@@ -94,6 +94,7 @@ A machine's package holds everything about it:
 | File | What it holds |
 | --- | --- |
 | `config.json` | The machine's settings |
+| `package.lock` | Cross-controller ownership; this file stays after the machine stops |
 | `disk.img`, `disk.asif`, or `disk.swiftvmdisk` | Its disk |
 | `snapshots/` | Its [snapshots](../features/snapshots.md) |
 | `state.vzvmsave` | Saved memory, while the machine is suspended |
@@ -102,3 +103,7 @@ A machine's package holds everything about it:
 To back up a machine, shut it down and copy its package. To move one, use
 **Move…** in its settings. Open a package from the Finder, or drop it on the
 **New Virtual Machine** window, to add it to SwiftVM.
+
+Only one controller or backend can own a machine package at a time, even when the apps keep their libraries in different data folders. A collision refuses startup and operations on a stopped machine. Stop the guest in its owning controller and wait for that backend to finish releasing its files before trying again. Saved memory remains suspended; it is not discarded to obtain ownership. A stopped view in another app does not prove the backend has released the package.
+
+Leave `package.lock` in place, including after a crash. The operating system releases ownership when its last owning descriptor closes; the persistent file itself is not a stale process marker. Deleting it could let two controllers lock different files for the same machine. If a QEMU child survives its controller, it retains ownership until it ends; SwiftVM refuses to replace a backend it cannot safely claim.

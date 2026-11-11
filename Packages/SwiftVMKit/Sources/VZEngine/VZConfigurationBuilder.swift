@@ -107,6 +107,19 @@ public struct VZConfigurationBuilder {
 
     // MARK: Limits
 
+    /// Asks the framework to validate the panel against this Mac's virtual hardware. No disk,
+    /// network attachment or running virtual machine is needed to check a display configuration.
+    public func validateFixedDisplay() throws {
+        guard configuration.os.family == .macOS else {
+            throw VMError.invalidConfiguration("Fixed displays with pixel density are supported for macOS guests on Apple Virtualization.")
+        }
+        let vz = VZVirtualMachineConfiguration()
+        vz.cpuCount = Self.clampedCPUCount(configuration.cpuCount)
+        vz.memorySize = Self.clampedMemorySize(configuration.memorySize)
+        try configureMacPlatform(vz)
+        try vz.validate()
+    }
+
     static func clampedCPUCount(_ count: Int) -> Int {
         min(max(count, VZVirtualMachineConfiguration.minimumAllowedCPUCount), VZVirtualMachineConfiguration.maximumAllowedCPUCount)
     }

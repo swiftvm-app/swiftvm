@@ -30,7 +30,7 @@ public final class VZBackendProvider: VMBackendProvider {
         self.usbAccessories = usbAccessories
     }
 
-    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
+    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend {
         let configuration = machine.configuration
         guard configuration.engine == .virtualization else {
             throw VMError.unsupportedEngine(configuration.engine)
@@ -55,9 +55,11 @@ public final class VZBackendProvider: VMBackendProvider {
                 networkAttachments: attachments,
                 console: console
             ).build(diskExports: &diskExports)
+            try ownership.expectRuntimeResource(configuration.os.family == .macOS ? "aux.img" : "efi-vars.fd")
             return VZBackend(
                 vzConfiguration: vzConfiguration,
                 machineConfiguration: configuration,
+                ownership: ownership,
                 diskExports: diskExports,
                 attachmentProvider: { [weak self] interface in
                     try Self.attachment(for: interface, sharedNetwork: self?.networkManager.liveDefaultNetwork)
@@ -72,6 +74,13 @@ public final class VZBackendProvider: VMBackendProvider {
 
     public func backendDidStop(for machine: VirtualMachine) {
         networkManager.release(user: machine.id)
+    }
+
+    public func validateFixedDisplay(_ configuration: VMConfiguration, in bundle: VMBundle) throws {
+        // Release the temporary platform's native file references before the caller saves its change.
+        try autoreleasepool {
+            try VZConfigurationBuilder(bundle: bundle, configuration: configuration).validateFixedDisplay()
+        }
     }
 
     static func attachment(for interface: NetworkInterfaceConfiguration, sharedNetwork: VmnetNetwork?) throws -> VZNetworkDeviceAttachment {

@@ -9,7 +9,7 @@ import Foundation
 ///
 /// A copy of the app that ends without stopping its machines leaves their QEMUs running, with nothing
 /// at the other end of those lines. Each writes down its process ID in its machine's bundle, so that the
-/// next start of that machine finds and ends it first.
+/// next start can identify it. Package ownership must be established before any leftover is ended.
 final class QEMUProcess: @unchecked Sendable {
     let pid: pid_t
     /// Called once, on no particular thread, when the process has ended, with what `waitpid` said.
@@ -52,21 +52,21 @@ final class QEMUProcess: @unchecked Sendable {
         environment: [String: String] = [:]
     ) throws -> QEMUProcess {
         try? FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
-        var output: [Int32] = [0, 0]
-        guard pipe(&output) == 0 else { throw QEMUError.didNotStart(String(cString: strerror(errno))) }
-        defer { close(output[1]) }
-
-        // A descriptor whose number is among those being handed out would be overwritten before its
-        // turn. Such a one is moved out of the way first.
+        // Keep sources out of the target range, and clear close-on-fork on an explicit handoff copy.
+        // The caller's lease stays close-on-fork so incidental resource probes cannot inherit it.
         let highest = firstDescriptor + Int32(descriptors.count)
         var moved: [Int32] = []
         defer { moved.forEach { close($0) } }
-        let sources = descriptors.map { descriptor -> Int32 in
-            guard descriptor < highest else { return descriptor }
+        let sources = try descriptors.map { descriptor -> Int32 in
             let copy = fcntl(descriptor, F_DUPFD_CLOEXEC, highest + 64)
+            guard copy >= 0 else { throw QEMUError.didNotStart(String(cString: strerror(errno))) }
             moved.append(copy)
             return copy
         }
+
+        var output: [Int32] = [0, 0]
+        guard pipe(&output) == 0 else { throw QEMUError.didNotStart(String(cString: strerror(errno))) }
+        defer { close(output[1]) }
 
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)

@@ -122,7 +122,7 @@ private final class AgentBackend: VMBackend {
 private final class AgentProvider: VMBackendProvider {
     let backend = AgentBackend()
 
-    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend { backend }
+    func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend { backend }
     func backendDidStop(for machine: VirtualMachine) {}
 }
 
@@ -139,6 +139,7 @@ private final class AgentProvider: VMBackendProvider {
             automation: AutomationConfiguration(isAllowed: automation)
         )
         let bundle = try VMBundle.create(at: directory.appending(path: "\(UUID().uuidString).swiftvm"), configuration: configuration)
+        if family == .macOS { try Data("aux".utf8).write(to: bundle.auxiliaryStorageURL) }
         let machine = try VirtualMachine(bundle: bundle)
         machine.backendProvider = provider
         // What the app asks of this agent by itself goes unanswered, and isn't worth waiting for.

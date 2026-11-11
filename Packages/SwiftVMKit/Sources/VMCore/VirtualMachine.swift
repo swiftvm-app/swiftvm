@@ -78,6 +78,8 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored public var hostTimeZone: @MainActor () -> String = { TimeZone.current.identifier }
 
     @ObservationIgnored private var backend: (any VMBackend)?
+    @ObservationIgnored private var runtimeOwnership: PackageOwnership?
+    @ObservationIgnored private var activityOwnership: PackageOwnership?
     @ObservationIgnored private var restartsAfterStop = false
     @ObservationIgnored private var shutdownRequestExpiry: Task<Void, Never>?
     /// The guest has shut down for a restart and its start is about to begin.
@@ -110,7 +112,9 @@ public final class VirtualMachine: Identifiable {
         self.console = SerialConsole(logURL: bundle.consoleLogURL)
         self.configuration = configuration
         // Copies left by a revert that was cut short. The files they were meant to replace are intact.
-        bundle.removeRestoreLeftovers()
+        if let ownership = try? PackageOwnership(in: bundle, configuration: configuration) {
+            withExtendedLifetime(ownership) { bundle.removeRestoreLeftovers() }
+        }
         self.state = bundle.hasSavedState ? .suspended : .stopped
         self.snapshots = bundle.loadSnapshots()
         refreshDiskUsage()
@@ -263,6 +267,8 @@ public final class VirtualMachine: Identifiable {
         var updated = configuration
         body(&updated)
         guard updated != configuration else { return }
+        let ownership = try claimPackage()
+        defer { withExtendedLifetime(ownership) {} }
         // A running or suspended guest still has its old attachment and MAC address. Keep address
         // discovery and forwarded ports with that card until it has shut down and can change them together.
         if state != .stopped, updated.networkInterfaces.contains(where: { interface in
@@ -771,14 +777,17 @@ public final class VirtualMachine: Identifiable {
     }
 
     /// - Parameter carryingOn: The guest goes back to what it was doing a moment ago, after a snapshot.
-    private func performStart(inRecovery: Bool = false, carryingOn: Bool = false) async {
+    private func performStart(inRecovery: Bool = false, carryingOn: Bool = false, ownership: PackageOwnership? = nil) async {
         guard state == .stopped || state == .suspended, isStartAllowed() else { return }
         let restoring = state == .suspended && bundle.hasSavedState
         lastError = nil
         state = restoring ? .restoring : .starting
         do {
+            let ownership = try ownership ?? PackageOwnership(in: bundle, configuration: configuration)
+            try ownership.requireMatches(bundle)
+            runtimeOwnership = ownership
             guard let backendProvider else { throw VMError.noBackendProvider }
-            let backend = try await backendProvider.makeBackend(for: self, console: console.connect(continuing: restoring))
+            let backend = try await backendProvider.makeBackend(for: self, console: console.connect(continuing: restoring), ownership: ownership)
             backend.eventHandler = { [weak self] event in self?.handle(event) }
             self.backend = backend
             let display = configuration.display
@@ -1008,8 +1017,14 @@ public final class VirtualMachine: Identifiable {
     /// Throws away the suspended state so the next start is a cold boot.
     public func discardSavedState() {
         guard activity == nil, state == .suspended else { return }
-        bundle.removeSavedState()
-        state = .stopped
+        do {
+            let ownership = try claimPackage()
+            defer { withExtendedLifetime(ownership) {} }
+            bundle.removeSavedState()
+            state = .stopped
+        } catch {
+            report(error, title: "Couldn't discard saved state of “\(name)”")
+        }
     }
 
     // MARK: Snapshots
@@ -1022,7 +1037,7 @@ public final class VirtualMachine: Identifiable {
     @discardableResult
     public func takeSnapshot(named name: String? = nil) async throws -> VMSnapshot {
         try begin(.takingSnapshot)
-        defer { activity = nil }
+        defer { activity = nil; activityOwnership = nil }
 
         // A snapshot covers the machine's own disks. A drive the guest can write to is a file elsewhere
         // that goes on changing, and a guest brought back with its memory would write what it remembers
@@ -1050,6 +1065,8 @@ public final class VirtualMachine: Identifiable {
                 "This Mac is locked. “\(self.name)” would have to be suspended for the snapshot and couldn't be resumed until the Mac is unlocked. Unlock it first, or shut the virtual machine down."
             )
         }
+        let ownership = try claimPackage()
+        activityOwnership = ownership
         if wasActive {
             try await performSuspend()
         }
@@ -1057,6 +1074,7 @@ public final class VirtualMachine: Identifiable {
         let snapshotName = trimmed.isEmpty ? VMSnapshot.defaultName(avoiding: snapshots) : trimmed
         let result: Result<VMSnapshot, any Error>
         do {
+            if wasActive { try await ownership.waitForReleasedResources(for: configuration) }
             let (bundle, configuration) = (bundle, configuration)
             let snapshot = try await Task.detached { try bundle.takeSnapshot(named: snapshotName, of: configuration) }.value
             snapshots.append(snapshot)
@@ -1066,7 +1084,7 @@ public final class VirtualMachine: Identifiable {
         }
         if wasActive {
             // Whether or not the snapshot worked out, the guest goes back to what it was doing.
-            await performStart(carryingOn: true)
+            await performStart(carryingOn: true, ownership: ownership)
             if wasPaused, state == .running, let backend, (try? await backend.pause()) != nil {
                 state = .paused
             }
@@ -1079,16 +1097,22 @@ public final class VirtualMachine: Identifiable {
     /// Afterwards the machine is suspended if the snapshot holds the guest's memory, otherwise shut down.
     public func revert(to snapshot: VMSnapshot) async throws {
         try begin(.reverting)
-        defer { activity = nil }
+        defer { activity = nil; activityOwnership = nil }
 
         // Get the snapshot's files ready first. If it can't be used, the guest carries on untouched.
         let bundle = bundle
+        _ = try bundle.loadConfiguration()
+        let ownership = try claimPackage()
+        activityOwnership = ownership
         let staged = try await Task.detached { try bundle.stageRestore(of: snapshot) }.value
+        // Staging names are shared with a later restore. Keep ownership continuously until cleanup.
+        defer { bundle.removeRestoreLeftovers() }
         await performForceStop()
         guard !state.isActive else {
             bundle.removeRestoreLeftovers()
             throw VMError.notStopped(name: name, state)
         }
+        try await ownership.waitForReleasedResources(for: configuration)
 
         // From here on the files change. However this ends, the machine is what its files say it is.
         defer {
@@ -1118,6 +1142,8 @@ public final class VirtualMachine: Identifiable {
         }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = snapshots.firstIndex(where: { $0.id == snapshot.id }) else { return }
+        let ownership = try claimPackage()
+        defer { withExtendedLifetime(ownership) {} }
         var renamed = snapshots[index]
         renamed.name = trimmed
         try bundle.saveSnapshot(renamed)
@@ -1128,6 +1154,8 @@ public final class VirtualMachine: Identifiable {
         if let activity {
             throw VMError.busy(name: name, activity)
         }
+        let ownership = try claimPackage()
+        defer { withExtendedLifetime(ownership) {} }
         try bundle.removeSnapshot(snapshot.id)
         snapshots.removeAll { $0.id == snapshot.id }
     }
@@ -1137,9 +1165,11 @@ public final class VirtualMachine: Identifiable {
         try begin(activity)
         defer {
             self.activity = nil
+            activityOwnership = nil
             activityProgress = nil
         }
         guard state == .stopped else { throw VMError.notStopped(name: name, state) }
+        activityOwnership = try PackageOwnership(in: bundle, configuration: configuration)
         return try await operation()
     }
 
@@ -1150,9 +1180,19 @@ public final class VirtualMachine: Identifiable {
         try begin(activity)
         defer {
             self.activity = nil
+            activityOwnership = nil
             activityProgress = nil
         }
+        activityOwnership = try claimPackage()
         return try await operation()
+    }
+
+    private func claimPackage() throws -> PackageOwnership {
+        if let ownership = runtimeOwnership ?? activityOwnership {
+            try ownership.requireMatches(bundle)
+            return ownership
+        }
+        return try PackageOwnership(in: bundle, configuration: configuration)
     }
 
     /// Claims the machine for work on its files. Throws if it is already claimed or in the middle of
@@ -1230,7 +1270,7 @@ public final class VirtualMachine: Identifiable {
     }
 
     private func tearDownBackend() {
-        guard backend != nil else { return }
+        guard backend != nil else { runtimeOwnership = nil; return }
         canResizeWindowsDisplay = false
         requestedDisplaySize = nil
         wantedDisplaySize = nil
@@ -1243,6 +1283,7 @@ public final class VirtualMachine: Identifiable {
         backend?.eventHandler = nil
         backend?.invalidate()
         backend = nil
+        runtimeOwnership = nil
         console.disconnect()
         backendProvider?.backendDidStop(for: self)
     }

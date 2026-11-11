@@ -51,10 +51,11 @@ public enum MacOSInstaller {
     ) async throws {
         guard image.requirements != nil else { throw InstallError.unsupportedImage(image.productName) }
         guard !image.isRemote else { throw InstallError.imageNotDownloaded }
+        let ownership = try PackageOwnership(in: bundle, configuration: configuration)
         try await runInstaller(image, into: bundle, configuration: configuration, progress: progress)
         // The installer's machine is gone now, but the process that ran it lets go of the auxiliary
         // storage a moment later. A start before then fails to lock it.
-        _ = try await FileLock.waitUntilFree(bundle.auxiliaryStorageURL, timeout: .seconds(30))
+        try await ownership.waitForReleasedResources(for: configuration)
     }
 
     /// Everything that holds on to the installer's machine lives in here, so that it is released once

@@ -12,15 +12,22 @@ public final class BackendRouter: VMBackendProvider {
         self.providers = providers
     }
 
-    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
+    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd, ownership: PackageOwnership) async throws -> any VMBackend {
         guard let provider = providers[machine.configuration.engine] else {
             throw VMError.unsupportedEngine(machine.configuration.engine)
         }
         try await prepareMachine?(machine)
-        return try await provider.makeBackend(for: machine, console: console)
+        return try await provider.makeBackend(for: machine, console: console, ownership: ownership)
     }
 
     public func backendDidStop(for machine: VirtualMachine) {
         providers[machine.configuration.engine]?.backendDidStop(for: machine)
+    }
+
+    public func validateFixedDisplay(_ configuration: VMConfiguration, in bundle: VMBundle) throws {
+        guard let provider = providers[configuration.engine] else {
+            throw VMError.unsupportedEngine(configuration.engine)
+        }
+        try provider.validateFixedDisplay(configuration, in: bundle)
     }
 }
