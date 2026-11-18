@@ -1,0 +1,23 @@
+Preserve integer register bits in TGSI UCMP selections on ANGLE/Metal.
+
+Floating-point mix can flush integer payloads encoded as subnormal floats to
+zero. Firefox uses UCMP to choose glyph dimensions; zero dimensions cause
+invalid coordinates and missing text. Select the register bits instead.
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -5975,7 +5975,13 @@
+       emit_buff(&ctx->glsl_strbufs, "%s = mix(%s, %s, greaterThanEqual(%s, vec4(0.0)))%s;\n", dsts[0], srcs[1], srcs[2], srcs[0], writemask);
+       break;
+    case TGSI_OPCODE_UCMP:
+-      emit_buff(&ctx->glsl_strbufs, "%s = mix(%s, %s, notEqual(floatBitsToUint(%s), uvec4(0.0)))%s;\n", dsts[0], srcs[2], srcs[1], srcs[0], writemask);
++      /* UCMP selects register bits, including integers encoded as subnormal
++       * floats. Floating-point mix can flush those values to zero on Metal,
++       * corrupting e.g. the glyph dimensions in Firefox's vertex shaders. */
++      emit_buf(&ctx->glsl_strbufs, "{\n");
++      emit_buff(&ctx->glsl_strbufs, "uvec4 ucmp_mask = uvec4(notEqual(floatBitsToUint(%s), uvec4(0U))) * 0xffffffffU;\n", srcs[0]);
++      emit_buff(&ctx->glsl_strbufs, "%s = uintBitsToFloat((floatBitsToUint(%s) & ucmp_mask) | (floatBitsToUint(%s) & ~ucmp_mask))%s;\n", dsts[0], srcs[1], srcs[2], writemask);
++      emit_buf(&ctx->glsl_strbufs, "}\n");
+       break;
+    case TGSI_OPCODE_END:
+       if (iter->processor.Processor == TGSI_PROCESSOR_VERTEX) {

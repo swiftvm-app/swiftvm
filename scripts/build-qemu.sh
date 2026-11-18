@@ -257,7 +257,7 @@ build_libraries() {
     cp -R "$angle/include/" "$prefix/include/"
     unpack epoxy.tar.gz epoxy "$native/epoxy-dylibs.patch"
     meson_build "$sources/epoxy" -Dtests=false -Dglx=no -Degl=yes -Dx11=false "-Dc_args=-I$prefix/include"
-    unpack virglrenderer.tar.gz virglrenderer
+    unpack virglrenderer.tar.gz virglrenderer "$native/virglrenderer-dual-source.patch" "$native/virglrenderer-integer-select.patch"
     unpack directx-native-virglrenderer.tar.gz directx-native-virglrenderer
     provide_directx_native directx-native-virglrenderer "$sources/virglrenderer"
     local virglrenderer_options=(-Dtests=false -Dvtest=false -Dvenus=false -Dneptune=true -Dcheck-gl-errors=false
