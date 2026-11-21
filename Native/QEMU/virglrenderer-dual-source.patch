@@ -1,0 +1,62 @@
+Keep dual-source fragment outputs on the same render target when a guest shader
+sets FS_COLOR0_WRITES_ALL_CBUFS. Explicit GLES locations override the renderer's
+indexed link-time bindings, losing the secondary source used for text blending.
+Only a single color output is broadcast; depth and stencil outputs don't count.
+
+Adapted from https://gitlab.freedesktop.org/virgl/virglrenderer/-/merge_requests/1668
+without asserting on the number of guest-provided color outputs.
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -2193,9 +2193,19 @@
+ static void emit_cbuf_writes(const struct dump_ctx *ctx,
+                              struct vrend_glsl_strbufs *glsl_strbufs)
+ {
+-   int i;
+-
+-   for (i = ctx->num_outputs; i < ctx->cfg->max_draw_buffers; i++) {
++   uint32_t i;
++
++   uint32_t num_color_outputs = 0;
++   for (i = 0; i < ctx->num_outputs; i++)
++      if (ctx->outputs[i].name == TGSI_SEMANTIC_COLOR)
++         num_color_outputs++;
++
++   /* `write_all_cbufs` supports multiple color outputs only for dual-source
++    * blending, which doesn't want broadcast output. */
++   if (num_color_outputs > 1)
++      return;
++
++   for (i = num_color_outputs; i < ctx->cfg->max_draw_buffers; i++) {
+       emit_buff(glsl_strbufs, "fsout_c%d = fsout_c0;\n", i);
+    }
+ }
+@@ -7388,7 +7398,17 @@
+       else if (ctx->key->fs.cbufs_signed_int_bitmask)
+          type = "ivec4";
+ 
+-      for (i = 0; i < (uint32_t)ctx->cfg->max_draw_buffers; i++) {
++      /* `write_all_cbufs` supports multiple color outputs only for dual-source
++       * blending. In that case, the output will be bound with
++       * `glBindFragDataLocationIndexedEXT` rather than layout qualifiers. */
++      uint32_t num_color_outputs = 0;
++      for (i = 0; i < ctx->num_outputs; i++)
++         if (ctx->outputs[i].name == TGSI_SEMANTIC_COLOR)
++            num_color_outputs++;
++      uint32_t num_cbufs = num_color_outputs > 1 ? num_color_outputs
++                                                 : (uint32_t)ctx->cfg->max_draw_buffers;
++
++      for (i = 0; i < num_cbufs; i++) {
+          if (ctx->cfg->use_gles) {
+             if (ctx->key->fs.logicop_enabled)
+                emit_hdrf(glsl_strbufs, "%s fsout_tmp_c%d;\n", type, i);
+@@ -7396,6 +7416,9 @@
+             if (logiop_require_inout(ctx->key)) {
+                const char *noncoherent = ctx->cfg->has_fbfetch_coherent ? "" : ", noncoherent";
+                emit_hdrf(glsl_strbufs, "layout (location=%d%s) inout highp %s fsout_c%d;\n", i, noncoherent, type, i);
++            } else if (num_color_outputs > 1 && ctx->cfg->has_dual_src_blend) {
++               /* location assigned at link time via glBindFragDataLocationIndexedEXT */
++               emit_hdrf(glsl_strbufs, "out %s fsout_c%d;\n", type, i);
+             } else
+                emit_hdrf(glsl_strbufs, "layout (location=%d) out %s fsout_c%d;\n", i,
+                          type, i);
