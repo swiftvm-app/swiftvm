@@ -52,7 +52,7 @@ public final class GuestScreenView: NSView, GuestRegionView {
     /// The PC keys that are down, by their scancode, to let go of when the view loses the keyboard.
     private var keysDown: Set<UInt16> = []
     private var modifiersDown: Set<UInt16> = []
-    private var scrollRemainder = CGPoint.zero
+    private var wheel = WheelNotches()
     /// Where the pointer was put last, in pixels of the display.
     private var lastPlace: (x: Int, y: Int)?
     private var resizeRequest: Task<Void, Never>?
@@ -333,32 +333,23 @@ public final class GuestScreenView: NSView, GuestRegionView {
         sendPointer(event)
     }
 
-    /// How far a trackpad scrolls for one turn of a wheel's notch, in points.
-    private static let pointsPerNotch = 24.0
-
     override public func scrollWheel(with event: NSEvent) {
         guard let place = pixel(at: convert(event.locationInWindow, from: nil)) else { return }
         // The Mac has already turned the direction around if it is set to; what is left is the way
         // the user means to scroll, and a wheel turned up scrolls up in Windows too.
-        let perNotch = event.hasPreciseScrollingDeltas ? Self.pointsPerNotch : 1
-        scrollRemainder.x += event.scrollingDeltaX / perNotch
-        scrollRemainder.y += event.scrollingDeltaY / perNotch
-        let notchesY = Int(scrollRemainder.y.rounded(.towardZero))
-        let notchesX = Int(scrollRemainder.x.rounded(.towardZero))
-        scrollRemainder.y -= Double(notchesY)
-        scrollRemainder.x -= Double(notchesX)
-        for _ in 0..<min(abs(notchesY), 10) {
-            let wheel: RFBClient.Buttons = notchesY > 0 ? .wheelUp : .wheelDown
-            client.pointer(x: place.x, y: place.y, buttons: buttons.union(wheel))
+        let notches = wheel.notches(
+            deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY,
+            precise: event.hasPreciseScrollingDeltas, startsGesture: event.phase == .began
+        )
+        for _ in 0..<min(abs(notches.y), 10) {
+            let turn: RFBClient.Buttons = notches.y > 0 ? .wheelUp : .wheelDown
+            client.pointer(x: place.x, y: place.y, buttons: buttons.union(turn))
             client.pointer(x: place.x, y: place.y, buttons: buttons)
         }
-        for _ in 0..<min(abs(notchesX), 10) {
-            let wheel: RFBClient.Buttons = notchesX > 0 ? .wheelLeft : .wheelRight
-            client.pointer(x: place.x, y: place.y, buttons: buttons.union(wheel))
+        for _ in 0..<min(abs(notches.x), 10) {
+            let turn: RFBClient.Buttons = notches.x > 0 ? .wheelLeft : .wheelRight
+            client.pointer(x: place.x, y: place.y, buttons: buttons.union(turn))
             client.pointer(x: place.x, y: place.y, buttons: buttons)
-        }
-        if event.phase == .ended || event.momentumPhase == .ended {
-            scrollRemainder = .zero
         }
     }
 
@@ -475,5 +466,49 @@ public final class GuestScreenView: NSView, GuestRegionView {
             buttons = []
             client.pointer(x: lastPlace.x, y: lastPlace.y, buttons: [])
         }
+    }
+}
+
+/// Turns how far the Mac scrolls into whole notches of a wheel, which is all the guest's tablet has.
+struct WheelNotches {
+    /// How far a trackpad scrolls for one notch, in points. A notch scrolls Windows three lines, 60 to
+    /// 100 points at the scale the guest is set to, so the page moves about as far as the fingers do.
+    static let pointsPerNotch = 80.0
+
+    /// How far toward its next notch the wheel is, on each axis, in notches.
+    private var remainder: (x: Double, y: Double) = (0, 0)
+    /// Whether the wheel hasn't turned yet in this gesture, on each axis.
+    private var unturned = (x: true, y: true)
+
+    /// The notches to turn for one scroll event. Positive is up, and to the left, as AppKit's deltas are.
+    /// - Parameters:
+    ///   - precise: The deltas are a trackpad's points, rather than a mouse wheel's lines.
+    ///   - startsGesture: Fingers have just started scrolling, which also stops what was still coasting.
+    mutating func notches(deltaX: Double, deltaY: Double, precise: Bool, startsGesture: Bool) -> (x: Int, y: Int) {
+        if startsGesture {
+            remainder = (0, 0)
+            unturned = (true, true)
+        }
+        let perNotch = precise ? Self.pointsPerNotch : 1
+        let x = Self.turn(&remainder.x, by: deltaX / perNotch, unturned: &unturned.x)
+        let y = Self.turn(&remainder.y, by: deltaY / perNotch, unturned: &unturned.y)
+        return (x, y)
+    }
+
+    private static func turn(_ remainder: inout Double, by notches: Double, unturned: inout Bool) -> Int {
+        remainder += notches
+        var turned = Int(remainder.rounded(.towardZero))
+        if turned == 0, unturned, abs(remainder) >= 0.5 {
+            // The first notch turns halfway to it, so that a short scroll still does something.
+            turned = remainder > 0 ? 1 : -1
+            remainder = 0
+        } else {
+            // After that it takes a whole notch either way, so that fingers that wobble as they
+            // scroll, or as they lift, don't turn the wheel back and forth. What is left carries on,
+            // into the coasting that follows the fingers too.
+            remainder -= Double(turned)
+        }
+        if turned != 0 { unturned = false }
+        return turned
     }
 }
