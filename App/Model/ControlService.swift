@@ -1417,7 +1417,8 @@ extension AppModel {
             cpuCount: configuration.cpuCount,
             memorySize: configuration.memorySize,
             diskAllocated: machine.allocatedDiskSize,
-            diskCapacity: configuration.totalDiskCapacity
+            diskCapacity: configuration.totalDiskCapacity,
+            usage: machine.usage.map { MachineUsage(cpuPercent: $0.cpuPercent, memoryBytes: $0.memoryBytes) }
         )
     }
 

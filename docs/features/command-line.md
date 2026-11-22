@@ -15,6 +15,7 @@ tool itself is inside the app, at `SwiftVM.app/Contents/Helpers/swiftvm`.
 swiftvm help                 # every command
 swiftvm list                 # your machines
 swiftvm info web-server      # one machine in detail
+swiftvm stats                # CPU and memory of the running machines
 ```
 
 `<machine>` is a machine's name, its [SSH name](ssh.md), or its UUID.
@@ -25,6 +26,7 @@ swiftvm info web-server      # one machine in detail
 | --- | --- |
 | `list` | List virtual machines, and those still being created or that failed to be |
 | `info <machine>` | Show one machine in detail |
+| `stats [<machine>]` | Show how much CPU and memory the running machines use on your Mac, or one machine |
 | `create <system> [options]` | Create a machine and start it, unless `--no-start` is given |
 | `create --template <template> [options]` | Create a machine from a [template](templates.md#creating-a-machine-from-one) |
 | `clone <machine> [name]` | Copy a machine that is shut down |

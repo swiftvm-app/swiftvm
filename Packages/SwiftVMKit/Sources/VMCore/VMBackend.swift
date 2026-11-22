@@ -217,6 +217,10 @@ public protocol VMBackend: AnyObject {
     /// for something the guest says on another line than its display's, such as where its windows
     /// are, to be shown together with the picture that goes with it.
     func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void)
+
+    /// The process on this Mac that runs the guest, whose use of the processor and memory is the
+    /// machine's. `nil` while it can't be told, or for an engine without one.
+    func hostProcessID() async -> pid_t?
 }
 
 /// A view that shows one part of a machine's display, and passes on what the mouse and the keyboard do
@@ -263,6 +267,8 @@ extension VMBackend {
     public func afterDisplayUpdate(_ body: @escaping @MainActor () -> Void) {
         body()
     }
+
+    public func hostProcessID() async -> pid_t? { nil }
 }
 
 /// Creates backends and manages the host resources (networks, …) they hold.

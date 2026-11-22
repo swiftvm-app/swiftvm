@@ -58,6 +58,7 @@ public final class VZBackendProvider: VMBackendProvider {
             return VZBackend(
                 vzConfiguration: vzConfiguration,
                 machineConfiguration: configuration,
+                bundleURL: machine.bundle.url,
                 diskExports: diskExports,
                 attachmentProvider: { [weak self] interface in
                     try Self.attachment(for: interface, sharedNetwork: self?.networkManager.liveDefaultNetwork)

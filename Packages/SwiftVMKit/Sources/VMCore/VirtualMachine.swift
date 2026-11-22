@@ -33,6 +33,9 @@ public final class VirtualMachine: Identifiable {
     /// The USB devices of this Mac that the guest has been handed. They are the guest's while it runs: a
     /// machine that stops gives them back, and none is written down.
     public private(set) var usbDevices: [USBDevice] = []
+    /// What the machine takes of this Mac's processor and memory, as of the last ``sampleUsage()``.
+    /// `nil` while it isn't running, and until it has been read twice.
+    public private(set) var usage: ResourceUsage?
     /// How many times the guest has come up since the app was launched, booted or resumed. It tells one
     /// run of the guest from the next, which the state alone doesn't: a restart can be over between two looks.
     @ObservationIgnored public private(set) var startCount = 0
@@ -102,6 +105,9 @@ public final class VirtualMachine: Identifiable {
     /// run, and no more.
     private static let maximumSetupFailureRecordChanges = 16
     @ObservationIgnored private var isLookingAfterGuest = false
+    /// The counters of the backend's process at the last ``sampleUsage()``, which the next is told from.
+    @ObservationIgnored private var lastUsageCounters: ProcessCounters?
+    @ObservationIgnored private var isSamplingUsage = false
     @ObservationIgnored private var shouldLookAfterGuestAgain = false
 
     public init(bundle: VMBundle, configuration: VMConfiguration) {
@@ -742,6 +748,37 @@ public final class VirtualMachine: Identifiable {
 
     @ObservationIgnored private var knownWheelDirection: (run: Int, turns: Bool)?
 
+    /// Reads what the machine takes of this Mac now, into ``usage``. Called at regular intervals: the
+    /// processor's share is that of the time since the last call.
+    public func sampleUsage() async {
+        guard state.isActive, let backend else {
+            clearUsage()
+            return
+        }
+        guard !isSamplingUsage else { return }
+        isSamplingUsage = true
+        defer { isSamplingUsage = false }
+        guard let pid = await backend.hostProcessID(), isCurrent(backend),
+              let counters = ProcessCounters.read(pid: pid)
+        else {
+            if isCurrent(backend) { clearUsage() }
+            return
+        }
+        let earlier = lastUsageCounters
+        lastUsageCounters = counters
+        let reading = earlier.flatMap { ResourceUsage(from: $0, to: counters) }
+        if reading != usage {
+            usage = reading
+        }
+    }
+
+    private func clearUsage() {
+        lastUsageCounters = nil
+        if usage != nil {
+            usage = nil
+        }
+    }
+
     public func refreshDiskUsage() {
         allocatedDiskSize = bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })
     }
@@ -1240,6 +1277,7 @@ public final class VirtualMachine: Identifiable {
         hasAgentMountedSharedFolders = false
         // A machine that is gone holds no device: this Mac has them back.
         usbDevices = []
+        clearUsage()
         backend?.eventHandler = nil
         backend?.invalidate()
         backend = nil

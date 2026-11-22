@@ -325,10 +325,14 @@ public struct MachineSummary: Codable, Sendable, Equatable {
     public var diskCapacity: UInt64
     /// Only filled in for `info`.
     public var details: MachineDetails?
+    /// What it takes of this Mac right now. `nil` while it isn't running, for a moment after it has
+    /// started, and from an app older than this.
+    public var usage: MachineUsage?
 
     public init(
         id: UUID, name: String, state: String, system: String, family: String? = nil, address: String?, sshAlias: String?,
-        cpuCount: Int, memorySize: UInt64, diskAllocated: UInt64, diskCapacity: UInt64, details: MachineDetails? = nil
+        cpuCount: Int, memorySize: UInt64, diskAllocated: UInt64, diskCapacity: UInt64, details: MachineDetails? = nil,
+        usage: MachineUsage? = nil
     ) {
         self.id = id
         self.name = name
@@ -342,6 +346,27 @@ public struct MachineSummary: Codable, Sendable, Equatable {
         self.diskAllocated = diskAllocated
         self.diskCapacity = diskCapacity
         self.details = details
+        self.usage = usage
+    }
+}
+
+/// What a running machine takes of this Mac: of the process the app runs it in.
+public struct MachineUsage: Codable, Sendable, Equatable {
+    /// Processor time, in percent of one of this Mac's cores, as Activity Monitor counts it: a guest
+    /// that keeps two cores busy is at 200.
+    public var cpuPercent: Double
+    /// This Mac's memory that the process holds, in bytes.
+    public var memoryBytes: UInt64
+
+    public init(cpuPercent: Double, memoryBytes: UInt64) {
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
+    }
+
+    /// `23.4%`: one decimal, as Activity Monitor shows it.
+    public static func percent(_ value: Double) -> String {
+        guard value.isFinite else { return "-" }
+        return String(format: "%.1f%%", max(value, 0))
     }
 }
 
