@@ -31,6 +31,13 @@ struct MachineToolbar: ToolbarContent {
             ToolbarSpacer(.fixed, placement: .primaryAction)
         }
 
+        if machine.state.isActive {
+            ToolbarItem(placement: .primaryAction) {
+                ActivityButton(machine: machine, placement: .toolbar)
+            }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
+
         ToolbarItemGroup(placement: .primaryAction) {
             Menu("Power", systemImage: "power") {
                 MachineMenu(
@@ -85,6 +92,7 @@ struct MachineToolbar: ToolbarContent {
                     USBDevicesPopover(machine: machine)
                 }
             }
+
         }
 
         ToolbarSpacer(.fixed, placement: .primaryAction)

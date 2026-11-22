@@ -8,6 +8,8 @@ Usage: swiftvm <command> [arguments]
 
   list                              List virtual machines, and those still being created
   info <machine>                    Show one machine in detail
+  stats [<machine>]                 Show how much of this Mac's processor and memory the running
+                                    machines take, or one machine. 100% CPU is one of this Mac's cores
   create <system> [options]         Create a machine and start it. Then `swiftvm wait` until it is ready
       <system> is macos, windows, or a Linux image such as ubuntu-26.04
       --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
@@ -154,7 +156,7 @@ Work in a machine
   ssh, console, vsock           Open a shell, its serial console, or a port on its socket device
 
 Machines
-  list, info                    What there is
+  list, info, stats             What there is, and what it takes of this Mac
   create, wait                  Make one, and wait until it is ready
   start, stop, restart, suspend, pause, resume, force-stop, discard-state, open, delete, clone, move
   snapshot, snapshots, revert, delete-snapshot, rename-snapshot
@@ -266,6 +268,24 @@ func printTable(_ machines: [MachineSummary], creations: [CreationSummary] = [])
     }
 }
 
+/// What the machines take of this Mac. A machine that isn't running, or has only just started, takes
+/// nothing that can be told yet.
+func printUsage(of machines: [MachineSummary]) {
+    let rows = [["NAME", "STATE", "CPU", "MEMORY"]] + machines.map { machine in
+        [
+            machine.name,
+            machine.state,
+            machine.usage.map { MachineUsage.percent($0.cpuPercent) } ?? "-",
+            machine.usage.map { formatBytes($0.memoryBytes) } ?? "-",
+        ]
+    }
+    let widths = (0..<rows[0].count).map { column in rows.map { $0[column].count }.max() ?? 0 }
+    for row in rows {
+        let line = zip(row, widths).map { cell, width in cell.padding(toLength: width, withPad: " ", startingAt: 0) }
+        print(line.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
+    }
+}
+
 func printSnapshots(_ snapshots: [SnapshotSummary]) {
     guard !snapshots.isEmpty else {
         print("No snapshots.")
@@ -362,6 +382,9 @@ func printDetails(of machine: MachineSummary) {
         ("Address", machine.address ?? "-"),
         ("SSH", machine.sshAlias.map { "swiftvm ssh \($0)" } ?? "-"),
     ]
+    if let usage = machine.usage {
+        lines.append(("Usage", "\(MachineUsage.percent(usage.cpuPercent)) CPU, \(formatBytes(usage.memoryBytes)) memory"))
+    }
     if let details = machine.details {
         lines.append(("MAC address", details.macAddress ?? "-"))
         if let mode = details.networkMode {
@@ -583,6 +606,21 @@ case "share", "unshare":
 case "info":
     if let machine = send(ControlRequest(command: .info, machine: requireMachine())).machines.first {
         printDetails(of: machine)
+    }
+
+case "stats":
+    guard arguments.count <= 1 else { fail("Usage: swiftvm stats [<machine>]") }
+    if let machine = arguments.first {
+        printUsage(of: send(ControlRequest(command: .list, machine: machine)).machines)
+    } else {
+        // The machines that hold a guest, as the app's own list has them.
+        let inactive: Set = ["stopped", "suspended"]
+        let running = send(ControlRequest(command: .list)).machines.filter { !inactive.contains($0.state) }
+        if running.isEmpty {
+            print("No virtual machine is running.")
+        } else {
+            printUsage(of: running)
+        }
     }
 
 case "attach", "eject":

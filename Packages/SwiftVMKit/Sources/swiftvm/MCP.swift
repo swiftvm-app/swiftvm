@@ -140,7 +140,7 @@ enum MCP {
         static var definitions: [[String: Any]] {
             [
             [
-                "name": "vm_list", "description": "List the virtual machines, their state and system. Call this first.",
+                "name": "vm_list", "description": "List the virtual machines, their state and system, and what the running ones take of this Mac's processor (100% is one core) and memory. Call this first.",
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
                 "annotations": ["readOnlyHint": true],
             ],
@@ -299,9 +299,11 @@ enum MCP {
 
         private static func table(_ response: ControlResponse) -> String {
             let lines = response.machines.map { machine in
-                "\(machine.name)\t\(machine.state)\t\(machine.system)\t\(machine.address ?? "-")"
+                let cpu = machine.usage.map { MachineUsage.percent($0.cpuPercent) } ?? "-"
+                let memory = machine.usage.map { formatBytes($0.memoryBytes) } ?? "-"
+                return "\(machine.name)\t\(machine.state)\t\(machine.system)\t\(machine.address ?? "-")\t\(cpu)\t\(memory)"
             }
-            return lines.isEmpty ? "No virtual machines." : (["NAME\tSTATE\tSYSTEM\tADDRESS"] + lines).joined(separator: "\n")
+            return lines.isEmpty ? "No virtual machines." : (["NAME\tSTATE\tSYSTEM\tADDRESS\tCPU%\tMEMORY"] + lines).joined(separator: "\n")
         }
 
         private static func power(_ machine: String, _ arguments: [String: Any], client: ControlClient) throws -> [String: Any] {

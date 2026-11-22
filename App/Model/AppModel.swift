@@ -203,6 +203,7 @@ final class AppModel {
         networkManager?.relocateDefaultSubnetIfNeeded()
         startControlServer()
         startAddressMonitor()
+        startUsageMonitor()
         startUSBDevices()
     }
 
@@ -544,6 +545,22 @@ final class AppModel {
             }
         }
     }
+
+    /// Reads what each machine that holds a guest takes of this Mac, every couple of seconds, for the
+    /// windows, the menu bar panel and `swiftvm stats` to show. It costs a look at one process per machine.
+    private func startUsageMonitor() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                guard let machines = self?.library.machines else { return }
+                for machine in machines where machine.state.isActive || machine.usage != nil {
+                    await machine.sampleUsage()
+                }
+                try? await Task.sleep(for: Self.usageInterval)
+            }
+        }
+    }
+
+    private static let usageInterval: Duration = .seconds(2)
 
     /// Has the address monitor look again now rather than at its next turn.
     private func refreshAddressesSoon() {

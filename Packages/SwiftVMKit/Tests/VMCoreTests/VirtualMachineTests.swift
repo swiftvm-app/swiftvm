@@ -71,6 +71,10 @@ private final class FakeBackend: VMBackend {
     func connectToGuest(port: UInt32) async throws -> FileHandle {
         throw POSIXError(.ECONNRESET)
     }
+
+    /// The process that runs the guest: this one, for the tests to read.
+    var hostProcess: pid_t?
+    func hostProcessID() async -> pid_t? { hostProcess }
 }
 
 @MainActor
@@ -113,6 +117,33 @@ private final class FakeProvider: VMBackendProvider {
         machine.pendingProvisioning = account
         await machine.start()
         #expect(provider.backend.starts.last == VMStartOptions())
+    }
+
+    /// The window, the menu bar and `swiftvm stats` show what the guest's process takes, from its
+    /// second reading on, and nothing once the guest has stopped.
+    @Test func readsTheUsageOfTheGuestsProcessWhileItRuns() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let machine = try makeMachine()
+        provider.backend.hostProcess = getpid()
+
+        await machine.sampleUsage()
+        #expect(machine.usage == nil)
+
+        await machine.start()
+        await machine.sampleUsage()
+        #expect(machine.usage == nil)
+        try await Task.sleep(for: .milliseconds(50))
+        await machine.sampleUsage()
+        let usage = try #require(machine.usage)
+        #expect(usage.memoryBytes > 0)
+        #expect(usage.cpuPercent >= 0)
+
+        await machine.forceStop()
+        #expect(machine.usage == nil)
+        // A stopped machine's last reading isn't taken for the start of the next run's.
+        await machine.start()
+        await machine.sampleUsage()
+        #expect(machine.usage == nil)
     }
 
     @Test func nothingStartsOnceTheLibraryIsClosedForStarts() async throws {

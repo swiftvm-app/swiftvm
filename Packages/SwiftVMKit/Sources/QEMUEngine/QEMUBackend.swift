@@ -250,6 +250,13 @@ public final class QEMUBackend: VMBackend {
         waiting.forEach { $0() }
     }
 
+    // MARK: Host process
+
+    public func hostProcessID() async -> pid_t? {
+        guard let process, !process.hasExited else { return nil }
+        return process.pid
+    }
+
     // MARK: Lifecycle
 
     public var canSaveState: Bool { adapter != .virtioGPU3D }

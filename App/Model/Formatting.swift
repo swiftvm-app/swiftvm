@@ -1,4 +1,5 @@
 import Foundation
+import VMControl
 import VMCore
 
 /// Text formatting shared by the menu bar panel and the machine windows.
@@ -17,6 +18,17 @@ enum Formatting {
     /// `4 CPU · 8 GB RAM`
     static func hardware(of configuration: VMConfiguration) -> String {
         "\(configuration.cpuCount) CPU · \(bytes(configuration.memorySize)) RAM"
+    }
+
+    /// `23.4% CPU · 3.1 GB`, the processor's share in percent of one of this Mac's cores.
+    static func usage(_ usage: ResourceUsage) -> String {
+        "\(MachineUsage.percent(usage.cpuPercent)) CPU · \(bytes(usage.memoryBytes))"
+    }
+
+    /// `23% · 3.1 GB`: short enough for a toolbar, with the processor's share in whole percent.
+    static func compactUsage(_ usage: ResourceUsage) -> String {
+        let percent = usage.cpuPercent.isFinite ? Int(max(usage.cpuPercent, 0).rounded()) : 0
+        return "\(percent)% · \(bytes(usage.memoryBytes))"
     }
 
     /// `4 CPU · 8 GB RAM · 7.47 GB of 1 TB · macOS 27.0.1 (26A434)`

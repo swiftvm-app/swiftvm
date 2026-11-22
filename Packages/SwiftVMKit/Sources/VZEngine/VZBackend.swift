@@ -27,10 +27,15 @@ public final class VZBackend: NSObject, VMBackend {
     private var passthroughDevices: [USBDevice.ID: VZUSBPassthroughDevice] = [:]
     /// The compressed disks of the machine, which the app serves to it for as long as it is there.
     private var diskExports: [CompressedDiskExport]
+    /// The machine's bundle, whose files the framework's process for it holds open.
+    private let bundleURL: URL
+    /// That process, once it has been found.
+    private var hostProcess: pid_t?
 
     init(
         vzConfiguration: VZVirtualMachineConfiguration,
         machineConfiguration: VMConfiguration,
+        bundleURL: URL,
         diskExports: [CompressedDiskExport] = [],
         attachmentProvider: @escaping @MainActor (NetworkInterfaceConfiguration) throws -> VZNetworkDeviceAttachment,
         usbAccessory: @escaping @MainActor (USBDevice.ID) -> AAUSBAccessory? = { _ in nil }
@@ -42,6 +47,7 @@ public final class VZBackend: NSObject, VMBackend {
         self.attachmentProvider = attachmentProvider
         self.usbAccessory = usbAccessory
         self.diskExports = diskExports
+        self.bundleURL = bundleURL
         // Without an explicit queue the machine uses the main queue, matching this class's isolation.
         self.virtualMachine = VZVirtualMachine(configuration: vzConfiguration)
         super.init()
@@ -82,6 +88,22 @@ public final class VZBackend: NSObject, VMBackend {
 
     public func keys(_ request: GuestJob.Keys) async throws {
         try await ownDesk.keys(request)
+    }
+
+    // MARK: Host process
+
+    public func hostProcessID() async -> pid_t? {
+        // The framework starts the process as the machine starts, and it ends with the machine. One
+        // that can't be read any more is looked for again.
+        if let hostProcess, ProcessCounters.read(pid: hostProcess) != nil { return hostProcess }
+        hostProcess = nil
+        guard virtualMachine.state != .stopped, virtualMachine.state != .error else { return nil }
+        let folder = bundleURL
+        let found = await Task.detached { VirtualizationProcess.find(holdingFilesIn: folder) }.value
+        if hostProcess == nil {
+            hostProcess = found
+        }
+        return hostProcess
     }
 
     // MARK: Lifecycle
