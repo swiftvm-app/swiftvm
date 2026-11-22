@@ -90,4 +90,22 @@ private final class NoInput: GuestScreenInput, @unchecked Sendable {
         let empty = GuestCursor(width: 2, height: 1, hotspotX: 0, hotspotY: 0, pixels: Data())
         #expect(GuestScreenView.cursor(for: empty, scale: 1) == nil)
     }
+
+    @Test func aTrackpadTurnsTheWheelAboutAsFarAsTheFingersMove() {
+        var wheel = WheelNotches()
+        // A 400-point swipe, as a trackpad reports it, in small steps: five notches, not the 16 it was.
+        var turned = 0
+        for step in 0..<40 { turned += wheel.notches(deltaX: 0, deltaY: 10, precise: true, startsGesture: step == 0).y }
+        #expect(turned == 5)
+        // Fingers that wobble back, or sideways, don't turn the wheel back and forth.
+        #expect(wheel.notches(deltaX: 1, deltaY: -1, precise: true, startsGesture: false) == (0, 0))
+        #expect(wheel.notches(deltaX: -2, deltaY: 1, precise: true, startsGesture: false) == (0, 0))
+        // A short nudge still scrolls.
+        #expect(wheel.notches(deltaX: 0, deltaY: -50, precise: true, startsGesture: true).y == -1)
+        // What is left of one gesture doesn't turn the wheel at the start of the next.
+        _ = wheel.notches(deltaX: 0, deltaY: 30, precise: true, startsGesture: true)
+        #expect(wheel.notches(deltaX: 0, deltaY: 30, precise: true, startsGesture: true).y == 0)
+        // A mouse's wheel turns the guest's notch for notch.
+        #expect(wheel.notches(deltaX: -2, deltaY: 3, precise: false, startsGesture: false) == (-2, 3))
+    }
 }
