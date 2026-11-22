@@ -35,8 +35,7 @@ enum MachineListing {
     }
 
     /// The line under a machine's name: what it is busy with, failing that what its guest is still
-    /// setting up, what a running guest takes of this Mac and where it is reached, and for one that
-    /// isn't running what it is made of.
+    /// setting up, where a running guest is reached, and for one that isn't running what it is made of.
     ///
     /// - Parameters:
     ///   - address: The address the guest holds, if known.
@@ -57,9 +56,8 @@ enum MachineListing {
             if let activity = machine.setupActivity {
                 return activity + "…"
             }
-            // What it takes of this Mac comes first: the line is cut short in its middle.
-            let parts = [machine.usage.map(Formatting.usage), address, sshCommand].compactMap { $0 }
-            return parts.isEmpty ? state.label : parts.joined(separator: " · ")
+            let whereabouts = [address, sshCommand].compactMap { $0 }
+            return whereabouts.isEmpty ? state.label : whereabouts.joined(separator: " · ")
         case .paused:
             return ([state.label] + [address].compactMap { $0 }).joined(separator: " · ")
         case .suspended:

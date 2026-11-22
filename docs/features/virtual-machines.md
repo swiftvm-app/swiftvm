@@ -7,12 +7,12 @@ supports [macOS](macos-guests.md), [Linux](linux-guests.md), and
 ## The panel
 
 Click SwiftVM's item in the menu bar to open the panel. It lists every machine,
-running ones first, with what each is doing and where to reach it. A running
-machine also shows how much of your Mac's CPU and memory it uses.
+running ones first, with what each is doing and where to reach it.
 
 | In the panel | What it does |
 | --- | --- |
 | The button on a machine | Start, resume, or suspend it |
+| **Activity** on a running machine | How much of your Mac's CPU and memory it uses |
 | **Open Window** | Show the machine's display |
 | **…** on a machine, or right-click | Everything else: power, settings, snapshots, SSH, delete |
 | **+** | New virtual machine (`Cmd+N`) |
@@ -89,7 +89,7 @@ toolbar has:
 - **USB Devices**: your Mac's [USB devices](usb-devices.md).
 - **Sound** and **Microphone**.
 - **Activity**, while the machine runs: how much of your Mac's CPU and memory
-  it uses, updated every two seconds. As in Activity Monitor, 100% CPU is one
+  it uses, updated every two seconds. Click it for more detail. As in Activity Monitor, 100% CPU is one
   of your Mac's cores. Memory is what the guest has touched so far, plus what
   the virtual machine's own process needs.
 - **Settings**: the machine's [settings](../user-guide/settings.md#virtual-machine-settings).

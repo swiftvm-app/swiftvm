@@ -39,6 +39,9 @@ struct MachinePanelRow: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 2) {
+                if machine.activity == nil, machine.state == .running || machine.state == .paused {
+                    ActivityButton(machine: machine, placement: .panel)
+                }
                 primaryControl
                 if machine.state.isActive {
                     Button("Open Window", systemImage: "macwindow", action: open)

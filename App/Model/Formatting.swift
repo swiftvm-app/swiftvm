@@ -25,6 +25,12 @@ enum Formatting {
         "\(MachineUsage.percent(usage.cpuPercent)) CPU · \(bytes(usage.memoryBytes))"
     }
 
+    /// `23% · 3.1 GB`: short enough for a toolbar, with the processor's share in whole percent.
+    static func compactUsage(_ usage: ResourceUsage) -> String {
+        let percent = usage.cpuPercent.isFinite ? Int(max(usage.cpuPercent, 0).rounded()) : 0
+        return "\(percent)% · \(bytes(usage.memoryBytes))"
+    }
+
     /// `4 CPU · 8 GB RAM · 7.47 GB of 1 TB · macOS 27.0.1 (26A434)`
     static func summary(of machine: VirtualMachine) -> String {
         let configuration = machine.configuration
