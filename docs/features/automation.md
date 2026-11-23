@@ -183,7 +183,7 @@ swiftvm exec desk -- sh -s < setup.sh
 | `--user <name>` | Run as this account; on Windows, it must be the account logged in at the guest's screen |
 | `--cwd <folder>` | Where to run it. Otherwise the account's home folder |
 | `--env <name>=<value>` | Add a variable to its environment. Give it again for more |
-| `--timeout <seconds>` | Stop the command if it takes longer |
+| `--timeout <seconds>` | Bound connection setup, dispatch and result consumption with one deadline |
 | `--result-fd <descriptor>` | Write one separate JSON completion line to an inherited writable descriptor greater than 2 |
 
 - Without `--root` or `--user`, the command runs as the machine's own account:
@@ -193,8 +193,7 @@ swiftvm exec desk -- sh -s < setup.sh
 - What you pipe into `swiftvm exec` is the command's input. It has no
   terminal: for something you type into, use [`swiftvm ssh`](ssh.md).
 - Output arrives as the command prints it, byte for byte.
-- A command stops when `swiftvm` does: at Control-C, or when the time is up.
-  A program it started that keeps running doesn't hold it up.
+- Leaving `swiftvm`, including at Control-C or a timeout, closes its connection and asks the guest tools to cancel. This does not prove that the command or every child stopped, or undo earlier changes. A program it started that keeps running does not hold the client open.
 - A command that runs as the user who is logged in at the guest's screen can
   open windows there.
 
@@ -207,7 +206,7 @@ For shell commands, use `powershell.exe -Command '…'`.
 | Status | Meaning |
 | --- | --- |
 | 124 | The time given with `--timeout` was up |
-| 125 | Setup or connection failed; guest completion may be unknown |
+| 125 | Setup, transport or completion reporting failed; guest completion may be unknown |
 | 126, 127 | The command couldn't be run, or isn't there |
 
 A guest can itself exit with 124, 125, or any other status. To distinguish its completion from a CLI failure, give a separate descriptor for a completion record:
@@ -222,9 +221,13 @@ The record is one newline-terminated JSON object with `schemaVersion: 1`, `machi
 - `completion: "signaled"` includes `signal`, the signal number reported by the guest, separately from an exit status.
 - `completion: "unknown"` includes neither. A timeout, lost connection, agent error, or malformed completion cannot establish whether a guest mutation happened.
 
-The record contains no command, environment, guest output, or diagnostic text. Guest stdout and stderr remain separate byte streams. The CLI keeps its exit-status conventions; if writing the record fails, it reports that failure on stderr and exits 125, even after guest success. Closed, read-only, or standard input/output/error descriptors are rejected before dispatch. Use a separate file or a pipe whose reader drains it: writing to a full pipe can wait for its reader.
+The record contains no command, environment, guest output, or diagnostic text. Guest stdout and stderr remain separate byte streams. The CLI keeps its exit-status conventions; if writing the record fails, it reports that failure on stderr and exits 125, even after guest success. Closed, read-only, or standard input/output/error descriptors are rejected before dispatch. Use a separate file or a pipe whose reader drains it. Without a timeout, writing to a full pipe can wait for its reader.
 
-Only a complete line from this invocation is evidence. Missing or partial records, including after client cancellation or termination, mean completion is unknown. Closing the connection asks the guest tools to cancel; it does not prove that the command or its children stopped. Inspect before retrying a command with side effects. The existing `--timeout` starts after the app accepts the job; it does not bound setup or writing the record.
+Only a complete line from this invocation is evidence. Missing or partial records, including after client cancellation or termination, mean completion is unknown. Closing the connection asks the guest tools to cancel; it does not prove that the command or its children stopped. Inspect before retrying a command with side effects. An absent machine UUID or a timed-out handshake is not evidence that the job was never dispatched.
+
+`--timeout` starts before opening the app connection and uses one monotonic deadline through setup, dispatch and result consumption; later stages do not get a fresh timeout. Expiry selects an unknown guest outcome and closes an established stream. Completion and expiry select one outcome, so a result already confirmed before the deadline does not become a timeout while it is reported. No command is retried automatically.
+
+After expiry, reporting has at most 50 milliseconds of cleanup grace. A blocked completion pipe, stderr or exit-time flush cannot strand the client: it then exits without waiting for those writes or teardown. If a known result's record cannot finish being written, the client exits 125 instead of reporting guest success. A timeout record cut short by this cleanup limit still returns 124; an immediate record-write error returns 125. Missing or partial metadata still means unknown. Keep draining output and completion pipes even when a deadline is set.
 
 ## Files
 

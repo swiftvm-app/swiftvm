@@ -5,10 +5,10 @@ import VMControl
 /// `swiftvm exec` and `cp`: what the guest tools do in a guest when asked from here.
 ///
 /// The app opens the job and then only passes bytes on, so that this tool and the agent in the guest
-/// speak to each other in ``JobFrame``s. Leaving, for whatever reason, calls the job off.
+/// speak to each other in ``JobFrame``s. Leaving asks the tools to cancel; it does not prove they stopped.
 enum GuestJobs {
     /// What `swiftvm exec` exits with when it isn't the command's own status, as `timeout` and `docker`
-    /// have it: the time was up, or the command never got to run.
+    /// have it: the time was up, or setup/transport/reporting could not establish the outcome.
     static let timedOutStatus: Int32 = 124
     static let failedStatus: Int32 = 125
     /// A reader that went away, as the shell reports a program that a closed pipe ended.
@@ -185,6 +185,7 @@ enum GuestJobs {
             fail(error.localizedDescription, status: failedStatus)
         }
         signal(SIGPIPE, SIG_IGN)
+        if let timeout { completion.armDeadline(timeout, machine: machine) }
         let descriptor: Int32
         let machineID: UUID?
         do {
@@ -195,15 +196,9 @@ enum GuestJobs {
             }
             descriptor = stream
             machineID = opened.response.machines.first?.id
+            completion.connected(to: stream, machineID: machineID)
         } catch {
             completion.finish(ExecCompletion(machine: machine, machineID: nil, end: nil), status: failedStatus, diagnostic: error.localizedDescription)
-        }
-        if let timeout {
-            // Leaving is what calls the command off in the guest.
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                completion.finish(ExecCompletion(machine: machine, machineID: machineID, end: nil), status: timedOutStatus,
-                                  diagnostic: "The command didn't finish in \(timeout.formatted()) seconds; guest completion is unknown.")
-            }
         }
         // What is typed at a terminal isn't the command's to read: it has no terminal of its own.
         let end = run(descriptor, input: isatty(STDIN_FILENO) == 1 ? .empty : .from(STDIN_FILENO), output: { write($0, to: STDOUT_FILENO) }, outputFailure: {
