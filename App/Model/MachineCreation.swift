@@ -46,6 +46,7 @@ struct LinuxQuickCreateRequest {
     /// Empty means key-only login.
     var password: String
     var installsSSHKey: Bool
+    var selectedSSHKey: SSHKeyManager.KeyPair? = nil
     var rosetta: Bool
     /// Let the guest run virtual machines of its own. See ``BootConfiguration/nestedVirtualization``.
     var nestedVirtualization = false
@@ -95,8 +96,17 @@ struct MacInstallRequest {
     var account: GuestProvisioning?
     /// Add the host's SSH key to the account once the guest is up.
     var installsSSHKey: Bool
+    var selectedSSHKey: SSHKeyManager.KeyPair? = nil
+    /// Installation still runs when false; only automatic desktop permission setup is skipped.
+    var setsUpDesktopPermissions = true
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
+
+    func validateToolsSetup(for image: MacRestoreImage) throws {
+        guard setsUpDesktopPermissions || image.supportsProvisioning else {
+            throw VMError.invalidConfiguration("--no-desktop-permissions needs macOS 27 or newer, which provisions the account and SSH sign-in.")
+        }
+    }
 }
 
 /// Everything needed to install Windows, from Microsoft's download or a disc of the user's, without
@@ -119,6 +129,7 @@ struct WindowsInstallRequest {
     var password: String
     /// Let this Mac's key sign in over SSH, once Windows has set SSH up.
     var installsSSHKey: Bool
+    var selectedSSHKey: SSHKeyManager.KeyPair? = nil
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
     /// Draw with this Mac's GPU, through the 3D display driver. Without it, Windows has a driver for a
@@ -236,7 +247,7 @@ extension AppModel {
 
         let alias = reserveAlias(for: request.name)
         defer { reservedAliases.remove(alias) }
-        let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
+        let keyPair = request.installsSSHKey ? try request.selectedSSHKey ?? keyManager.preferredKeyPair() : nil
         let disk = request.compressesDisk
             ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .virtio, format: .compressed)
             : DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
@@ -375,6 +386,8 @@ extension AppModel {
                 )
             }
         }
+        // The resolved image, including a downloaded one, decides whether tool bootstrap can run.
+        try request.validateToolsSetup(for: image)
         guard let requirements = image.requirements else {
             throw MacOSInstaller.InstallError.unsupportedImage(image.productName)
         }
@@ -384,7 +397,7 @@ extension AppModel {
         defer { reservedAliases.remove(alias) }
         let account = image.supportsProvisioning ? request.account : nil
         try account?.validateForMacOS()
-        let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try keyManager.preferredKeyPair() : nil
+        let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try request.selectedSSHKey ?? keyManager.preferredKeyPair() : nil
         let disk = DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
         let configuration = VMConfiguration(
             name: request.name,
@@ -410,7 +423,7 @@ extension AppModel {
             let machine = try addToLibrary(staged: bundle)
             machine.pendingProvisioning = account
             if let account, let keyPair {
-                finishSetup(of: machine, account: account, keyPair: keyPair)
+                finishSetup(of: machine, account: account, keyPair: keyPair, setsUpDesktopPermissions: request.setsUpDesktopPermissions)
             }
             return machine
         } catch {
@@ -443,7 +456,7 @@ extension AppModel {
 
         let alias = reserveAlias(for: request.name)
         defer { reservedAliases.remove(alias) }
-        let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
+        let keyPair = request.installsSSHKey ? try request.selectedSSHKey ?? keyManager.preferredKeyPair() : nil
         // NVMe, which Windows Setup has a driver for. Windows doesn't read Apple's sparse format.
         let disk = request.compressesDisk
             ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .nvme, format: .compressed)
@@ -531,7 +544,7 @@ extension AppModel {
     /// macOS turns on Remote Login for password sign-in only, so the key is installed by signing in once
     /// with the password as soon as the guest answers. Installing the guest tools takes the password
     /// too, for `sudo`. It stays in memory until then, and nowhere else.
-    private func finishSetup(of machine: VirtualMachine, account: GuestProvisioning, keyPair: SSHKeyManager.KeyPair) {
+    private func finishSetup(of machine: VirtualMachine, account: GuestProvisioning, keyPair: SSHKeyManager.KeyPair, setsUpDesktopPermissions: Bool) {
         machinesBeingSetUp.insert(machine.id)
         Task {
             defer { machinesBeingSetUp.remove(machine.id) }
@@ -554,7 +567,7 @@ extension AppModel {
                         )) != nil
                     }.value
                     if isInstalled {
-                        await installGuestTools(afterSetupOf: machine, password: account.password)
+                        await installGuestTools(afterSetupOf: machine, password: account.password, setsUpDesktopPermissions: setsUpDesktopPermissions)
                         return
                     }
                 }
@@ -572,20 +585,20 @@ extension AppModel {
     /// Installs the guest tools in a macOS guest whose key has just been installed, with the password the
     /// app still holds from creating it. Nothing here is worth failing the setup over: a guest that ends
     /// up without the tools works as macOS guests did before there were any, and says so.
-    private func installGuestTools(afterSetupOf machine: VirtualMachine, password: String) async {
-        do {
-            try await installGuestTools(on: machine, password: password)
-            // From here on the machine sees to the rest by itself, through the agent.
-        } catch {
+    private func installGuestTools(afterSetupOf machine: VirtualMachine, password: String, setsUpDesktopPermissions: Bool) async {
+        let result = await MacGuestToolsSetup.run(
+            setsUpDesktopPermissions: setsUpDesktopPermissions,
+            install: { try await self.installGuestTools(on: machine, password: password) },
+            allow: { try await self.allowAutomation(on: machine, password: password, sessionPatience: .seconds(120)) }
+        )
+        switch result {
+        case .success:
+            break
+        case .failure(.installation(let error)):
             automationSetupProblems[machine.id] = "The guest tools couldn't be installed: \(error.localizedDescription) `swiftvm install-tools \(machine.configuration.ssh.alias) --password <password>` tries again."
             await setTimeZoneWithoutGuestTools(of: machine, password: password, after: error)
             return
-        }
-        // Knowing what is on the guest's screen needs macOS to let the guest tools read it. Only now
-        // does the app still have the password for that.
-        do {
-            try await allowAutomation(on: machine, password: password, sessionPatience: .seconds(120))
-        } catch {
+        case .failure(.permissions(let error)):
             guard machine.state.isActive else { return }
             automationSetupProblems[machine.id] = "\(error.localizedDescription) `swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
             machine.notice = VMErrorInfo(
@@ -593,6 +606,8 @@ extension AppModel {
                 message: "\(error.localizedDescription)\n\n`swiftvm control \(machine.configuration.ssh.alias) allow --password <password>` tries again."
             )
         }
+        // Tools-only setup must leave the desktop alone, including its installation notices.
+        guard setsUpDesktopPermissions else { return }
         // Installing the tools and discovering bundled extensions can leave persistent banners over
         // the desktop. Clear those once, while setup still owns the screen. A cleanup failure must
         // not undo successful setup or replace a more useful permission error.

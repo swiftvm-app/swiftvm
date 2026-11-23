@@ -27,6 +27,8 @@ swiftvm start box; swiftvm stop box; swiftvm snapshot box before-risky; swiftvm 
 
 Take a snapshot before something you can't undo. Don't touch machines you weren't asked to use.
 
+For a new macOS 27 or newer guest, `create macos --no-desktop-permissions` installs the tools for `exec` and `cp` while leaving desktop permission setup for later. It needs SSH key setup and cannot be used with `--no-ssh-key` or templates. Combine it with `--managed-ssh-key` or `--ssh-identity <private-key-path>` to choose a dedicated identity; older apps must support both capabilities to accept that combination. `wait` can finish before accessibility consent; advertised features describe support, not grants. Guest accessibility requests explain the missing permission, while pixel and virtual mouse/keyboard control remain available. When requested, `control <machine> allow --password <password>` uses the normal guest consent path.
+
 ## Commands and files
 
 ```bash

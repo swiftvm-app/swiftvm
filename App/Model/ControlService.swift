@@ -34,9 +34,15 @@ extension AppModel {
                 note: BridgedNetworking.isEntitled ? nil : BridgedNetworking.Failure.notEntitled.localizedDescription,
                 networkInterfaces: BridgedNetworking.interfaces.map { .init(identifier: $0.id, name: $0.name) }
             )
-        case .create:
+        case .create, .createWithSSHIdentity, .createToolsOnly, .createToolsOnlyWithSSHIdentity:
             guard let parameters = request.create else { return .failure("Missing creation parameters.") }
-            return await createMachine(parameters)
+            if let problem = parameters.sshIdentityProblem { return .failure(problem) }
+            let usesExplicitIdentity = request.command == .createWithSSHIdentity || request.command == .createToolsOnlyWithSSHIdentity
+            guard usesExplicitIdentity == parameters.hasExplicitSSHIdentity else {
+                return .failure("Explicit SSH selection needs an identity and a creation command that supports it.")
+            }
+            let toolsOnly = request.command == .createToolsOnly || request.command == .createToolsOnlyWithSSHIdentity
+            return await createMachine(parameters, setsUpDesktopPermissions: !toolsOnly)
         case .usbList:
             guard usb.availability == .available else {
                 return .failure(USBPassthrough.Failure.unavailable(usb.availability).localizedDescription)
@@ -538,7 +544,7 @@ extension AppModel {
                 return .failure(error.localizedDescription)
             }
             return templatesResponse()
-        case .list, .info, .console, .vsock, .job, .control, .create, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
+        case .list, .info, .console, .vsock, .job, .control, .create, .createWithSSHIdentity, .createToolsOnly, .createToolsOnlyWithSSHIdentity, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
             break
         }
 
@@ -830,7 +836,20 @@ extension AppModel {
 
     // MARK: Creating
 
-    private func createMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
+    private func selectedSSHKey(for parameters: ControlRequest.CreateParameters) throws -> SSHKeyManager.KeyPair? {
+        if let problem = parameters.sshIdentityProblem { throw VMError.invalidConfiguration(problem) }
+        if let path = parameters.sshIdentityPath {
+            guard path.hasPrefix("/") else { throw VMError.invalidConfiguration("The SSH identity needs an absolute host path.") }
+            return try SSHKeyManager.selectedKeyPair(at: URL(fileURLWithPath: path))
+        }
+        if parameters.usesManagedSSHKey == true {
+            return try SSHKeyManager.managedKeyPair(in: library.rootDirectory.appending(path: "SSH Identity", directoryHint: .isDirectory))
+        }
+        return nil
+    }
+
+    private func createMachine(_ parameters: ControlRequest.CreateParameters, setsUpDesktopPermissions: Bool) async -> ControlResponse {
+        if !setsUpDesktopPermissions, let problem = parameters.toolsOnlyProblem { return .failure(problem) }
         if let template = parameters.template {
             return await createMachine(fromTemplate: template, parameters)
         }
@@ -938,6 +957,9 @@ extension AppModel {
             if !installsSSHKey, (parameters.password ?? "").isEmpty {
                 return .failure("Without your SSH key the account needs a password, otherwise nobody can sign in. Add --password <password>.")
             }
+            let selectedKey: SSHKeyManager.KeyPair?
+            do { selectedKey = try selectedSSHKey(for: parameters) }
+            catch { return .failure(error.localizedDescription) }
             let request = LinuxQuickCreateRequest(
                 name: name,
                 distribution: distribution,
@@ -948,6 +970,7 @@ extension AppModel {
                 fullName: NSFullUserName(),
                 password: parameters.password ?? "",
                 installsSSHKey: installsSSHKey,
+                selectedSSHKey: selectedKey,
                 rosetta: usesRosetta,
                 nestedVirtualization: usesNestedVirtualization,
                 compressesDisk: compressesDisk,
@@ -964,6 +987,9 @@ extension AppModel {
                 } catch {
                     return .failure("Couldn't read the restore image: \(error.localizedDescription)")
                 }
+            }
+            guard setsUpDesktopPermissions || (image?.supportsProvisioning ?? true) else {
+                return .failure("--no-desktop-permissions needs macOS 27 or newer, which provisions the account and SSH sign-in.")
             }
             // Without an image the latest macOS is installed, which sets up the account by itself.
             var account: GuestProvisioning?
@@ -987,6 +1013,12 @@ extension AppModel {
                 }
                 account = provisioning
             }
+            guard !parameters.hasExplicitSSHIdentity || account?.enablesRemoteLogin == true else {
+                return .failure("An explicit SSH identity needs a macOS image that provisions an account with Remote Login.")
+            }
+            let selectedKey: SSHKeyManager.KeyPair?
+            do { selectedKey = try selectedSSHKey(for: parameters) }
+            catch { return .failure(error.localizedDescription) }
             let request = MacInstallRequest(
                 name: name,
                 image: image,
@@ -995,6 +1027,8 @@ extension AppModel {
                 diskCapacity: diskCapacity,
                 account: account,
                 installsSSHKey: installsSSHKey,
+                selectedSSHKey: selectedKey,
+                setsUpDesktopPermissions: setsUpDesktopPermissions,
                 location: location
             )
             start = { self.create(request) }
@@ -1053,6 +1087,9 @@ extension AppModel {
         } catch {
             return .failure(error.localizedDescription)
         }
+        let selectedKey: SSHKeyManager.KeyPair?
+        do { selectedKey = try selectedSSHKey(for: parameters) }
+        catch { return .failure(error.localizedDescription) }
         let request = WindowsInstallRequest(
             name: name,
             media: media,
@@ -1063,6 +1100,7 @@ extension AppModel {
             fullName: NSFullUserName(),
             password: password,
             installsSSHKey: parameters.installsSSHKey ?? true,
+            selectedSSHKey: selectedKey,
             compressesDisk: parameters.compressed ?? false,
             acceleratesGraphics: parameters.acceleratesGraphics ?? false,
             location: location
