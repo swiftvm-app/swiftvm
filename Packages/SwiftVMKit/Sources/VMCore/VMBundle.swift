@@ -98,17 +98,19 @@ public struct VMBundle: Sendable, Hashable {
     /// copy needs an identifier of its own before it starts.
     ///
     /// - Parameters:
+    ///   - requiresCopyOnWrite: Refuse instead of writing full copies of the disks and firmware when
+    ///     the filesystem cannot clone them. New configuration and machine identity remain independent.
     ///   - progress: Called on the copying thread with how far the copy has come, from 0 to 1, where
     ///     the files have to be written out.
     ///   - isCancelled: Asked while copying. Once it says yes the copy stops with a `CancellationError`.
     @discardableResult
     public func duplicate(
-        to destination: URL, configuration: VMConfiguration, progress: (@Sendable (Double) -> Void)? = nil,
+        to destination: URL, configuration: VMConfiguration, requiresCopyOnWrite: Bool = false, progress: (@Sendable (Double) -> Void)? = nil,
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) throws -> VMBundle {
         let copy = try VMBundle.create(at: destination, configuration: configuration)
         do {
-            try Self.copy(portableFiles(for: configuration), into: copy.url, progress: progress, isCancelled: isCancelled)
+            try Self.copy(portableFiles(for: configuration), into: copy.url, requiresCopyOnWrite: requiresCopyOnWrite, progress: progress, isCancelled: isCancelled)
         } catch {
             try? FileManager.default.removeItem(at: copy.url)
             throw error
@@ -121,7 +123,7 @@ public struct VMBundle: Sendable, Hashable {
     /// as long as they are full: a disk image's empty space stays empty, as it does when a machine moves
     /// (``copy(to:cloning:progress:isCancelled:)``).
     static func copy(
-        _ files: [PortableFile], into folder: URL, progress: (@Sendable (Double) -> Void)? = nil,
+        _ files: [PortableFile], into folder: URL, requiresCopyOnWrite: Bool = false, progress: (@Sendable (Double) -> Void)? = nil,
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) throws {
         let total = files.reduce(UInt64(0)) { total, file in
@@ -129,14 +131,29 @@ public struct VMBundle: Sendable, Hashable {
             return total + UInt64(max(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0, 0))
         }
         let tracker = CopyTracker(total: total, progress: progress, isCancelled: isCancelled)
-        let flags = COPYFILE_ALL | COPYFILE_CLONE | COPYFILE_DATA_SPARSE
+        let flags = COPYFILE_ALL | (requiresCopyOnWrite ? COPYFILE_CLONE_FORCE : COPYFILE_CLONE) | COPYFILE_DATA_SPARSE
         for file in files {
             // A file that shares its blocks is there at once, with nobody asked in between.
             let code = isCancelled()
                 ? ECANCELED
                 : copyItem(at: file.url, to: folder.appending(path: file.name), flags: flags, tracker: tracker)
             if let code {
-                throw code == ECANCELED ? CancellationError() : POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+                if code == ECANCELED { throw CancellationError() }
+                let error = POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+                if requiresCopyOnWrite {
+                    throw VMError.invalidConfiguration("Copy-on-write cloning “\(file.name)” failed: \(error.localizedDescription) A full copy was not attempted.")
+                }
+                throw error
+            }
+            if requiresCopyOnWrite {
+                // CLONE_FORCE also succeeds for symbolic links, which could point at the same disk.
+                var copied = stat()
+                guard lstat(folder.appending(path: file.name).path, &copied) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard copied.st_mode & S_IFMT == S_IFREG else {
+                    throw VMError.invalidConfiguration("Copy-on-write cloning “\(file.name)” requires a regular file. Symbolic links are not independent disk or firmware storage.")
+                }
             }
             tracker.finishFile()
         }

@@ -29,7 +29,7 @@ swiftvm stats                # CPU and memory of the running machines
 | `stats [<machine>]` | Show how much CPU and memory the running machines use on your Mac, or one machine |
 | `create <system> [options]` | Create a machine and start it, unless `--no-start` is given |
 | `create --template <template> [options]` | Create a machine from a [template](templates.md#creating-a-machine-from-one) |
-| `clone <machine> [name]` | Copy a machine that is shut down |
+| `clone <machine> [name] [--require-cow]` | Copy a stopped machine; optionally require copy-on-write |
 | `move <machine> <folder>` | Move a machine that is shut down to [another folder or disk](virtual-machines.md#where-machines-are-kept), and wait until it is there |
 | `resize <machine> <GB>` | Grow the disk of a machine that is shut down |
 | `compression <machine> on\|off` | Enable or disable [disk compression](disks.md#keeping-the-disk-compressed) for a shut-down Linux or Windows machine |

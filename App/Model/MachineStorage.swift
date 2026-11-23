@@ -23,19 +23,19 @@ extension AppModel {
     /// identifier, network card, address and SSH name, and shares disk space with the original for as long
     /// as their contents are the same.
     @discardableResult
-    func duplicate(_ machine: VirtualMachine, named requestedName: String? = nil) async throws -> VirtualMachine {
+    func duplicate(_ machine: VirtualMachine, named requestedName: String? = nil, requiresCopyOnWrite: Bool = false) async throws -> VirtualMachine {
         // One copy at a time. Each picks a name and an SSH alias that are free when it starts, and two
         // running side by side could pick the same.
         let previous = lastDuplication
         let duplication = Task {
             await previous?.value
-            return try await performDuplicate(machine, named: requestedName)
+            return try await performDuplicate(machine, named: requestedName, requiresCopyOnWrite: requiresCopyOnWrite)
         }
         lastDuplication = Task { _ = try? await duplication.value }
         return try await duplication.value
     }
 
-    private func performDuplicate(_ machine: VirtualMachine, named requestedName: String?) async throws -> VirtualMachine {
+    private func performDuplicate(_ machine: VirtualMachine, named requestedName: String?, requiresCopyOnWrite: Bool) async throws -> VirtualMachine {
         let name = requestedName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !name.isEmpty, isNameTaken(name) {
             throw VMError.invalidConfiguration("A virtual machine named “\(name)” already exists.")
@@ -47,7 +47,7 @@ extension AppModel {
             let configuration = machine.configuration.duplicated(name: copyName, sshAlias: alias)
             // Next to the original, wherever that is: on its disk the copy shares the original's space,
             // and on another one it would be written out in full.
-            return try await makeCopy(of: machine.bundle, configuration: configuration, in: machine.bundle.url.deletingLastPathComponent())
+            return try await makeCopy(of: machine.bundle, configuration: configuration, in: machine.bundle.url.deletingLastPathComponent(), requiresCopyOnWrite: requiresCopyOnWrite)
         }
     }
 
@@ -62,7 +62,7 @@ extension AppModel {
     ///   - progress: Called with how far the copying has come, from 0 to 1, where it takes time.
     func makeCopy(
         of source: VMBundle, configuration: VMConfiguration, in folder: URL?, growingDiskTo diskCapacity: UInt64? = nil,
-        progress: (@Sendable (Double) -> Void)? = nil
+        requiresCopyOnWrite: Bool = false, progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> VirtualMachine {
         let alias = configuration.ssh.alias
         let destination = try library.makeStagingBundleURL(in: folder)
@@ -70,7 +70,7 @@ extension AppModel {
         // On APFS this takes no time; on another file system it copies every byte of the disks.
         let copying = Task.detached(priority: .userInitiated) {
             let copy = try source.duplicate(
-                to: destination, configuration: configuration, progress: progress, isCancelled: { Task.isCancelled }
+                to: destination, configuration: configuration, requiresCopyOnWrite: requiresCopyOnWrite, progress: progress, isCancelled: { Task.isCancelled }
             )
             do {
                 if let diskCapacity, let disk = configuration.systemDisk {
