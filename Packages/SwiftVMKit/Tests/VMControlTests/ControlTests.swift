@@ -1,5 +1,6 @@
 import Foundation
 import GuestChannel
+import Synchronization
 import Testing
 @testable import VMControl
 
@@ -64,11 +65,72 @@ import Testing
         try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0)
         defer { close(ends[0]) }
         let told = DispatchSemaphore(value: 0)
-        let watch = ControlHangUp.watch(ends[0]) { told.signal() }
+        let watch = try ControlHangUp.watch(ends[0]) { told.signal() }
         defer { watch.cancel() }
         #expect(told.wait(timeout: .now() + .milliseconds(100)) == .timedOut)
         close(ends[1])
         #expect(told.wait(timeout: .now() + 5) == .success)
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func aDisconnectedShutdownClientCancelsItsObservation(queuedRequest: Bool) async throws {
+        var ends: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0)
+        let (server, client) = (ends[0], ends[1])
+        _ = fcntl(server, F_SETNOSIGPIPE, 1)
+        let observed = Mutex((started: false, cancelled: false))
+        let serving = Task.detached {
+            await ControlServer.serve(server, handler: { _ in
+                observed.withLock { $0.started = true }
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                } catch {
+                    observed.withLock { $0.cancelled = true }
+                }
+                return .failure("Observation ended.")
+            }, streamHandler: nil)
+        }
+        try ControlSocket.writeLine(JSONEncoder().encode(ControlRequest(command: .shutdownOnce, machine: "fixture", timeout: 86400, shutdownMechanism: "power-button")), to: client)
+        if queuedRequest {
+            try ControlSocket.writeLine(JSONEncoder().encode(ControlRequest(command: .list)), to: client)
+        }
+        let startDeadline = ContinuousClock.now + .seconds(2)
+        while !observed.withLock({ $0.started }), ContinuousClock.now < startDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        close(client)
+        #expect(observed.withLock { $0.started })
+        let cancelDeadline = ContinuousClock.now + .seconds(2)
+        while !observed.withLock({ $0.cancelled }), ContinuousClock.now < cancelDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(observed.withLock { $0.cancelled })
+        // Bound cleanup even against the unfixed server, whose observer outlives the client.
+        serving.cancel()
+        await serving.value
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aQueuedRequestSurvivesShutdownObservation() async throws {
+        var ends: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0)
+        let (server, client) = (ends[0], ends[1])
+        _ = fcntl(server, F_SETNOSIGPIPE, 1)
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        try #require(setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0)
+        let serving = Task.detached {
+            await ControlServer.serve(server, handler: { request in
+                if request.command == .shutdownOnce { try? await Task.sleep(for: .milliseconds(100)) }
+                return ControlResponse(ok: true, note: request.command.rawValue)
+            }, streamHandler: nil)
+        }
+        for request in [ControlRequest(command: .shutdownOnce, machine: "fixture", timeout: 1, shutdownMechanism: "power-button"), ControlRequest(command: .list)] {
+            try ControlSocket.writeLine(JSONEncoder().encode(request), to: client)
+        }
+        let replies = await Task.detached { [ControlSocket.readLine(from: client), ControlSocket.readLine(from: client)] }.value
+        close(client)
+        await serving.value
+        let decoded = try replies.map { try JSONDecoder().decode(ControlResponse.self, from: #require($0)) }
+        #expect(decoded.map(\.note) == ["shutdown-once", "list"])
     }
 
     @Test func aJobTravelsInItsRequest() throws {
