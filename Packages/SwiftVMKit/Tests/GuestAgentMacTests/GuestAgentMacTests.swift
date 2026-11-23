@@ -761,8 +761,14 @@ private func eventually(within timeout: Duration = .seconds(5), _ condition: () 
         defer { mac.hangUp() }
         var size: Int32 = 256
         for descriptor in [agent, mac.descriptor] {
-            try #require(setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size)) == 0)
-            try #require(setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size)) == 0)
+            for option in [SO_SNDBUF, SO_RCVBUF] {
+                try #require(setsockopt(descriptor, SOL_SOCKET, option, &size, socklen_t(MemoryLayout<Int32>.size)) == 0)
+                var effective: Int32 = 0
+                var length = socklen_t(MemoryLayout<Int32>.size)
+                try #require(getsockopt(descriptor, SOL_SOCKET, option, &effective, &length) == 0)
+                // A host that clamps buffers upward must not silently remove the backpressure case.
+                try #require(effective < 512)
+            }
         }
         daemon.serveJob(on: agent)
         let script = """
