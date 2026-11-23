@@ -5,6 +5,17 @@ fail() {
     exit 1
 }
 
+# Builds the swiftvm tool, which is the Rust workspace in crates/, and prints where it is.
+#   build_cli debug | release
+build_cli() {
+    local options=()
+    [[ $1 == release ]] && options=(--release)
+    (( $+commands[cargo] )) || fail "The swiftvm tool is written in Rust, and building it takes cargo: https://rustup.rs"
+    cargo build --quiet --locked $options --package swiftvm-cli --manifest-path "$root/Cargo.toml" --target-dir "$root/target" >&2 \
+        || fail "The swiftvm tool didn't build."
+    print -r -- "$root/target/$1/swiftvm"
+}
+
 # Sets `reply` to the process IDs of the copies of the app that are running from the app at $1.
 #
 # Call it as it is, not inside $( ): when there is no telling, it stops the script. Taking "can't tell"

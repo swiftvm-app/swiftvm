@@ -27,6 +27,13 @@ jobs:
           restore-keys: |
             spm-${{ runner.os }}-${{ runner.arch }}-
 
+      # The swiftvm tool is the Rust workspace in crates/.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
       - name: Build
         env:
           SWIFTVM_SIGN_IDENTITY: "-"
@@ -46,3 +53,24 @@ jobs:
         with:
           path: ~/Library/Caches/org.swift.swiftpm
           key: ${{ steps.spm-cache.outputs.cache-primary-key }}
+
+  linux:
+    # The swiftvm tool builds for Linux too, ahead of SwiftVM running there.
+    name: Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --workspace
+
+      - name: Test
+        run: cargo test --locked --workspace

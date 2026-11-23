@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Builds the app, with the swiftvm command-line tool and the guest agent for macOS guests inside it.
+# Builds the app, with the swiftvm command-line tool and the guest agent for macOS guests inside it. The
+# tool is the Rust workspace in crates/, which needs cargo: https://rustup.rs
 #   scripts/build.sh                    optimized, at build/SwiftVM.app
 #   scripts/build.sh debug              the same app, not optimized
 #   scripts/build.sh --output <app>     somewhere else, e.g. while SwiftVM is running from build/
@@ -31,8 +32,8 @@ cd "$root"
 check_replaceable "$app"
 
 swift build -c $configuration --product SwiftVM
-swift build -c $configuration --package-path Packages/SwiftVMKit --product swiftvm
 swift build -c $configuration --package-path Packages/SwiftVMKit --product swiftvm-agent
+cli=$(build_cli $configuration)
 qemu=()
 if [[ ${SWIFTVM_QEMU:-} != - ]]; then
     qemu_folder=$("$root/scripts/build-qemu.sh")
@@ -40,7 +41,7 @@ if [[ ${SWIFTVM_QEMU:-} != - ]]; then
 fi
 "$root/scripts/bundle-app.sh" --output "$app" $qemu \
     --products "$(swift build -c $configuration --show-bin-path)" \
-    --helpers "$(swift build -c $configuration --package-path Packages/SwiftVMKit --show-bin-path)" > /dev/null
+    --helpers "$(swift build -c $configuration --package-path Packages/SwiftVMKit --show-bin-path)" --cli "$cli" > /dev/null
 
 print "App: $app"
 print "CLI: $app/Contents/Helpers/swiftvm"

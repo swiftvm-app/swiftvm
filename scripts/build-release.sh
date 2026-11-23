@@ -48,8 +48,8 @@ image=$output/SwiftVM-$version.dmg
 check_replaceable "$app"
 
 swift build -c release --product SwiftVM
-swift build -c release --package-path Packages/SwiftVMKit --product swiftvm
 swift build -c release --package-path Packages/SwiftVMKit --product swiftvm-agent
+cli=$(build_cli release)
 if [[ -n ${SWIFTVM_QEMU:-} ]]; then
     qemu=${SWIFTVM_QEMU:a}
 else
@@ -62,7 +62,7 @@ if [[ -n $sparkle_public_key || -n $sparkle_feed_url ]]; then
 fi
 "$root/scripts/bundle-app.sh" --output "$app" \
     --products "$(swift build -c release --show-bin-path)" \
-    --helpers "$(swift build -c release --package-path Packages/SwiftVMKit --show-bin-path)" \
+    --helpers "$(swift build -c release --package-path Packages/SwiftVMKit --show-bin-path)" --cli "$cli" \
     $bundle_options > /dev/null
 
 # The disk image holds the app and a way to the Applications folder, to drag the one onto the other.

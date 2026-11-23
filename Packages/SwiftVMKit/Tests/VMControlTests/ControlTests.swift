@@ -106,19 +106,6 @@ import Testing
         #expect(wait(-5) == .zero)
     }
 
-    @Test func aColonNamesAPlaceInAGuest() {
-        #expect(CopyEndpoint("web:/etc/hosts") == .guest(machine: "web", path: "/etc/hosts"))
-        #expect(CopyEndpoint("Web Server:notes.txt") == .guest(machine: "Web Server", path: "notes.txt"))
-        #expect(CopyEndpoint("web:") == .guest(machine: "web", path: ""))
-        // Only the first colon counts: what follows is the path, colons and all.
-        #expect(CopyEndpoint("web:/tmp/a:b") == .guest(machine: "web", path: "/tmp/a:b"))
-        #expect(CopyEndpoint("notes.txt") == .local("notes.txt"))
-        #expect(CopyEndpoint("/Users/me/notes.txt") == .local("/Users/me/notes.txt"))
-        // A slash before the colon makes it a file here whose name has a colon in it.
-        #expect(CopyEndpoint("./notes:old.txt") == .local("./notes:old.txt"))
-        #expect(CopyEndpoint(":odd") == .local(":odd"))
-    }
-
     @Test func guestToolsTravelWithAMachinesDetails() throws {
         let details = MachineDetails(
             location: "/Machines/Web.swiftvm", macAddress: "02:00:00:00:00:01", drives: [], sharedFolders: [], snapshotCount: 0,

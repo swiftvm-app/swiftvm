@@ -1,0 +1,25 @@
+swiftvm drives the virtual machines of the SwiftVM app on this Mac, without a network or SSH in the guest.
+AI agents: read `swiftvm skill`, or serve tools with `swiftvm mcp`.
+
+Work in a machine
+  control <machine> <action>    See and work its desktop, on any system and at a login screen
+  exec <machine> -- <command>   Run a command in it
+  cp <from> <machine>:<to>      Copy files in and out
+  ssh, console, vsock           Open a shell, its serial console, or a port on its socket device
+
+Machines
+  list, info, stats             What there is, and what it takes of this Mac
+  create, wait                  Make one, and wait until it is ready
+  start, stop, restart, suspend, pause, resume, force-stop, discard-state, open, delete, clone, move
+  snapshot, snapshots, revert, delete-snapshot, rename-snapshot
+  templates, save-template, rename-template, delete-template
+  resize, compression, share, unshare, attach, eject, usb, install-tools, automation, share-clipboard
+
+Network
+  ip, forward, unforward, plug, unplug, network, network-interfaces
+
+For agents
+  skill [install], mcp
+
+  swiftvm help <command>        How one command works
+  swiftvm help all              Every command and option

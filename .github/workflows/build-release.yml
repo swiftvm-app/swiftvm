@@ -42,6 +42,10 @@ jobs:
       - name: Resolve Sparkle dependency
         run: swift package resolve
 
+      # The swiftvm tool is the Rust workspace in crates/.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install create-dmg
         run: npm install --global create-dmg
 

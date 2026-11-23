@@ -1,0 +1,21 @@
+[package]
+name = "swiftvm-cli"
+description = "The swiftvm command: SwiftVM's virtual machines from a terminal, a script or an AI agent."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "swiftvm"
+path = "src/main.rs"
+
+[dependencies]
+swiftvm-protocol.workspace = true
+base64.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-segmentation.workspace = true
+uuid = { workspace = true, features = ["v4"] }

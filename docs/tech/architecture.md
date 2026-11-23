@@ -9,7 +9,7 @@ engines.
 | Program | Where it runs | Role |
 | --- | --- | --- |
 | SwiftVM | Your Mac | Manages machines, windows, storage, and networking |
-| `swiftvm` | Your Mac | Sends commands to the running app |
+| `swiftvm` | Your Mac | Sends commands to the running app. Written in Rust |
 | `qemu-system-aarch64` | Your Mac | Runs Windows guests, and Linux guests with graphics acceleration |
 | `swiftvm-agent` | macOS guests | Power, clock, clipboard, and what is on the screen |
 | `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, commands, and what is on the screen |
@@ -21,7 +21,14 @@ tools use system services inside each guest.
 ## Modules
 
 The root Swift package contains the app in `App/`. Shared functionality lives
-in `Packages/SwiftVMKit`.
+in `Packages/SwiftVMKit`. The `swiftvm` tool is the Rust workspace in `crates/`:
+
+| Crate | Role |
+| --- | --- |
+| `swiftvm-protocol` | The control socket's messages, guest job frames, and a client for the socket |
+| `swiftvm-cli` | The `swiftvm` command, including its MCP server |
+
+The Swift modules:
 
 | Module | Role |
 | --- | --- |
@@ -33,7 +40,7 @@ in `Packages/SwiftVMKit`.
 | `FileSharing` | WebDAV shared folders for Windows guests |
 | `Installers` | Downloads, distribution catalog, setup scripts, and guest installation |
 | `SSHIntegration` | SSH names, keys, and generated configuration |
-| `VMControl` | Communication between the app and `swiftvm` |
+| `VMControl` | The app's side of the control socket that `swiftvm` talks to |
 | `GuestChannel` | Messages and streaming jobs between the app and guest tools |
 | `AgentControl` | What `swiftvm control` and `swiftvm mcp` ask of a machine's desktop |
 | `GuestAgentMac` | macOS guest tools |
@@ -83,6 +90,11 @@ accepts the request.
 The bundled command-line tool locates its app from its executable path.
 `SWIFTVM_HOME` can select a different data folder; see
 [Building](building.md#the-development-copy).
+
+The messages are Swift's `Codable` types in `VMControl` on the app's side and
+serde types in `swiftvm-protocol` on the tool's. Both test suites read the
+fixtures in `crates/swiftvm-protocol/tests/fixtures`, so a change to one side
+that the other can't read fails a test.
 
 ## The guest channel
 

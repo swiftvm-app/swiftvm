@@ -2,6 +2,7 @@
 _dxmt.log
 build/
 .build/
+/target/
 .swiftpm/
 Spikes/**/build/
 *.swiftvm/

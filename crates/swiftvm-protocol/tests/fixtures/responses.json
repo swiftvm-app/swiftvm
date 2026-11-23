@@ -1,0 +1,38 @@
+[
+  {"ok": false, "error": "“desk” isn't running.", "machines": []},
+  {"ok": true, "machines": [
+    {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "running", "system": "Ubuntu 26.04", "family": "linux", "address": "192.168.64.5", "sshAlias": "desk", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736, "usage": {"cpuPercent": 123.4, "memoryBytes": 2147483648}},
+    {"id": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "win", "state": "stopped", "system": "Windows 11", "cpuCount": 2, "memorySize": 4294967296, "diskAllocated": 0, "diskCapacity": 1099511627776}
+  ], "creations": [
+    {"name": "new", "system": "debian-13", "status": "Downloading", "fraction": 0.25},
+    {"name": "broken", "system": "macos", "status": "Failed", "error": "No restore image."}
+  ]},
+  {"ok": true, "machines": [
+    {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "running", "system": "Ubuntu 26.04", "family": "linux", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736, "details": {
+      "location": "/Users/me/Library/Application Support/SwiftVM/Machines/desk.swiftvm",
+      "macAddress": "02:00:00:00:00:01", "networkMode": "bridged", "bridgedInterfaceIdentifier": "en0",
+      "drives": [{"path": "/Users/me/disk.iso", "readOnly": true}],
+      "sharedFolders": [{"name": "Projects", "path": "/Users/me/Projects", "readOnly": false}],
+      "forwards": [{"hostPort": 8080, "guestPort": 80, "udp": false, "allowsOtherDevices": true, "status": "listening"}, {"hostPort": 53, "guestPort": 53, "udp": true, "allowsOtherDevices": false}],
+      "snapshotCount": 3,
+      "guestTools": {"version": "1.4.0", "kernel": "Linux 6.17"},
+      "sharesClipboard": true,
+      "usbDevices": [{"id": 7, "name": "Ultra", "identifier": "0781:5581", "manufacturer": "SanDisk", "serialNumber": "1234", "machine": "desk"}],
+      "usbAutoConnect": ["Ultra (0781:5581)"],
+      "setup": {"name": "KDE Plasma", "state": "running", "step": "Installing KDE Plasma"},
+      "automation": {"isAllowed": true, "features": ["exec", "screen"]}
+    }}
+  ], "note": "Done."},
+  {"ok": true, "machines": [], "snapshots": [
+    {"id": "11111111-2222-3333-4444-555555555555", "name": "before", "createdAt": 785000000.5, "includesMemory": true}
+  ]},
+  {"ok": true, "machines": [], "templates": [
+    {"id": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", "name": "Base", "createdAt": 785000123.25, "system": "Debian 13", "cpuCount": 2, "memorySize": 4294967296, "diskAllocated": 1073741824, "diskCapacity": 21474836480}
+  ]},
+  {"ok": true, "machines": [], "usbDevices": [{"id": 3, "name": "Keyboard", "identifier": "05ac:024f"}], "note": "Plug in more."},
+  {"ok": true, "machines": [], "setupScripts": [
+    {"id": "gnome", "name": "GNOME", "summary": "The GNOME desktop", "category": "desktop", "systems": ["ubuntu-26.04"], "minimumMemoryGigabytes": 4, "minimumDiskGigabytes": 20, "isBuiltIn": true},
+    {"id": "mine", "name": "Mine", "systems": [], "isBuiltIn": false}
+  ]},
+  {"ok": true, "machines": [], "networkInterfaces": [{"identifier": "en0", "name": "Wi-Fi"}]}
+]

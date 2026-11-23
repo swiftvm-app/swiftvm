@@ -1,0 +1,15 @@
+{"results": [
+  {"action": "click", "note": "clicked [12] button \"Save\"", "milliseconds": 120},
+  {"action": "look", "milliseconds": 450, "image": "/9j/4AAQSkZJRgABAQ==", "look": {
+    "machine": "desk", "system": "macOS 27", "width": 1440, "height": 900, "scale": 2.0, "sequence": 4,
+    "applications": ["Finder", "Safari"], "front": "Safari",
+    "elements": [
+      {"number": 1, "role": "window", "name": "Start Page", "frame": [0, 25, 1440, 875], "depth": 0},
+      {"number": 2, "role": "button", "name": "Save", "states": ["focused"], "frame": [640, 400, 80, 24], "depth": 2, "id": "settings-save"},
+      {"number": 3, "role": "textfield", "value": "swiftvm", "depth": 1}
+    ],
+    "removed": [{"number": 9, "role": "text", "name": "Loading", "depth": 1}],
+    "changed": [2], "omitted": 5, "notes": ["accessibility is limited"]
+  }},
+  {"action": "wait", "error": "“Welcome” didn't show in 30 seconds.", "timedOut": true}
+]}

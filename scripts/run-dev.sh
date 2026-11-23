@@ -43,9 +43,9 @@ if [[ -z $products ]]; then
     swift build --product SwiftVM
     products=$(swift build --show-bin-path)
 fi
-swift build --quiet --package-path Packages/SwiftVMKit --product swiftvm
 swift build --quiet --package-path Packages/SwiftVMKit --product swiftvm-agent
 helpers=$(swift build --package-path Packages/SwiftVMKit --show-bin-path)
+cli=$(build_cli debug)
 qemu=()
 if [[ ${SWIFTVM_QEMU:-} != - ]]; then
     qemu_folder=$("$root/scripts/build-qemu.sh")
@@ -58,7 +58,7 @@ tool=$app/Contents/Helpers/swiftvm
 # The new copy is put together before the old one is asked to leave. If that fails, over a certificate
 # that has run out for one, the copy that is open stays open.
 staged="$root/.build/staged/${app:t}"
-"$root/scripts/bundle-app.sh" --products "$products" --helpers "$helpers" --output "$staged" --development $qemu > /dev/null
+"$root/scripts/bundle-app.sh" --products "$products" --helpers "$helpers" --cli "$cli" --output "$staged" --development $qemu > /dev/null
 
 running_from "$app"
 if (( ${#reply} )); then

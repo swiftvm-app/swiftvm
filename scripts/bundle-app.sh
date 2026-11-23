@@ -1,11 +1,12 @@
 #!/bin/zsh
-# Puts the app together from what `swift build` has made, and signs it. scripts/build.sh and
-# scripts/run-dev.sh call this; there is rarely a reason to run it by hand.
-#   scripts/bundle-app.sh --products <folder> --helpers <folder> --output <app> [--development]
+# Puts the app together from what `swift build` and `cargo build` have made, and signs it.
+# scripts/build.sh and scripts/run-dev.sh call this; there is rarely a reason to run it by hand.
+#   scripts/bundle-app.sh --products <folder> --helpers <folder> --cli <file> --output <app> [--development]
 #
 #   --products      where the build put the app's program, SwiftVM, with SwiftVMKit_Installers.bundle
 #                   and Sparkle.framework
-#   --helpers       where the build of Packages/SwiftVMKit put swiftvm and swiftvm-agent
+#   --helpers       where the build of Packages/SwiftVMKit put swiftvm-agent
+#   --cli           the swiftvm tool, which build_cli in scripts/common.sh builds from crates/
 #   --output        the app to make. A copy of SwiftVM that is there is replaced, unless it is running
 #   --development   make the development copy, "SwiftVM Dev": an app of its own to macOS, which keeps
 #                   its machines apart from the app's (AppIdentity in Packages/SwiftVMKit)
@@ -35,12 +36,13 @@ set -euo pipefail
 root=${0:A:h:h}
 source "$root/scripts/common.sh"
 
-products="" helpers="" output="" qemu="" development=false
+products="" helpers="" cli="" output="" qemu="" development=false
 version="" build_number="" sparkle_feed_url="" sparkle_public_key="" timestamp=--timestamp=none
 while (( $# )); do
     case $1 in
         --products) products=${2:?}; shift 2 ;;
         --helpers) helpers=${2:?}; shift 2 ;;
+        --cli) cli=${2:?}; shift 2 ;;
         --output) output=${2:?}; shift 2 ;;
         --development) development=true; shift ;;
         --qemu) qemu=${2:?}; shift 2 ;;
@@ -49,22 +51,18 @@ while (( $# )); do
         --sparkle-feed-url) sparkle_feed_url=${2:?}; shift 2 ;;
         --sparkle-public-key) sparkle_public_key=${2:?}; shift 2 ;;
         --timestamp) timestamp=--timestamp; shift ;;
-        *) fail "Usage: scripts/bundle-app.sh --products <folder> --helpers <folder> --output <app> [--development]" ;;
+        *) fail "Usage: scripts/bundle-app.sh --products <folder> --helpers <folder> --cli <file> --output <app> [--development]" ;;
     esac
 done
 [[ -z $sparkle_feed_url$sparkle_public_key || ( -n $sparkle_feed_url && -n $sparkle_public_key ) ]] \
     || fail "--sparkle-feed-url and --sparkle-public-key go together: an app that knows where its updates are has to be able to check them."
-[[ -n $products && -n $helpers && $output == *.app ]] \
-    || fail "Usage: scripts/bundle-app.sh --products <folder> --helpers <folder> --output <app> [--development]"
-for built in "$products/SwiftVM" "$products/SwiftVMKit_Installers.bundle" "$products/Sparkle.framework" "$helpers/swiftvm" "$helpers/swiftvm-agent"; do
+[[ -n $products && -n $helpers && -n $cli && $output == *.app ]] \
+    || fail "Usage: scripts/bundle-app.sh --products <folder> --helpers <folder> --cli <file> --output <app> [--development]"
+for built in "$products/SwiftVM" "$products/SwiftVMKit_Installers.bundle" "$products/Sparkle.framework" "$helpers/swiftvm-agent" "$cli"; do
     [[ -e $built ]] || fail "$built isn't there. Build first: scripts/build.sh, or swift run SwiftVM."
 done
 [[ -z $qemu || ( -x $qemu/bin/qemu-system-aarch64 && -f $qemu/lib/libSwiftVMDisplay.dylib ) ]] \
     || fail "$qemu isn't a QEMU that scripts/build-qemu.sh made."
-# The disk takes swiftvm and SwiftVM for one name. The swiftvm tool, built at the repository's root, lands
-# in the folder of the app's program and replaces it, and the next build of the app doesn't notice.
-built=("$products"/*(N:t))
-(( ${built[(Ie)SwiftVM]} )) || fail "$products/SwiftVM isn't the app's program but the swiftvm tool, which was built at the repository's root. Delete that file and build again. The tool on its own is built with: swift build --package-path Packages/SwiftVMKit --product swiftvm"
 
 if $development; then
     identifier=com.swiftvm.app.dev
@@ -89,7 +87,8 @@ contents=$app/Contents
 mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources" "$contents/Frameworks"
 
 cp "$products/SwiftVM" "$contents/MacOS/SwiftVM"
-cp "$helpers/swiftvm" "$helpers/swiftvm-agent" "$contents/Helpers/"
+cp "$cli" "$contents/Helpers/swiftvm"
+cp "$helpers/swiftvm-agent" "$contents/Helpers/"
 if [[ -n $qemu ]]; then
     # Code in Helpers, where only code may be; the firmware and the licences with the resources.
     mkdir -p "$contents/Helpers/QEMU" "$contents/Resources/QEMU"

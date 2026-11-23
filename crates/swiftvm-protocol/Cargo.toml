@@ -1,0 +1,19 @@
+[package]
+name = "swiftvm-protocol"
+description = "SwiftVM's control protocol: its messages, guest job frames, and a client for the control socket."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-segmentation.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist.workspace = true

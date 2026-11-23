@@ -6,6 +6,7 @@ Building the app, running a development copy, and signing.
 
 - macOS 27 or newer, on Apple silicon
 - Xcode 27 or newer
+- Rust, from [rustup](https://rustup.rs), for the `swiftvm` tool
 
 No Apple Developer account is needed to build and run virtual machines.
 
@@ -58,14 +59,15 @@ open build/SwiftVM.app
 
 There is no Xcode project. The app is a Swift package: `swift build` compiles
 it, and `scripts/bundle-app.sh` makes an app of the result and signs it. Xcode
-opens `Package.swift`.
+opens `Package.swift`. The `swiftvm` tool is the Rust workspace in `crates/`,
+which the scripts build with `cargo`.
 
 | Command | What it does |
 | --- | --- |
 | `scripts/build.sh` | Builds the app at `build/SwiftVM.app`, with `swiftvm` and the macOS guest agent inside |
 | `scripts/build.sh debug` | The same, not optimized |
 | `scripts/build.sh --output <app>` | Builds somewhere else, for example while SwiftVM is running from `build/` |
-| `scripts/test.sh` | Runs the unit tests of both packages |
+| `scripts/test.sh` | Runs the unit tests of both Swift packages and the Rust workspace |
 
 The scripts never replace an app that is running.
 
@@ -143,11 +145,21 @@ Adding the entitlement to `Config/SwiftVM.entitlements` alone isn't sufficient.
 ## Building only the tool
 
 ```bash
-swift build --package-path Packages/SwiftVMKit --product swiftvm
+cargo build -p swiftvm-cli    # target/debug/swiftvm
+cargo test --workspace
 ```
 
-Never build `swiftvm` at the repository's root. The file system takes `swiftvm`
-and `SwiftVM` for one name, and the tool would replace the app's program.
+The workspace also builds and tests on Linux, which CI checks. A tool outside
+an app talks to the installed SwiftVM. To use it with the development copy,
+point it at that copy's data folder:
+
+```bash
+SWIFTVM_HOME="$HOME/Library/Application Support/SwiftVM-Dev" target/debug/swiftvm list
+```
+
+The tool and the app agree on the control socket's messages through the
+fixtures in `crates/swiftvm-protocol/tests/fixtures`, which the tests of both
+read. Change a message on both sides and in the fixtures together.
 
 ## Native display checks
 
@@ -173,7 +185,8 @@ rm "$test_binary"
 | --- | --- |
 | `Package.swift`, `App/` | The SwiftUI app |
 | `Tests/SwiftVMTests/` | The app's unit tests |
-| `Packages/SwiftVMKit/` | The engine, the `swiftvm` tool, and the guest agents, with their tests. See [Architecture](./architecture.md#modules) |
+| `Packages/SwiftVMKit/` | The engine and the guest agents, with their tests. See [Architecture](./architecture.md#modules) |
+| `crates/` | The `swiftvm` tool, in Rust, with its tests |
 | `Config/` | The app's `Info.plist` and entitlements |
 | `scripts/` | Build, test, and release scripts |
 | `.github/workflows/` | Checks and [releases](./releasing.md) |

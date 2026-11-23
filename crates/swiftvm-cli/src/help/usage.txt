@@ -1,0 +1,138 @@
+Usage: swiftvm <command> [arguments]
+
+  list                              List virtual machines, and those still being created
+  info <machine>                    Show one machine in detail
+  stats [<machine>]                 Show how much of this Mac's processor and memory the running
+                                    machines take, or one machine. 100% CPU is one of this Mac's cores
+  create <system> [options]         Create a machine and start it. Then `swiftvm wait` until it is ready
+      <system> is macos, windows, or a Linux image such as ubuntu-26.04
+      --name <name>  --cpus <n>  --memory <GB>  --disk <GB>
+      --user <name>  --password <password>  --no-start
+      --location <folder>           Keep the machine in this folder, on an external disk for one, instead
+                                    of the folder for new machines
+      --no-ssh-key                  Don't let this Mac's SSH key into the account. Linux then needs a password
+      --rosetta                     Linux: run x86-64 programs with Rosetta, using Apple's backend without GPU acceleration
+      --nested-virt                 Linux: let the guest run virtual machines of its own with KVM, using Apple's
+                                    backend without GPU acceleration. Needs an M3 or later
+      --gpu                         Linux: draw with this Mac's GPU (off by default, including Omarchy).
+                                    The machine runs on QEMU, so it can't be suspended or use Rosetta or --nested-virt.
+                                    Windows: install the experimental 3D driver (off by default), with Direct3D 11.
+                                    Direct3D 12 and OpenGL take D3DMetal, installed in the app's Graphics settings.
+                                    Windows follows the window size with current guest tools and the bundled driver.
+                                    Older drivers need a restart for a new size
+      --no-gpu                      Linux: use Apple's backend without GPU acceleration, with suspend support.
+                                    Windows: a driver for a display only, sharp at any window size but slower
+      --compressed                  Linux and Windows: keep the disk compressed, which usually takes less
+                                    than half the space on this Mac and makes writing slower
+      --ipsw <file>                 macOS: install this restore image instead of downloading the latest
+      --iso <file>                  Windows: install from this Windows 11 Arm64 ISO instead of downloading
+                                    it from Microsoft. Windows needs a password
+      --script <name>|<file>        Linux: run a setup script on the first start, a desktop for one.
+                                    By its name in `swiftvm scripts`, or a file by its path (./mine.sh).
+                                    Give it again for more scripts, which run in that order.
+                                    A desktop needs a password
+  create --template <template> [options]
+                                    Create a machine from a template, with everything that was in the
+                                    template's machine when it was saved
+      --name <name>  --cpus <n>  --memory <GB>  --location <folder>  --no-start
+      --disk <GB>                   Grow the disk beyond the template's
+  scripts [<system>]                List the setup scripts for --script, or those for one Linux image
+  start <machine>                   Start, or resume a suspended machine
+  stop <machine>                    Shut down and wait
+  force-stop <machine>              Stop immediately
+  suspend <machine>                 Save state to disk
+  discard-state <machine>           Throw away a suspended machine's saved state, to start it up fresh
+  pause <machine> | resume <machine>
+  restart <machine>
+  open <machine>                    Show the machine's window
+  delete <machine>                  Move a stopped machine to the Trash, or delete it for good if set so
+                                    in Settings. Cancels a machine still being created
+  clone <machine> [name]            Copy a machine that is shut down
+  move <machine> <folder>           Move a machine that is shut down into another folder, which may be on
+                                    another disk. Waits until it is there
+  share <machine> <folder> [--read-only]   Share a folder with the machine
+  unshare <machine> <folder>        Stop sharing a folder
+  attach <machine> <image> [--read-only]   Plug in a disc or disk image as a USB drive
+  eject <machine> <image>           Unplug it again
+  resize <machine> <GB>             Grow the disk of a machine that is shut down
+  compression <machine> on|off      Keep the disk of a Linux machine that is shut down compressed, which
+                                    usually takes less than half the space on this Mac, or not. Waits until
+                                    the disk is converted
+  forward <machine> <port>[:<guest port>] [--udp] [--allow-others]
+                                    Make a port in the machine reachable as localhost:<port>
+  unforward <machine> <port> [--udp]
+  snapshot <machine> [name]         Save the machine's state to go back to later
+  snapshots <machine>               List snapshots
+  revert <machine> <snapshot>       Go back to a snapshot, discarding what happened since
+  delete-snapshot <machine> <snapshot>
+  rename-snapshot <machine> <snapshot> <new name>
+  templates                         List templates
+  save-template <machine> [name] [--snapshot <snapshot>]
+                                    Save a machine that is shut down as a template, to create machines
+                                    from. With --snapshot, save it as it was at a snapshot that was
+                                    taken while it was shut down
+  rename-template <template> <new name>
+  delete-template <template>        Move a template to the Trash. Machines made from it stay as they are
+  plug <machine> | unplug <machine> Plug the machine's network cable in, or pull it
+  network-interfaces               List host interfaces available for bridging
+  network <machine> shared         Use SwiftVM's shared NAT network (machine must be shut down)
+  network <machine> bridged <interface>
+                                    Bridge to a host interface, such as en0 (machine must be shut down)
+  network <machine> mac <address>   Set the MAC address (machine must be shut down)
+                                    Use create --no-start to set it before the first boot. A guest already
+                                    set up may need its network settings updated too
+  install-tools <machine> [--disc] [--password <password>]
+                                    Install or reinstall the guest tools in a running machine. Connected
+                                    tools replace themselves; otherwise use SSH (macOS needs --password).
+                                    With --disc, plug in the tools disc to install from inside the guest
+  share-clipboard <machine> on|off  Share what is copied on this Mac with the machine and the other way
+                                    round, or stop. macOS guests need the guest tools for it
+  usb                               List the USB devices this Mac has given the app
+  usb attach <machine> <device>     Hand a USB device to a running machine. This Mac is without it until
+                                    it is detached or pulled out, or the machine stops
+  usb detach <machine> <device>     Give it back to this Mac
+  usb auto <machine> <device> on|off
+                                    Have the machine take the device by itself whenever both are there,
+                                    or stop. <device> is its number in the list, its vendor:product, its
+                                    serial number or its name
+  ip <machine>                      Print the machine's IP address
+  ssh <machine> [--vsock] [ssh arguments]
+                                    Open a shell (or run a command) in the machine. With --vsock the
+                                    connection goes through the machine's socket device rather than its
+                                    network, so it also works while the network is down
+  vsock <machine> <port>            Connect this command's input and output to a port in the machine over
+                                    its socket device. Made for ssh: ProxyCommand swiftvm vsock <machine> 22
+  console <machine> [--wait <seconds>]
+                                    Connect this terminal to the machine's serial console
+  wait <machine> [--timeout <seconds>]
+                                    Wait until the machine is ready for the commands below: created,
+                                    its guest tools answering, the setup it was created with done,
+                                    restarts included, and a desktop logged in. A
+                                    setup that failed is said why. 300 seconds by default; on a time-out
+                                    it says what it is still waiting for, and waiting again carries on
+  exec <machine> [--root | --user <name>] [--cwd <folder>] [--env <name>=<value>]
+       [--timeout <seconds>] [--result-fd <descriptor>] [--] <command> [arguments]
+                                    Run a command in the machine, as its own account or another. No
+                                    shell reads it: for pipes and the like, run sh -c '...'. What is
+                                    piped in goes to the command. Ends with the command's own status,
+                                    124 when the time was up, 125 on setup/connection failure.
+                                    --result-fd writes a separate JSON completion record to an inherited
+                                    writable descriptor greater than 2; missing completion stays unknown
+  cp [--root | --user <name>] <from> <to>
+                                    Copy a file or a folder into the machine or out of it. The side in
+                                    the machine is <machine>:<path>. Works as cp -R does
+  control <machine> <action> [arguments] [--then <action> [arguments]]... [--json]
+                                    See and work the machine's desktop, on any system and at a login
+                                    screen: look, click, type, key, set, scroll, drag, wait, open,
+                                    clipboard, screenshot. `swiftvm help control` has all of it
+  mcp                               Serve all of this to AI agents, as a Model Context Protocol server
+  skill [install]                   Print what an AI agent needs to know to use this tool, or install it
+                                    as a skill for agents on this Mac
+  automation <machine> on|off       Let exec, cp and control work in the machine, or not
+  quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
+                                    is being created unless you add --cancel-creations
+
+<machine> is a name, SSH alias or UUID. <template> is a name or UUID.
+
+exec and cp need the guest tools in the machine: swiftvm install-tools. control works without them, by
+reading the screen's pixels; with them, it knows what the screen's parts are.

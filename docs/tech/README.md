@@ -16,3 +16,5 @@ clock synchronization, and automation.
   restrictions.
 - [Building](building.md): build and run a development copy.
 - [Releasing](releasing.md): release channels, signing, and updates.
+- [Moving to a Rust service](rust-migration.md): the plan for running SwiftVM
+  on Linux and letting other apps drive it, and where it stands.
