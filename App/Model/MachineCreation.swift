@@ -46,6 +46,7 @@ struct LinuxQuickCreateRequest {
     /// Empty means key-only login.
     var password: String
     var installsSSHKey: Bool
+    var selectedSSHKey: SSHKeyManager.KeyPair? = nil
     var rosetta: Bool
     /// Let the guest run virtual machines of its own. See ``BootConfiguration/nestedVirtualization``.
     var nestedVirtualization = false
@@ -95,6 +96,7 @@ struct MacInstallRequest {
     var account: GuestProvisioning?
     /// Add the host's SSH key to the account once the guest is up.
     var installsSSHKey: Bool
+    var selectedSSHKey: SSHKeyManager.KeyPair? = nil
     /// The folder to keep the machine in. `nil` is the folder for new machines.
     var location: URL?
 }
@@ -119,6 +121,7 @@ struct WindowsInstallRequest {
     var password: String
     /// Let this Mac's key sign in over SSH, once Windows has set SSH up.
     var installsSSHKey: Bool
+    var selectedSSHKey: SSHKeyManager.KeyPair? = nil
     /// Keep the machine's disk compressed from the start.
     var compressesDisk = false
     /// Draw with this Mac's GPU, through the 3D display driver. Without it, Windows has a driver for a
@@ -236,7 +239,7 @@ extension AppModel {
 
         let alias = reserveAlias(for: request.name)
         defer { reservedAliases.remove(alias) }
-        let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
+        let keyPair = request.installsSSHKey ? try request.selectedSSHKey ?? keyManager.preferredKeyPair() : nil
         let disk = request.compressesDisk
             ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .virtio, format: .compressed)
             : DiskConfiguration(fileName: "disk.img", capacity: request.diskCapacity, bus: .virtio, format: .raw)
@@ -384,7 +387,7 @@ extension AppModel {
         defer { reservedAliases.remove(alias) }
         let account = image.supportsProvisioning ? request.account : nil
         try account?.validateForMacOS()
-        let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try keyManager.preferredKeyPair() : nil
+        let keyPair = request.installsSSHKey && account?.enablesRemoteLogin == true ? try request.selectedSSHKey ?? keyManager.preferredKeyPair() : nil
         let disk = DiskConfiguration(fileName: "disk.asif", capacity: request.diskCapacity, bus: .virtio, format: .asif)
         let configuration = VMConfiguration(
             name: request.name,
@@ -443,7 +446,7 @@ extension AppModel {
 
         let alias = reserveAlias(for: request.name)
         defer { reservedAliases.remove(alias) }
-        let keyPair = request.installsSSHKey ? try keyManager.preferredKeyPair() : nil
+        let keyPair = request.installsSSHKey ? try request.selectedSSHKey ?? keyManager.preferredKeyPair() : nil
         // NVMe, which Windows Setup has a driver for. Windows doesn't read Apple's sparse format.
         let disk = request.compressesDisk
             ? DiskConfiguration(fileName: "disk.\(CompressedDisk.fileExtension)", capacity: request.diskCapacity, bus: .nvme, format: .compressed)
