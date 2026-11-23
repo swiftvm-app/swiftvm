@@ -6,6 +6,8 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public enum Command: String, Codable, Sendable, CaseIterable {
         case list
         case start
+        /// Boot only a stopped machine without saved memory. Never resumes or discards it.
+        case coldBoot = "cold-boot"
         /// Ask the guest to shut down and wait until it has.
         case stop
         case forceStop = "force-stop"
