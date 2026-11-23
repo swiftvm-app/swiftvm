@@ -9,7 +9,7 @@ engines.
 | Program | Where it runs | Role |
 | --- | --- | --- |
 | SwiftVM | Your Mac | Manages machines, windows, storage, and networking |
-| `swiftvm` | Your Mac | Sends commands to the running app. Written in Rust |
+| `swiftvm` | Your Mac | The command-line tool, and as `swiftvm serve` the service that every client talks to. Written in Rust |
 | `qemu-system-aarch64` | Your Mac | Runs Windows guests, and Linux guests with graphics acceleration |
 | `swiftvm-agent` | macOS guests | Power, clock, clipboard, and what is on the screen |
 | `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, commands, and what is on the screen |
@@ -25,7 +25,8 @@ in `Packages/SwiftVMKit`. The `swiftvm` tool is the Rust workspace in `crates/`:
 
 | Crate | Role |
 | --- | --- |
-| `swiftvm-protocol` | The control socket's messages, guest job frames, and a client for the socket |
+| `swiftvm-protocol` | API v1's messages, guest job frames, a client for the service, and the turning of the app's messages into API v1 |
+| `swiftvm-service` | `swiftvm serve`: the handshake, events, client permission, and passing requests on to the app |
 | `swiftvm-cli` | The `swiftvm` command, including its MCP server |
 
 The Swift modules:
@@ -40,7 +41,7 @@ The Swift modules:
 | `FileSharing` | WebDAV shared folders for Windows guests |
 | `Installers` | Downloads, distribution catalog, setup scripts, and guest installation |
 | `SSHIntegration` | SSH names, keys, and generated configuration |
-| `VMControl` | The app's side of the control socket that `swiftvm` talks to |
+| `VMControl` | The app's side of the control socket that `swiftvm serve` talks to, and a client of the service |
 | `GuestChannel` | Messages and streaming jobs between the app and guest tools |
 | `AgentControl` | What `swiftvm control` and `swiftvm mcp` ask of a machine's desktop |
 | `GuestAgentMac` | macOS guest tools |
@@ -80,12 +81,31 @@ See [Storage](../user-guide/settings.md#storage) for choosing folders and
    capabilities, and addresses.
 5. The app synchronizes the clock and applies guest integrations.
 
-## The control socket
+## The service and the control socket
 
-The app listens on `control.sock` in its data folder. Only the current user
-can connect. `swiftvm` sends JSON requests and waits for their results.
-Console sessions and guest jobs switch to streaming data after the app
-accepts the request.
+Clients talk to `swiftvm serve` on `service.sock` in the data folder, in
+[API v1](api.md). The app starts the service when it opens, and the `swiftvm`
+tool starts it when it isn't running. It runs on its own, apart from both, and
+stops when its program file is replaced.
+
+```mermaid
+flowchart LR
+    Clients["swiftvm, MCP, other apps"] -->|"service.sock, API v1"| Service["swiftvm serve"]
+    Service -->|"control.sock"| App["SwiftVM app"]
+```
+
+The service answers the handshake, `watch` and client permission itself. It
+passes every other request on to the app's `control.sock`, and the answer back.
+For a stream, such as a console or a guest job, it carries the bytes both ways.
+It asks the app to ask the user about a program it doesn't know, and keeps the
+answer in `clients.json`.
+
+The app listens on `control.sock`. Only the current user can connect to either
+socket. The app's messages are those of API v1 in Swift's coding: dates as
+seconds since 2001, click targets as `{"number":{"_0":12}}`, and failures as a
+message with a separate `code`. The service turns them into API v1. Console
+sessions, guest jobs and `watch` switch to streaming data after the app accepts
+the request.
 
 The bundled command-line tool locates its app from its executable path.
 `SWIFTVM_HOME` can select a different data folder; see
@@ -94,7 +114,9 @@ The bundled command-line tool locates its app from its executable path.
 The messages are Swift's `Codable` types in `VMControl` on the app's side and
 serde types in `swiftvm-protocol` on the tool's. Both test suites read the
 fixtures in `crates/swiftvm-protocol/tests/fixtures`, so a change to one side
-that the other can't read fails a test.
+that the other can't read fails a test. The fixtures in its `api-v1` folder are
+the same messages in API v1, which the Rust tests check the service's
+conversion against.
 
 ## The guest channel
 

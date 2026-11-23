@@ -26,21 +26,32 @@ Each step ships on its own.
 | Step | What changes | State |
 | --- | --- | --- |
 | 1. Rust CLI | `swiftvm` is rewritten in Rust as a client of today's app, with the same commands, output, and exit statuses. The protocol crate starts here | Done |
-| 2. `swiftvm serve` | A long-running service that runs QEMU machines. The app hands those machines to it. This is the first part that runs on Linux, on KVM | Planned |
+| 2. `swiftvm serve` | A long-running service that runs QEMU machines. The app hands those machines to it. This is the first part that runs on Linux, on KVM, on arm64 and x86-64 hosts | In progress: 2a, the service and [API v1](api.md), is done. Next are the QEMU engine in Rust (2b) and Linux hosts (2c) |
 | 3. Machine library | The machine library, creation, templates, and snapshots move into the service. The app reads them from it | Planned |
 | 4. VZ runner | Machines on Apple's Virtualization framework run in a process of their own: the app's program started as a runner, inside the app bundle | Planned |
 
 ## The public API
 
 Once other apps depend on the service, its protocol can't change freely. Step 2
-adds:
+adds, and [API v1](api.md) describes:
 
 - a protocol version and a handshake when a client connects
 - stable error codes, besides the messages
 - `--json` on every command
-- a way to subscribe to events, such as a machine's state changing
-- permission for each client, since every process of the user can connect today
-  and can run commands in guests
+- `watch`, which tells of events such as a machine's state changing
+- permission for each program, which the app asks the user for the first time
+  a program connects
+
+## How it runs
+
+- Every machine runs in a process of its own: QEMU, and from step 4 a runner
+  for Apple's framework. The service starts them and keeps their control
+  connections, and a machine outlives a restart of the service.
+- The service starts on demand: the app starts it when it opens, and the
+  `swiftvm` tool when it isn't running. The same works on Linux, and later
+  Windows, with nothing to install.
+- On Linux the service runs SwiftVM's own build of QEMU, with its patches, so
+  that Windows guests work there too.
 
 Step 3 adds labels, so that an app can find its own machines. A private library
 for one app already works through `SWIFTVM_HOME`.

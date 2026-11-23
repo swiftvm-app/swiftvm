@@ -103,8 +103,29 @@ impl ControlPaths {
         ControlPaths { data: base.join(identity.data_directory_name()) }
     }
 
+    /// Where the app listens.
     pub fn socket(&self) -> PathBuf {
         self.data.join("control.sock")
+    }
+
+    /// Where `swiftvm serve` listens.
+    pub fn service_socket(&self) -> PathBuf {
+        self.data.join("service.sock")
+    }
+
+    /// Held by the service that listens, so that only one does.
+    pub fn service_lock(&self) -> PathBuf {
+        self.data.join("service.lock")
+    }
+
+    /// What the service says while it runs.
+    pub fn service_log(&self) -> PathBuf {
+        self.data.join("service.log")
+    }
+
+    /// The programs that were allowed to use SwiftVM, or refused.
+    pub fn clients_file(&self) -> PathBuf {
+        self.data.join("clients.json")
     }
 
     pub fn ssh_config(&self) -> PathBuf {

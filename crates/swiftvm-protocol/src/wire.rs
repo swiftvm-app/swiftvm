@@ -1,6 +1,8 @@
-//! The messages of the control socket, as the app's Swift `JSONEncoder` writes and reads them: one JSON
-//! document per line, optional fields left out when empty, dates as seconds since 2001, and UUIDs in
-//! capitals.
+//! The messages of API v1, which `swiftvm serve` speaks on its socket: one JSON document per line,
+//! optional fields left out when empty, dates in RFC 3339, and UUIDs in capitals.
+//!
+//! The app's control socket carries the same messages in its Swift coding, with dates as seconds since
+//! 2001 and click targets as `{"number":{"_0":12}}`. `api` turns one into the other.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -36,6 +38,7 @@ impl<'de> Deserialize<'de> for Id {
 }
 
 /// A moment, as Swift's `Date` is coded by default: seconds since the first instant of 2001, in UTC.
+/// Only the app's control socket uses it.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SwiftDate(pub f64);
@@ -46,6 +49,58 @@ impl SwiftDate {
 
     pub fn unix_seconds(self) -> f64 {
         self.0 + Self::UNIX_OFFSET
+    }
+}
+
+/// A moment, written in RFC 3339 in UTC, such as `2025-11-16T15:33:20.5Z`. Kept to the microsecond,
+/// as a Swift `Date` is about as precise as that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Timestamp {
+    unix_microseconds: i64,
+}
+
+impl Timestamp {
+    pub fn from_unix_seconds(seconds: f64) -> Self {
+        Timestamp { unix_microseconds: (seconds * 1e6).round() as i64 }
+    }
+
+    pub fn now() -> Self {
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        Timestamp { unix_microseconds: since.as_micros() as i64 }
+    }
+
+    pub fn unix_seconds(self) -> f64 {
+        self.unix_microseconds as f64 / 1e6
+    }
+
+    pub fn rfc3339(self) -> String {
+        let moment = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(self.unix_microseconds) * 1000)
+            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+        moment.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        let moment = time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339).ok()?;
+        Some(Timestamp { unix_microseconds: i64::try_from(moment.unix_timestamp_nanos() / 1000).ok()? })
+    }
+}
+
+impl From<SwiftDate> for Timestamp {
+    fn from(date: SwiftDate) -> Self {
+        Timestamp::from_unix_seconds(date.unix_seconds())
+    }
+}
+
+impl Serialize for Timestamp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.rfc3339())
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Timestamp::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("“{text}” isn't an RFC 3339 time")))
     }
 }
 
@@ -137,10 +192,27 @@ pub enum Command {
     Control,
     Automation,
     AllowAccessibility,
+    /// Events: the answer carries the machines and creations there are, and then the connection carries
+    /// one `Event` per line, for as long as the client keeps it open.
+    Watch,
+    /// From the service to the app: ask the person at the Mac whether `program` may use SwiftVM.
+    AskPermission,
+    /// The first request on the service's socket, with `protocol` and `client`. The answer carries `service`.
+    Hello,
+    /// The programs that have been allowed or refused, in `clients`.
+    Clients,
+    /// Allow the program at `program`.
+    ClientsAllow,
+    /// Refuse the program at `program`.
+    ClientsDeny,
+    /// Forget what was decided for the program at `program`, so that it is asked about again.
+    ClientsRemove,
+    /// Stop the service.
+    ServiceStop,
 }
 
 impl Command {
-    pub const ALL: [Command; 51] = [
+    pub const ALL: [Command; 59] = [
         Command::List,
         Command::Start,
         Command::Stop,
@@ -192,6 +264,14 @@ impl Command {
         Command::Control,
         Command::Automation,
         Command::AllowAccessibility,
+        Command::Watch,
+        Command::AskPermission,
+        Command::Hello,
+        Command::Clients,
+        Command::ClientsAllow,
+        Command::ClientsDeny,
+        Command::ClientsRemove,
+        Command::ServiceStop,
     ];
 
     /// The name the command goes by on the wire.
@@ -209,14 +289,31 @@ impl Command {
 
     /// Whether a successful answer is followed by a byte stream instead of further requests.
     pub fn opens_stream(self) -> bool {
-        matches!(self, Command::Console | Command::Vsock | Command::Job | Command::Control)
+        matches!(self, Command::Console | Command::Vsock | Command::Job | Command::Control | Command::Watch)
+    }
+
+    /// Whether the service answers it itself rather than passing it on to the app.
+    pub fn is_the_services(self) -> bool {
+        matches!(
+            self,
+            Command::Hello
+                | Command::Watch
+                | Command::Clients
+                | Command::ClientsAllow
+                | Command::ClientsDeny
+                | Command::ClientsRemove
+                | Command::ServiceStop
+        )
     }
 }
 
-/// A request sent to the running app over its control socket.
+/// A request to the service, or to the app over its control socket.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlRequest {
+    /// Chosen by the client, and given back with the answer. The app's control socket has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub command: Command,
     /// Name, SSH alias or UUID of the machine the command applies to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -266,6 +363,18 @@ pub struct ControlRequest {
     pub bridged_interface_identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mac_address: Option<String>,
+    /// `hello`: the version of API the client speaks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u32>,
+    /// `hello`: what the client calls itself, with its version, as in `swiftvm 0.1.0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// `ask-permission` and the `clients-` commands: the path of a program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// `ask-permission`: what the program is called, to show the person asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program_name: Option<String>,
 }
 
 impl ControlRequest {
@@ -378,12 +487,15 @@ impl CreateParameters {
 
 // MARK: - Responses
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlResponse {
+    /// The `id` of the request this answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<ApiError>,
     /// The machines the command touched, or all of them for `list`.
     #[serde(default)]
     pub machines: Vec<MachineSummary>,
@@ -402,6 +514,159 @@ pub struct ControlResponse {
     pub creations: Option<Vec<CreationSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_interfaces: Option<Vec<NetworkInterface>>,
+    /// The answer to `hello`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ServiceInfo>,
+    /// The answer to `clients` and the commands that change them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clients: Option<Vec<ClientProgram>>,
+}
+
+impl ControlResponse {
+    pub fn success(id: Option<u64>) -> Self {
+        ControlResponse { id, ok: true, ..Default::default() }
+    }
+
+    pub fn failure(id: Option<u64>, code: ErrorCode, message: impl Into<String>) -> Self {
+        ControlResponse { id, ok: false, error: Some(ApiError { code, message: message.into() }), ..Default::default() }
+    }
+
+    /// Why it failed, in words, if it did.
+    pub fn error_message(&self) -> Option<&str> {
+        self.error.as_ref().map(|error| error.message.as_str())
+    }
+}
+
+/// Why a request failed: a code a program can act on, and words for a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+/// What kind of failure it was. These don't change; new ones may be added, which an older client reads
+/// as `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorCode {
+    /// Something is missing from the request, or doesn't make sense.
+    BadRequest,
+    /// The client speaks a version of the API the service doesn't.
+    UnsupportedProtocol,
+    /// The person at the computer hasn't allowed this program to use SwiftVM.
+    NotAllowed,
+    /// The machine doesn't let itself be given jobs or be controlled: `swiftvm automation <machine> on`.
+    AutomationOff,
+    /// The app, which does what the service doesn't do itself yet, isn't running.
+    AppNotRunning,
+    /// No machine, template, snapshot, device or file goes by that name.
+    NotFound,
+    /// The machine isn't in a state for this, such as running when it has to be shut down.
+    WrongState,
+    /// Something else is under way that this has to wait for.
+    Busy,
+    TimedOut,
+    /// The guest tools aren't there, don't answer, or couldn't do it.
+    GuestTools,
+    /// This computer can't do it, or isn't set up for it.
+    Unavailable,
+    /// It was called off.
+    Cancelled,
+    /// Anything else.
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ErrorCode {
+    pub fn name(self) -> &'static str {
+        match self {
+            ErrorCode::BadRequest => "bad-request",
+            ErrorCode::UnsupportedProtocol => "unsupported-protocol",
+            ErrorCode::NotAllowed => "not-allowed",
+            ErrorCode::AutomationOff => "automation-off",
+            ErrorCode::AppNotRunning => "app-not-running",
+            ErrorCode::NotFound => "not-found",
+            ErrorCode::WrongState => "wrong-state",
+            ErrorCode::Busy => "busy",
+            ErrorCode::TimedOut => "timed-out",
+            ErrorCode::GuestTools => "guest-tools",
+            ErrorCode::Unavailable => "unavailable",
+            ErrorCode::Cancelled => "cancelled",
+            ErrorCode::Failed => "failed",
+            ErrorCode::Unknown => "unknown",
+        }
+    }
+}
+
+/// What the service says about itself, in answer to `hello`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceInfo {
+    /// The version of `swiftvm` that runs as the service.
+    pub version: String,
+    /// The version of the API it speaks with this client.
+    pub protocol: u32,
+    /// `macos`, `linux` or `windows`.
+    pub platform: String,
+    /// The commands the service answers itself. It passes every other one on to the app.
+    pub offers: Vec<String>,
+    pub app: AppStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppStatus {
+    pub running: bool,
+}
+
+/// A program that was allowed to use SwiftVM, or refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientProgram {
+    pub path: String,
+    pub name: String,
+    pub allowed: bool,
+    pub decided_at: Timestamp,
+}
+
+/// Something that changed, as `watch` tells it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Event {
+    pub event: EventKind,
+    /// The machine, as it is now. For `machine-removed`, as it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine: Option<MachineSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creation: Option<CreationSummary>,
+    /// `guest-tools`: what the machine's guest tools say, while they are connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_tools: Option<GuestTools>,
+    /// `guest-tools`: how setting up the guest is going, while there is something to set up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<Setup>,
+    /// `app`: whether the app is running.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EventKind {
+    MachineAdded,
+    /// Its state, name or address changed.
+    MachineChanged,
+    MachineRemoved,
+    /// Its guest tools connected, went away, or moved on with setting up the guest.
+    GuestTools,
+    /// A machine is being created, or its creation moved on or failed.
+    Creation,
+    /// A creation is over: it worked out, and `machine-added` follows, or it was called off or cleared.
+    CreationEnded,
+    /// The app started or quit.
+    App,
+    /// A kind of event from a later version.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -588,7 +853,7 @@ pub struct UsbDeviceSummary {
 pub struct SnapshotSummary {
     pub id: Id,
     pub name: String,
-    pub created_at: SwiftDate,
+    pub created_at: Timestamp,
     /// Going back to it resumes the guest where it was instead of booting it.
     pub includes_memory: bool,
 }
@@ -598,7 +863,7 @@ pub struct SnapshotSummary {
 pub struct TemplateSummary {
     pub id: Id,
     pub name: String,
-    pub created_at: SwiftDate,
+    pub created_at: Timestamp,
     pub system: String,
     pub cpu_count: i64,
     pub memory_size: u64,
@@ -668,58 +933,15 @@ pub struct ControlCall {
     pub steps: Vec<ControlStep>,
 }
 
-/// What a step acts on: a number from the last look, what it says, an author id, or a place.
+/// What a step acts on: a number from the last look, what it says, an author id, or a place. Written
+/// `{"number":12}`, `{"text":"Save"}`, `{"id":"search"}` or `{"point":{"x":10,"y":20}}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "TargetCoding", into = "TargetCoding")]
+#[serde(rename_all = "lowercase")]
 pub enum ControlTarget {
     Number(i64),
     Text(String),
     Id(String),
     Point { x: i64, y: i64 },
-}
-
-/// How Swift codes an enum with associated values: unlabelled ones as `_0`.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum TargetCoding {
-    Number {
-        #[serde(rename = "_0")]
-        value: i64,
-    },
-    Text {
-        #[serde(rename = "_0")]
-        value: String,
-    },
-    Id {
-        #[serde(rename = "_0")]
-        value: String,
-    },
-    Point {
-        x: i64,
-        y: i64,
-    },
-}
-
-impl From<TargetCoding> for ControlTarget {
-    fn from(coding: TargetCoding) -> Self {
-        match coding {
-            TargetCoding::Number { value } => ControlTarget::Number(value),
-            TargetCoding::Text { value } => ControlTarget::Text(value),
-            TargetCoding::Id { value } => ControlTarget::Id(value),
-            TargetCoding::Point { x, y } => ControlTarget::Point { x, y },
-        }
-    }
-}
-
-impl From<ControlTarget> for TargetCoding {
-    fn from(target: ControlTarget) -> Self {
-        match target {
-            ControlTarget::Number(value) => TargetCoding::Number { value },
-            ControlTarget::Text(value) => TargetCoding::Text { value },
-            ControlTarget::Id(value) => TargetCoding::Id { value },
-            ControlTarget::Point { x, y } => TargetCoding::Point { x, y },
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

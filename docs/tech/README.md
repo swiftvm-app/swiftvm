@@ -12,6 +12,8 @@ firmware, and snapshots. Guest tools connect directly to the app for power,
 clock synchronization, and automation.
 
 - [Architecture](architecture.md): components, storage, and communication.
+- [API v1](api.md): the protocol of `swiftvm serve`, for programs that drive
+  SwiftVM.
 - [Requirements and limitations](constraints.md): supported systems and feature
   restrictions.
 - [Building](building.md): build and run a development copy.

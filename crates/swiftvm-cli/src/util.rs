@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use swiftvm_protocol::io::write_all;
 use swiftvm_protocol::paths::home_directory;
-use swiftvm_protocol::{AppIdentity, ControlClient, ControlPaths, ControlRequest, ControlResponse};
+use swiftvm_protocol::wire::{ApiError, ErrorCode};
+use swiftvm_protocol::{AppIdentity, ClientError, ControlPaths, ControlRequest, ControlResponse, ServiceClient};
 
 /// Ends the program with `status`, after what was printed has gone out.
 pub fn exit(status: i32) -> ! {
@@ -20,8 +22,13 @@ pub fn fail(message: &str) -> ! {
     fail_with(message, 1)
 }
 
+/// With `--json`, the reason goes on the output as an answer that says no.
 pub fn fail_with(message: &str, status: i32) -> ! {
-    warn(&format!("swiftvm: {message}"));
+    if prints_json() {
+        say_json(&ControlResponse::failure(None, ErrorCode::Failed, message));
+    } else {
+        warn(&format!("swiftvm: {message}"));
+    }
     exit(status)
 }
 
@@ -85,15 +92,66 @@ pub fn paths() -> &'static ControlPaths {
     })
 }
 
-pub fn client() -> ControlClient {
-    ControlClient::new(paths().socket(), identity().name())
+/// What this tool calls itself to the service.
+pub fn client_name() -> String {
+    format!("swiftvm {}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Sends `request` and returns the answer. Stops with the app's reason when it says no.
+/// The service, which this tool starts when it isn't running.
+pub fn client() -> ServiceClient {
+    ServiceClient::new(paths().clone(), client_name(), Some(tool_path()))
+}
+
+/// Sends `request` and returns the answer. Stops with the reason when the answer is no.
 pub fn send(request: ControlRequest) -> ControlResponse {
     match client().send(&request) {
         Ok(response) if response.ok => response,
-        Ok(response) => fail(response.error.as_deref().unwrap_or("The command failed.")),
+        Ok(response) if prints_json() => {
+            say_json(&response);
+            exit(1)
+        }
+        Ok(response) => fail(response.error_message().unwrap_or("The command failed.")),
+        Err(error) if prints_json() => {
+            say_json(&failure_answer(&error));
+            exit(1)
+        }
         Err(error) => fail(&error.to_string()),
     }
+}
+
+static PRINTS_JSON: AtomicBool = AtomicBool::new(false);
+
+/// `--json`: what a command prints is the service's answer, in API v1.
+pub fn set_prints_json(prints: bool) {
+    PRINTS_JSON.store(prints, Ordering::Relaxed);
+}
+
+pub fn prints_json() -> bool {
+    PRINTS_JSON.load(Ordering::Relaxed)
+}
+
+/// Prints `value` on one line of JSON.
+pub fn say_json<T: serde::Serialize>(value: &T) {
+    say(&serde_json::to_string(value).unwrap_or_default());
+}
+
+/// A failure that never reached the service, in the shape of its answers.
+pub fn failure_answer(error: &ClientError) -> ControlResponse {
+    let error = match error {
+        ClientError::Refused(refusal) => refusal.clone(),
+        other => ApiError { code: ErrorCode::Failed, message: other.to_string() },
+    };
+    ControlResponse { error: Some(error), ..ControlResponse::default() }
+}
+
+/// Sends `request` for the answer a command shows. With `--json` it prints the answer, whatever it is,
+/// and ends the program: with status 0 when it says yes, 1 when no. Otherwise it returns the answer, or
+/// stops with the reason when it says no.
+pub fn answer(request: ControlRequest) -> ControlResponse {
+    if !prints_json() {
+        return send(request);
+    }
+    let response = client().send(&request).unwrap_or_else(|error| failure_answer(&error));
+    say_json(&response);
+    exit(if response.ok { 0 } else { 1 })
 }

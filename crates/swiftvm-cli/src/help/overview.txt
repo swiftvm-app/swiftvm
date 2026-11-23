@@ -21,5 +21,10 @@ Network
 For agents
   skill [install], mcp
 
+The service
+  watch                         What changes, as it happens
+  clients, service, serve       Which programs may use SwiftVM, and the service they talk to
+  --json                        Before any command: its answer as JSON
+
   swiftvm help <command>        How one command works
   swiftvm help all              Every command and option

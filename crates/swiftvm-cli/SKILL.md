@@ -39,6 +39,13 @@ swiftvm cp box:/var/log/syslog ./syslog.txt
 
 Exit status: the command's own, 124 for `--timeout`, 125 on setup/connection failure. For automation, `--result-fd 3` with `3>completion.json` writes a separate versioned JSON completion record: `exited` with `status`, `signaled` with `signal`, or `unknown`. Missing/partial records also mean unknown; inspect before retrying a mutation. Guest output stays on stdout/stderr.
 
+## JSON
+
+`swiftvm --json <command>` prints the answer as one line of JSON, also when it says no:
+`{"ok":false,"error":{"code":"wrong-state","message":"…"}}`. Act on `error.code` (`not-found`, `wrong-state`,
+`busy`, `timed-out`, `guest-tools`, `automation-off`, …), not on the message. `swiftvm exec box --json -- cmd`
+prints `{"status":0,"output":"…","errorOutput":"…"}`. `swiftvm watch` prints what changes as it happens.
+
 ## The desktop
 
 ```bash

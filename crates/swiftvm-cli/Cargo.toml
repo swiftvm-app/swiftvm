@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 swiftvm-protocol.workspace = true
+swiftvm-service.workspace = true
 base64.workspace = true
 libc.workspace = true
 serde.workspace = true

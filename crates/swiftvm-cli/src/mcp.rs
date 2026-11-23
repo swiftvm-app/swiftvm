@@ -11,8 +11,8 @@ use base64::Engine;
 use serde_json::{Map, Value, json};
 use swiftvm_protocol::io;
 use swiftvm_protocol::{
-    Action, Button, Command, ControlCall, ControlClient, ControlRequest, ControlResponse, ControlStep, ControlTarget, Direction, Exec,
-    GuestJob, JobEnd, JobFrame, JobFrameKind, MachineUsage,
+    Action, Button, Command, ControlCall, ControlRequest, ControlResponse, ControlStep, ControlTarget, Direction, Exec, GuestJob, JobEnd,
+    JobFrame, JobFrameKind, MachineUsage, ServiceClient,
 };
 
 use crate::control;
@@ -71,7 +71,7 @@ pub fn run(arguments: &[String]) -> ! {
 }
 
 pub struct Server {
-    pub client: ControlClient,
+    pub client: ServiceClient,
 }
 
 impl Server {
@@ -329,7 +329,7 @@ pub fn result(text: &str, is_error: bool, image: Option<&[u8]>) -> Value {
 
 type Problem = String;
 
-fn call(name: &str, arguments: &Map<String, Value>, client: &ControlClient) -> Result<Value, Problem> {
+fn call(name: &str, arguments: &Map<String, Value>, client: &ServiceClient) -> Result<Value, Problem> {
     if name == "vm_list" {
         return Ok(result(&table(&send(client, ControlRequest::new(Command::List))?), false, None));
     }
@@ -388,7 +388,7 @@ fn call(name: &str, arguments: &Map<String, Value>, client: &ControlClient) -> R
     }
 }
 
-fn send(client: &ControlClient, request: ControlRequest) -> Result<ControlResponse, Problem> {
+fn send(client: &ServiceClient, request: ControlRequest) -> Result<ControlResponse, Problem> {
     client.send(&request).map_err(|error| error.to_string())
 }
 
@@ -462,7 +462,7 @@ fn target(value: Option<&Value>) -> Result<Option<ControlTarget>, Problem> {
     }
 }
 
-fn perform(steps: Vec<ControlStep>, machine: &str, client: &ControlClient) -> Result<Value, Problem> {
+fn perform(steps: Vec<ControlStep>, machine: &str, client: &ServiceClient) -> Result<Value, Problem> {
     let call = ControlCall { steps };
     let outcome = control::call(&call, machine, control::deadline(&call), client)?;
     let image = outcome.results.iter().rev().find_map(|result| result.image.as_deref());
@@ -481,7 +481,7 @@ fn table(response: &ControlResponse) -> String {
     std::iter::once("NAME\tSTATE\tSYSTEM\tADDRESS\tCPU%\tMEMORY".to_string()).chain(lines).collect::<Vec<_>>().join("\n")
 }
 
-fn power(machine: &str, arguments: &Map<String, Value>, client: &ControlClient) -> Result<Value, Problem> {
+fn power(machine: &str, arguments: &Map<String, Value>, client: &ServiceClient) -> Result<Value, Problem> {
     let commands = [
         ("start", Command::Start),
         ("stop", Command::Stop),
@@ -497,14 +497,14 @@ fn power(machine: &str, arguments: &Map<String, Value>, client: &ControlClient) 
     let request =
         ControlRequest { timeout: arguments.get("timeout").and_then(Value::as_f64), ..ControlRequest::for_machine(*command, machine) };
     let response = send(client, request)?;
-    if let Some(error) = &response.error {
+    if let Some(error) = response.error_message() {
         return Ok(result(error, true, None));
     }
     let text: Vec<String> = response.note.iter().cloned().chain(std::iter::once(table(&response))).collect();
     Ok(result(&text.join("\n"), false, None))
 }
 
-fn snapshot(machine: &str, arguments: &Map<String, Value>, client: &ControlClient) -> Result<Value, Problem> {
+fn snapshot(machine: &str, arguments: &Map<String, Value>, client: &ServiceClient) -> Result<Value, Problem> {
     let name = string(arguments, "name");
     let request = match arguments.get("action").and_then(Value::as_str) {
         Some("take") => ControlRequest { name, ..ControlRequest::for_machine(Command::Snapshot, machine) },
@@ -516,7 +516,7 @@ fn snapshot(machine: &str, arguments: &Map<String, Value>, client: &ControlClien
         _ => return Err("Say take, list or revert.".into()),
     };
     let response = send(client, request)?;
-    if let Some(error) = &response.error {
+    if let Some(error) = response.error_message() {
         return Ok(result(error, true, None));
     }
     let names: Vec<&str> = response.snapshots.iter().flatten().map(|snapshot| snapshot.name.as_str()).collect();
@@ -527,7 +527,7 @@ fn snapshot(machine: &str, arguments: &Map<String, Value>, client: &ControlClien
 /// The most of a command's output a model is given. It ends with where the rest was cut.
 const LONGEST_OUTPUT: usize = 100_000;
 
-fn exec(machine: &str, arguments: &Map<String, Value>, client: &ControlClient) -> Result<Value, Problem> {
+fn exec(machine: &str, arguments: &Map<String, Value>, client: &ServiceClient) -> Result<Value, Problem> {
     let Some(command) = array(arguments.get("command"), |word| word.as_str().map(str::to_string)).filter(|command| !command.is_empty())
     else {
         return Err("Say which command.".into());
@@ -541,7 +541,7 @@ fn exec(machine: &str, arguments: &Map<String, Value>, client: &ControlClient) -
     let request = ControlRequest { job: Some(job), ..ControlRequest::for_machine(Command::Job, machine) };
     let (response, connection) = client.open_stream(&request).map_err(|error| error.to_string())?;
     let Some(connection) = connection else {
-        return Ok(result(response.error.as_deref().unwrap_or("The guest tools didn't take that on."), true, None));
+        return Ok(result(response.error_message().unwrap_or("The guest tools didn't take that on."), true, None));
     };
     let descriptor = connection.as_raw_fd();
     #[cfg(target_os = "macos")]
@@ -640,7 +640,7 @@ mod tests {
     use super::*;
 
     fn server() -> Server {
-        Server { client: ControlClient::new("/nonexistent/control.sock", "SwiftVM") }
+        Server { client: ServiceClient::new(swiftvm_protocol::ControlPaths { data: "/nonexistent".into() }, "test", None) }
     }
 
     fn reply(server: &Server, line: &str) -> Value {

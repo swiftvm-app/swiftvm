@@ -10,10 +10,45 @@ import VMNetworking
 import VZEngine
 import Virtualization
 
+/// A machine's template, snapshot or USB device that a request names and that isn't there, or isn't one.
+struct ControlLookupError: Error, LocalizedError {
+    var message: String
+    var code: ControlErrorCode
+
+    var errorDescription: String? { message }
+}
+
 /// Handles requests from the `swiftvm` command-line tool.
 extension AppModel {
+    /// What kind of failure an error that was thrown is, for its answer's code.
+    static func code(of error: any Error) -> ControlErrorCode {
+        switch error {
+        case let error as ControlLookupError: return error.code
+        case let error as GuestJobError:
+            switch error {
+            case .notAllowed: return .automationOff
+            case .noAgent, .notOffered, .noAnswer, .refused: return .guestTools
+            case .tooLong: return .badRequest
+            }
+        case let error as VMError:
+            switch error {
+            case .busy: return .busy
+            case .notStopped, .notRunning: return .wrongState
+            default: return .failed
+            }
+        case let error as USBPassthrough.Failure:
+            switch error {
+            case .unavailable: return .unavailable
+            case .gone: return .notFound
+            case .inUse, .onItsWay: return .busy
+            }
+        case is CancellationError: return .cancelled
+        default: return .failed
+        }
+    }
+
     func handle(_ request: ControlRequest) async -> ControlResponse {
-        guard !isQuittingUnattended, !isClosingDown else { return .failure("\(AppIdentity.current.name) is quitting.") }
+        guard !isQuittingUnattended, !isClosingDown else { return .failure("\(AppIdentity.current.name) is quitting.", code: .busy) }
         switch request.command {
         case .list:
             if let identifier = request.machine {
@@ -25,7 +60,7 @@ extension AppModel {
                 ok: true, machines: library.machines.map { summary(of: $0) }, creations: creations.map { summary(of: $0) }
             )
         case .info:
-            guard let identifier = request.machine else { return .failure("Missing machine name.") }
+            guard let identifier = request.machine else { return .failure("Missing machine name.", code: .badRequest) }
             guard let machine = findMachine(identifier) else { return notFound(identifier) }
             return details(machine)
         case .networkInterfaces:
@@ -35,11 +70,11 @@ extension AppModel {
                 networkInterfaces: BridgedNetworking.interfaces.map { .init(identifier: $0.id, name: $0.name) }
             )
         case .create:
-            guard let parameters = request.create else { return .failure("Missing creation parameters.") }
+            guard let parameters = request.create else { return .failure("Missing creation parameters.", code: .badRequest) }
             return await createMachine(parameters)
         case .usbList:
             guard usb.availability == .available else {
-                return .failure(USBPassthrough.Failure.unavailable(usb.availability).localizedDescription)
+                return .failure(USBPassthrough.Failure.unavailable(usb.availability).localizedDescription, code: .unavailable)
             }
             let devices = usb.devices.map { summary(of: $0) }
             return ControlResponse(ok: true, note: devices.isEmpty ? USBDevicesHint.howToGiveOne : nil, usbDevices: devices)
@@ -48,7 +83,7 @@ extension AppModel {
             if let system = request.system {
                 guard let found = DistributionCatalog.quickCreate.first(where: { $0.id == system.lowercased() }) else {
                     let available = DistributionCatalog.quickCreate.map(\.id).joined(separator: ", ")
-                    return .failure("Unknown Linux image “\(system)”. Available: \(available).")
+                    return .failure("Unknown Linux image “\(system)”. Available: \(available).", code: .notFound)
                 }
                 distribution = found
             }
@@ -70,10 +105,10 @@ extension AppModel {
             templates.load()
             return templatesResponse()
         case .deleteTemplate, .renameTemplate:
-            guard let identifier = request.template else { return .failure("Missing template name.") }
+            guard let identifier = request.template else { return .failure("Missing template name.", code: .badRequest) }
             let newName = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard request.command != .renameTemplate || !newName.isEmpty else {
-                return .failure("Missing the template's new name.")
+                return .failure("Missing the template's new name.", code: .badRequest)
             }
             templates.load()
             do {
@@ -84,48 +119,56 @@ extension AppModel {
                     try templates.remove(template, movingToTrash: true)
                 }
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return templatesResponse()
         case .quit:
             // Quitting from the command line never puts up the dialog that asks what to do with machines.
             guard activeMachines.isEmpty else {
-                return .failure("Stop or suspend the running virtual machines first.")
+                return .failure("Stop or suspend the running virtual machines first.", code: .wrongState)
             }
             let creating = creationsInProgress
             guard creating.isEmpty || request.cancelsCreations == true else {
                 let subject = creating.count == 1 ? "“\(creating[0].name)” is" : "\(creating.count) virtual machines are"
-                return .failure("\(subject) still being created. To quit anyway, use `swiftvm quit --cancel-creations`: a download carries on where it stopped the next time, an installation starts over.")
+                return .failure("\(subject) still being created. To quit anyway, use `swiftvm quit --cancel-creations`: a download carries on where it stopped the next time, an installation starts over.", code: .busy)
             }
             if let moving = machinesBeingMoved.first {
-                return .failure("“\(moving.name)” is being moved to another folder. Wait until it is there, or call the move off in the machine's settings.")
+                return .failure("“\(moving.name)” is being moved to another folder. Wait until it is there, or call the move off in the machine's settings.", code: .busy)
             }
             if let saving = machinesBeingSavedAsTemplates.first {
-                return .failure("“\(saving.name)” is being saved as a template. Wait until that is done.")
+                return .failure("“\(saving.name)” is being saved as a template. Wait until that is done.", code: .busy)
             }
             guard !isWorkingOnMachineFiles else {
-                return .failure("A virtual machine is busy with a snapshot, a copy, a resize or a conversion of its disk. Try again in a moment.")
+                return .failure("A virtual machine is busy with a snapshot, a copy, a resize or a conversion of its disk. Try again in a moment.", code: .busy)
             }
             // macOS doesn't let an app quit while one of its windows has a sheet open or a panel waits
             // for an answer, and there is nobody here to close it: what is being filled in there would
             // be lost.
             guard NSApp.modalWindow == nil, !NSApp.windows.contains(where: { $0.attachedSheet != nil }) else {
-                return .failure("\(AppIdentity.current.name) has a dialog open in one of its windows. Close it first.")
+                return .failure("\(AppIdentity.current.name) has a dialog open in one of its windows. Close it first.", code: .busy)
             }
             quitUnattended()
             return ControlResponse(ok: true)
+        case .askPermission:
+            guard let program = request.program, program.hasPrefix("/") else { return .failure("Missing the program's path.", code: .badRequest) }
+            let name = request.programName ?? URL(fileURLWithPath: program).lastPathComponent
+            switch await askPermission(for: name, at: program) {
+            case true?: return ControlResponse(ok: true)
+            case false?: return .failure("“\(name)” isn't allowed to use \(AppIdentity.current.name).", code: .notAllowed)
+            case nil: return .failure("Nobody answered whether “\(name)” may use \(AppIdentity.current.name).", code: .timedOut)
+            }
         default:
             break
         }
 
-        guard let identifier = request.machine else { return .failure("Missing machine name.") }
+        guard let identifier = request.machine else { return .failure("Missing machine name.", code: .badRequest) }
         // `wait` right after `create`, which was cut short or ran in the background, finds a machine
         // that is still being installed: it waits for that too.
         let startedWaiting = ContinuousClock.now
         if request.command == .wait, let creation = creationRatherThanMachine(identifier) {
             guard creation.errorMessage == nil else { return notFound(identifier) }
             if let problem = await waitForCreation(creation, timeout: request.waitTimeout) {
-                return .failure(problem)
+                return problem
             }
         }
         // Deleting a machine that is still being created calls the creation off, as its row's button in
@@ -149,9 +192,9 @@ extension AppModel {
             _ = await waitForState(of: machine, timeout: .seconds(90), where: { $0 != .stopping })
             guard machine.state == .stopped else {
                 if request == .powerButton, machine.configuration.asksBeforeShuttingDown {
-                    return .failure("“\(machine.name)” asks for confirmation on its screen before it shuts down, and nobody answered. Answer it in the machine's window, or use force-stop to stop it immediately.\(guestToolsHint(for: machine))")
+                    return .failure("“\(machine.name)” asks for confirmation on its screen before it shuts down, and nobody answered. Answer it in the machine's window, or use force-stop to stop it immediately.\(guestToolsHint(for: machine))", code: .timedOut)
                 }
-                return .failure("“\(machine.name)” didn't shut down in time. Use force-stop to stop it immediately.")
+                return .failure("“\(machine.name)” didn't shut down in time. Use force-stop to stop it immediately.", code: .timedOut)
             }
         case .forceStop:
             await machine.forceStop()
@@ -162,7 +205,7 @@ extension AppModel {
         case .resume:
             await machine.resume()
         case .restart:
-            guard machine.state == .running else { return .failure("“\(machine.name)” isn't running.") }
+            guard machine.state == .running else { return .failure("“\(machine.name)” isn't running.", code: .wrongState) }
             let runs = machine.startCount
             let request = await shutDown(machine, thenRestart: true)
             // Wait for the guest to go down and come back up. Its state alone doesn't say: a guest that
@@ -172,27 +215,27 @@ extension AppModel {
                 if machine.startCount == runs, machine.state == .running {
                     // Still the same run: the guest was asked and has let the request pass.
                     if request == .powerButton, machine.configuration.asksBeforeShuttingDown {
-                        return .failure("“\(machine.name)” asks for confirmation on its screen before it restarts, and nobody answered. Answer it in the machine's window.\(guestToolsHint(for: machine))")
+                        return .failure("“\(machine.name)” asks for confirmation on its screen before it restarts, and nobody answered. Answer it in the machine's window.\(guestToolsHint(for: machine))", code: .timedOut)
                     }
-                    return .failure("“\(machine.name)” didn't shut down in time, so it wasn't restarted.")
+                    return .failure("“\(machine.name)” didn't shut down in time, so it wasn't restarted.", code: .timedOut)
                 }
                 // It failed to start again, which the error says better than this could.
                 guard machine.lastError == nil else { break }
                 if machine.state == .stopped, !machine.isRestartPending {
                     // The guest couldn't be asked and was stopped outright, which is no restart.
-                    return .failure("“\(machine.name)” was stopped and didn't start again.")
+                    return .failure("“\(machine.name)” was stopped and didn't start again.", code: .wrongState)
                 }
                 guard ContinuousClock.now < deadline else {
-                    return .failure("“\(machine.name)” didn't come back up in time.")
+                    return .failure("“\(machine.name)” didn't come back up in time.", code: .timedOut)
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
         case .open:
             guard windows.showMachine(machine.id, activatingApp: false) else {
-                return .failure("\(AppIdentity.current.name) has only just opened and can't show a window yet. Try again in a moment.")
+                return .failure("\(AppIdentity.current.name) has only just opened and can't show a window yet. Try again in a moment.", code: .busy)
             }
         case .delete:
-            guard !machine.state.isActive else { return .failure("Stop “\(machine.name)” before deleting it.") }
+            guard !machine.state.isActive else { return .failure("Stop “\(machine.name)” before deleting it.", code: .wrongState) }
             let summary = summary(of: machine)
             delete(machine)
             if let error = generalError {
@@ -201,10 +244,10 @@ extension AppModel {
             }
             return ControlResponse(ok: true, machines: [summary])
         case .share:
-            guard let share = request.share else { return .failure("Missing folder path.") }
+            guard let share = request.share else { return .failure("Missing folder path.", code: .badRequest) }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: share.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                return .failure("“\(share.path)” isn't a folder.")
+                return .failure("“\(share.path)” isn't a folder.", code: .notFound)
             }
             changeConfiguration(of: machine) { configuration in
                 if let index = configuration.sharedFolders.firstIndex(where: { $0.path == share.path }) {
@@ -215,40 +258,40 @@ extension AppModel {
                 }
             }
         case .unshare:
-            guard let share = request.share else { return .failure("Missing folder path.") }
+            guard let share = request.share else { return .failure("Missing folder path.", code: .badRequest) }
             guard machine.configuration.sharedFolders.contains(where: { $0.path == share.path }) else {
-                return .failure("“\(share.path)” isn't shared with “\(machine.name)”.")
+                return .failure("“\(share.path)” isn't shared with “\(machine.name)”.", code: .notFound)
             }
             changeConfiguration(of: machine) { $0.sharedFolders.removeAll { $0.path == share.path } }
         case .attach:
-            guard let drive = request.drive else { return .failure("Missing disk image.") }
+            guard let drive = request.drive else { return .failure("Missing disk image.", code: .badRequest) }
             do {
                 try await machine.attachImage(RemovableImage(url: URL(fileURLWithPath: drive.path), readOnly: drive.readOnly))
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return details(machine)
         case .eject:
-            guard let drive = request.drive else { return .failure("Missing disk image.") }
+            guard let drive = request.drive else { return .failure("Missing disk image.", code: .badRequest) }
             let images = machine.configuration.removableImages
             // A full path names one image; a bare file name is enough when only one image has it.
             let matches = drive.path.contains("/")
                 ? images.filter { $0.path == drive.path }
                 : images.filter { $0.name == drive.path }
             guard let image = matches.first else {
-                return .failure("“\(drive.path)” isn't attached to “\(machine.name)”.")
+                return .failure("“\(drive.path)” isn't attached to “\(machine.name)”.", code: .notFound)
             }
             guard matches.count == 1 else {
-                return .failure("More than one attached image is called “\(drive.path)”. Give its full path.")
+                return .failure("More than one attached image is called “\(drive.path)”. Give its full path.", code: .badRequest)
             }
             do {
                 try await machine.ejectImage(image.id)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return details(machine)
         case .forward:
-            guard let parameters = request.forward else { return .failure("Missing port.") }
+            guard let parameters = request.forward else { return .failure("Missing port.", code: .badRequest) }
             let forward = PortForward(
                 transport: parameters.udp ? .udp : .tcp, hostPort: parameters.hostPort,
                 guestPort: parameters.guestPort ?? parameters.hostPort, allowsOtherDevices: parameters.allowsOtherDevices
@@ -256,7 +299,7 @@ extension AppModel {
             do {
                 try addPortForward(forward, to: machine)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             // For a running machine the port is opened right away; say so if that didn't work.
             if machine.state == .running {
@@ -270,53 +313,53 @@ extension AppModel {
             }
             return details(machine)
         case .unforward:
-            guard let parameters = request.forward else { return .failure("Missing port.") }
+            guard let parameters = request.forward else { return .failure("Missing port.", code: .badRequest) }
             let transport: PortForward.TransportProtocol = parameters.udp ? .udp : .tcp
             let forwards = machine.configuration.networkInterfaces.flatMap(\.portForwards)
             guard let forward = forwards.first(where: { $0.hostPort == parameters.hostPort && $0.transport == transport }) else {
-                return .failure("“\(machine.name)” doesn't forward \(transport.rawValue.uppercased()) port \(parameters.hostPort).")
+                return .failure("“\(machine.name)” doesn't forward \(transport.rawValue.uppercased()) port \(parameters.hostPort).", code: .notFound)
             }
             do {
                 try removePortForward(forward.id, from: machine)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return details(machine)
         case .network:
             do {
                 if request.networkMode != "mac", request.macAddress != nil {
-                    return .failure("Use swiftvm network <machine> mac <address> to change the MAC address.")
+                    return .failure("Use swiftvm network <machine> mac <address> to change the MAC address.", code: .badRequest)
                 }
                 switch request.networkMode {
                 case "shared":
                     guard request.bridgedInterfaceIdentifier == nil else {
-                        return .failure("Shared networking doesn't take a host interface.")
+                        return .failure("Shared networking doesn't take a host interface.", code: .badRequest)
                     }
                     try setNetwork(of: machine, bridgedTo: nil)
                 case "bridged":
                     guard let host = request.bridgedInterfaceIdentifier, !host.isEmpty else {
-                        return .failure("Choose a host interface from swiftvm network-interfaces.")
+                        return .failure("Choose a host interface from swiftvm network-interfaces.", code: .badRequest)
                     }
                     try setNetwork(of: machine, bridgedTo: host)
                 case "mac":
                     guard let address = request.macAddress, request.bridgedInterfaceIdentifier == nil else {
-                        return .failure("Give a MAC address, without a host interface.")
+                        return .failure("Give a MAC address, without a host interface.", code: .badRequest)
                     }
                     try setMACAddress(address, for: machine)
                 default:
-                    return .failure("Choose shared or bridged networking, or mac to set the MAC address.")
+                    return .failure("Choose shared or bridged networking, or mac to set the MAC address.", code: .badRequest)
                 }
                 return details(machine)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
         case .plug, .unplug:
             guard !machine.configuration.networkInterfaces.isEmpty else {
-                return .failure("“\(machine.name)” has no network interface.")
+                return .failure("“\(machine.name)” has no network interface.", code: .notFound)
             }
             // In between states the change would be written down and not reach the guest.
             guard !machine.state.isTransitioning else {
-                return .failure("“\(machine.name)” is busy starting up or shutting down. Try again in a moment.")
+                return .failure("“\(machine.name)” is busy starting up or shutting down. Try again in a moment.", code: .busy)
             }
             changeConfiguration(of: machine) { $0.networkInterfaces[0].isConnected = request.command == .plug }
         case .installTools:
@@ -357,7 +400,7 @@ extension AppModel {
             } catch let error as ProcessRunner.Failure {
                 if let complaint = LinuxGuestAgent.installerComplaint(in: error) {
                     // The installer ran and gave up; from the disc it would give up the same way.
-                    return .failure("The guest tools couldn't be installed in “\(machine.name)”: \(complaint).")
+                    return .failure("The guest tools couldn't be installed in “\(machine.name)”: \(complaint).", code: .guestTools)
                 }
                 // What went wrong is in the last thing that was said: ssh and sudo lead up to it.
                 let reason = error.output.standardError.split(whereSeparator: \.isNewline).last
@@ -367,28 +410,28 @@ extension AppModel {
                     let advice = request.password == nil
                         ? "Give the password with --password <password>, or install from inside the guest with `swiftvm install-tools <machine> --disc`."
                         : "To install from inside the guest instead, use `swiftvm install-tools <machine> --disc`."
-                    return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and the account's password\(detail). \(advice)")
+                    return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and the account's password\(detail). \(advice)", code: .guestTools)
                 }
-                return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and sudo without a password\(detail). To install from inside the guest instead, use `swiftvm install-tools <machine> --disc`.")
+                return .failure("The guest tools couldn't be installed over SSH, which takes key sign-in and sudo without a password\(detail). To install from inside the guest instead, use `swiftvm install-tools <machine> --disc`.", code: .guestTools)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return details(machine)
         case .shareClipboard:
-            guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            guard let isOn = request.isOn else { return .failure("Missing on or off.", code: .badRequest) }
             // Linux on Apple's backend shares through a device, which must be there from the start.
             // On QEMU the guest agent is simply told, or no longer told, like macOS and Windows.
             guard machine.configuration.os.family != .linux || machine.configuration.engine == .qemu || machine.state == .stopped
                 || machine.configuration.clipboard.isShared == isOn
             else {
-                return .failure("Shut down “\(machine.name)” first: this guest shares the clipboard through a device, which can't be added or taken away while it is up or suspended.")
+                return .failure("Shut down “\(machine.name)” first: this guest shares the clipboard through a device, which can't be added or taken away while it is up or suspended.", code: .wrongState)
             }
             changeConfiguration(of: machine) { $0.clipboard.isShared = isOn }
             if machine.lastError == nil {
                 return details(machine)
             }
         case .usbAttach, .usbDetach, .usbAuto:
-            guard let wanted = request.usbDevice, !wanted.isEmpty else { return .failure("Missing USB device.") }
+            guard let wanted = request.usbDevice, !wanted.isEmpty else { return .failure("Missing USB device.", code: .badRequest) }
             do {
                 switch request.command {
                 case .usbAttach:
@@ -397,11 +440,11 @@ extension AppModel {
                     try await usb.attach(try findUSBDevice(wanted, among: usb.devices, preferringFree: true), to: machine)
                 case .usbDetach:
                     guard !machine.usbDevices.matching(wanted).isEmpty else {
-                        return .failure("“\(wanted)” isn't attached to “\(machine.name)”.")
+                        return .failure("“\(wanted)” isn't attached to “\(machine.name)”.", code: .notFound)
                     }
                     try await usb.detach(try findUSBDevice(wanted, among: machine.usbDevices), from: machine)
                 default:
-                    guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+                    guard let isOn = request.isOn else { return .failure("Missing on or off.", code: .badRequest) }
                     let rules = machine.configuration.usb.autoConnect
                     if !isOn, let rule = rules.first(where: { $0.id == wanted.lowercased() || $0.name.lowercased() == wanted.lowercased() }) {
                         // A rule can be taken back while its device is somewhere else.
@@ -422,73 +465,73 @@ extension AppModel {
                     }
                 }
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return details(machine)
         case .automation:
-            guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            guard let isOn = request.isOn else { return .failure("Missing on or off.", code: .badRequest) }
             changeConfiguration(of: machine) { $0.automation.isAllowed = isOn }
             if machine.lastError == nil {
                 return details(machine)
             }
         case .allowAccessibility:
             guard let password = request.password, !password.isEmpty else {
-                return .failure("macOS takes this from someone who knows the account's password. Give it with --password <password>.")
+                return .failure("macOS takes this from someone who knows the account's password. Give it with --password <password>.", code: .badRequest)
             }
             do {
                 try await allowAutomation(on: machine, password: password)
             } catch {
-                return .failure(Self.explanation(of: error, for: machine))
+                return .failure(Self.explanation(of: error, for: machine), code: Self.code(of: error))
             }
             return details(machine)
         case .wait:
             let left = request.waitTimeout - (ContinuousClock.now - startedWaiting)
             if let problem = await waitUntilReady(machine, timeout: max(left, .zero)) {
-                return .failure(problem)
+                return problem
             }
         case .discardState:
-            guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.") }
+            guard machine.state == .suspended else { return .failure("“\(machine.name)” isn't suspended.", code: .wrongState) }
             machine.discardSavedState()
         case .compression:
-            guard let isOn = request.isOn else { return .failure("Missing on or off.") }
+            guard let isOn = request.isOn else { return .failure("Missing on or off.", code: .badRequest) }
             do {
                 try await setDiskCompression(of: machine, enabled: isOn)
             } catch is CancellationError {
-                return .failure("Converting the disk of “\(machine.name)” was called off. It is as it was.")
+                return .failure("Converting the disk of “\(machine.name)” was called off. It is as it was.", code: .cancelled)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
         case .resize:
-            guard let gigabytes = request.diskGigabytes, gigabytes > 0 else { return .failure("Missing disk size.") }
+            guard let gigabytes = request.diskGigabytes, gigabytes > 0 else { return .failure("Missing disk size.", code: .badRequest) }
             guard gigabytes <= HostResources.maximumDiskGigabytes else {
-                return .failure("\(gigabytes) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
+                return .failure("\(gigabytes) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.", code: .badRequest)
             }
             do {
                 try await resizeDisk(of: machine, to: UInt64(gigabytes) * HostResources.gibibyte)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
         case .clone:
             do {
                 return success(try await duplicate(machine, named: request.name))
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
         case .move:
-            guard let location = request.location, location.hasPrefix("/") else { return .failure("Missing the folder to move to.") }
+            guard let location = request.location, location.hasPrefix("/") else { return .failure("Missing the folder to move to.", code: .badRequest) }
             do {
                 try await move(machine, to: URL(fileURLWithPath: location, isDirectory: true))
             } catch is CancellationError {
-                return .failure("Moving “\(machine.name)” was called off. It is where it was.")
+                return .failure("Moving “\(machine.name)” was called off. It is where it was.", code: .cancelled)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return details(machine)
         case .snapshot:
             do {
                 try await machine.takeSnapshot(named: request.name)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             // The guest is resumed afterwards; if that failed, say so rather than report success.
             if let error = machine.lastError {
@@ -499,15 +542,15 @@ extension AppModel {
         case .snapshots:
             return snapshots(of: machine)
         case .revert, .deleteSnapshot, .renameSnapshot:
-            guard let identifier = request.snapshot else { return .failure("Missing snapshot name.") }
+            guard let identifier = request.snapshot else { return .failure("Missing snapshot name.", code: .badRequest) }
             let newName = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard request.command != .renameSnapshot || !newName.isEmpty else {
-                return .failure("Missing the snapshot's new name.")
+                return .failure("Missing the snapshot's new name.", code: .badRequest)
             }
             let found = findSnapshot(identifier, of: machine)
             guard case .success(let snapshot) = found else {
-                if case .failure(let problem) = found { return .failure(problem.message) }
-                return .failure("No such snapshot.")
+                if case .failure(let problem) = found { return .failure(problem.message, code: problem.code) }
+                return .failure("No such snapshot.", code: .notFound)
             }
             do {
                 if request.command == .revert {
@@ -520,25 +563,26 @@ extension AppModel {
                     return snapshots(of: machine)
                 }
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
         case .saveTemplate:
             var snapshot: VMSnapshot?
             if let identifier = request.snapshot {
                 switch findSnapshot(identifier, of: machine) {
                 case .success(let found): snapshot = found
-                case .failure(let problem): return .failure(problem.message)
+                case .failure(let problem): return .failure(problem.message, code: problem.code)
                 }
             }
             do {
                 try await saveTemplate(of: machine, at: snapshot, named: request.name)
             } catch is CancellationError {
-                return .failure("Saving “\(machine.name)” as a template was called off.")
+                return .failure("Saving “\(machine.name)” as a template was called off.", code: .cancelled)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             return templatesResponse()
-        case .list, .info, .console, .vsock, .job, .control, .create, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate:
+        case .list, .info, .console, .vsock, .job, .control, .create, .quit, .usbList, .networkInterfaces, .scripts, .templates, .deleteTemplate, .renameTemplate,
+             .watch, .askPermission:
             break
         }
 
@@ -555,19 +599,30 @@ extension AppModel {
     /// Answers a request that turns its connection into a byte stream. With a yes comes what serves the
     /// stream once the answer has gone out.
     func openStream(_ request: ControlRequest) async -> (response: ControlResponse, stream: ControlServer.Stream?) {
-        guard !isQuittingUnattended, !isClosingDown else { return (.failure("\(AppIdentity.current.name) is quitting."), nil) }
-        guard let identifier = request.machine else { return (.failure("Missing machine name."), nil) }
+        guard !isQuittingUnattended, !isClosingDown else { return (.failure("\(AppIdentity.current.name) is quitting.", code: .busy), nil) }
+        if request.command == .watch {
+            let listed = await handle(ControlRequest(command: .list))
+            return (listed, { connection in
+                let writer = ControlEventWriter(descriptor: connection)
+                let id = await self.controlEvents.add(writer) { [weak self] in self?.watchedWorld() ?? WatchedWorld() }
+                let hangUp = ControlHangUp.watch(connection) { writer.finish() }
+                await writer.waitUntilFinished()
+                hangUp.cancel()
+                await self.controlEvents.remove(id)
+            })
+        }
+        guard let identifier = request.machine else { return (.failure("Missing machine name.", code: .badRequest), nil) }
         guard let machine = findMachine(identifier) else { return (notFound(identifier), nil) }
         switch request.command {
         case .console:
             let (console, name) = (machine.console, machine.name)
             return (success(machine), { connection in await Self.serveConsole(console, name: name, connection: connection) })
         case .vsock:
-            guard let port = request.port, port > 0 else { return (.failure("Missing port."), nil) }
+            guard let port = request.port, port > 0 else { return (.failure("Missing port.", code: .badRequest), nil) }
             // The agent serves one connection, the app's. Another one would take its place. And what
             // the guest tools do in the guest is asked for by name, where it can be turned off.
             guard port != GuestAgent.port, port != GuestProtocol.jobPort else {
-                return (.failure("Port \(port) is the line between SwiftVM and the guest tools, and not for anything else."), nil)
+                return (.failure("Port \(port) is the line between SwiftVM and the guest tools, and not for anything else.", code: .badRequest), nil)
             }
             do {
                 let guest = try await machine.connectToGuest(port: port)
@@ -576,12 +631,12 @@ extension AppModel {
                     try? guest.close()
                 })
             } catch let error as VMError {
-                return (.failure(error.localizedDescription), nil)
+                return (.failure(error.localizedDescription, code: Self.code(of: error)), nil)
             } catch {
-                return (.failure("Nothing in “\(machine.name)” answers on port \(port) of its socket device. (\(error.localizedDescription))"), nil)
+                return (.failure("Nothing in “\(machine.name)” answers on port \(port) of its socket device. (\(error.localizedDescription))", code: .notFound), nil)
             }
         case .job:
-            guard var job = request.job else { return (.failure("Missing what to do in the guest."), nil) }
+            guard var job = request.job else { return (.failure("Missing what to do in the guest.", code: .badRequest), nil) }
             // A command runs as the machine's own account unless another is named. Without either, the
             // guest tools take whoever is logged in at the guest's screen.
             if case .exec(var exec) = job, exec.user == nil, !machine.configuration.ssh.user.isEmpty {
@@ -597,17 +652,17 @@ extension AppModel {
                     try? guest.close()
                 })
             } catch {
-                return (.failure(Self.explanation(of: error, for: machine)), nil)
+                return (.failure(Self.explanation(of: error, for: machine), code: Self.code(of: error)), nil)
             }
         case .control:
-            guard let call = request.control, !call.steps.isEmpty else { return (.failure("Missing what to do on the machine's desktop."), nil) }
+            guard let call = request.control, !call.steps.isEmpty else { return (.failure("Missing what to do on the machine's desktop.", code: .badRequest), nil) }
             guard machine.configuration.automation.isAllowed else {
-                return (.failure(Self.explanation(of: GuestJobError.notAllowed(name: machine.name), for: machine)), nil)
+                return (.failure(Self.explanation(of: GuestJobError.notAllowed(name: machine.name), for: machine), code: .automationOff), nil)
             }
-            guard machine.state == .running else { return (.failure(VMError.notRunning(name: machine.name).localizedDescription), nil) }
+            guard machine.state == .running else { return (.failure(VMError.notRunning(name: machine.name).localizedDescription, code: .wrongState), nil) }
             return (success(machine), { connection in await self.serveControl(call, of: machine, connection: connection) })
         default:
-            return (.failure("This command doesn't open a stream."), nil)
+            return (.failure("This command doesn't open a stream.", code: .badRequest), nil)
         }
     }
 
@@ -684,23 +739,23 @@ extension AppModel {
     /// guest tools answer, the setup it was created with has come to its end, restarts included, and a
     /// desktop it logs in to by itself is logged in, so that `swiftvm control` knows what is on it. Returns what is in
     /// the way if it doesn't get there in time.
-    private func waitUntilReady(_ machine: VirtualMachine, timeout: Duration) async -> String? {
+    private func waitUntilReady(_ machine: VirtualMachine, timeout: Duration) async -> ControlResponse? {
         let deadline = ContinuousClock.now + timeout
         var hasDesktop: Bool?
         while true {
             // A machine that is down isn't on its way to anything. One that restarts at the end of its
             // setup is down for a moment, on its way back up.
             let isUp = machine.state.isActive && machine.state != .stopping && machine.state != .suspending
-            guard isUp || machine.isRestartPending else { return "“\(machine.name)” isn't running." }
+            guard isUp || machine.isRestartPending else { return .failure("“\(machine.name)” isn't running.", code: .wrongState) }
             switch await readiness(of: machine, hasDesktop: &hasDesktop) {
             case .ready:
                 return nil
             case .failed(let reason):
-                return reason
+                return .failure(reason)
             case .waiting(let what):
                 guard ContinuousClock.now < deadline else {
                     let alias = machine.configuration.ssh.alias.isEmpty ? machine.id.uuidString : machine.configuration.ssh.alias
-                    return "“\(machine.name)” isn't ready yet: \(what). `swiftvm wait \(alias)` waits on."
+                    return .failure("“\(machine.name)” isn't ready yet: \(what). `swiftvm wait \(alias)` waits on.", code: .timedOut)
                 }
             }
             try? await Task.sleep(for: .milliseconds(500))
@@ -841,24 +896,24 @@ extension AppModel {
         let distribution = DistributionCatalog.quickCreate.first { $0.id == parameters.distribution }
         guard isMac || distribution != nil else {
             let systems = [ControlRequest.CreateParameters.macOS, ControlRequest.CreateParameters.windows] + DistributionCatalog.quickCreate.map(\.id)
-            return .failure("Unknown system “\(parameters.distribution)”. Available: \(systems.joined(separator: ", ")).")
+            return .failure("Unknown system “\(parameters.distribution)”. Available: \(systems.joined(separator: ", ")).", code: .notFound)
         }
         if parameters.installerPath != nil {
-            return .failure("--iso is for Windows. Linux installs from its image, and macOS from a restore image (--ipsw).")
+            return .failure("--iso is for Windows. Linux installs from its image, and macOS from a restore image (--ipsw).", code: .badRequest)
         }
         let family: GuestFamily = isMac ? .macOS : .linux
         var setupScripts: [SetupScript] = []
         if let asked = parameters.scripts, !asked.isEmpty {
-            guard let distribution else { return .failure("A setup script is for a Linux image, not for macOS.") }
+            guard let distribution else { return .failure("A setup script is for a Linux image, not for macOS.", code: .badRequest) }
             do {
                 setupScripts = try SetupScriptCatalog.scripts(for: asked, distribution: distribution)
             } catch SetupScript.ScriptError.unknown(let name, let system, let available) {
-                return .failure(SetupScript.ScriptError.unknown(name: name, system: system, available: available).localizedDescription)
+                return .failure(SetupScript.ScriptError.unknown(name: name, system: system, available: available).localizedDescription, code: .notFound)
             } catch {
                 return .failure("Couldn't read the setup script: \(error.localizedDescription)")
             }
             if let desktop = setupScripts.first(where: \.requiresPassword), (parameters.password ?? "").isEmpty {
-                return .failure("\(desktop.name) is a desktop, which needs a password to sign in with at its login screen. Add --password <password>.")
+                return .failure("\(desktop.name) is a desktop, which needs a password to sign in with at its login screen. Add --password <password>.", code: .badRequest)
             }
         }
         var name = parameters.name ?? distribution?.name.replacingOccurrences(of: " LTS", with: "") ?? "macOS"
@@ -870,14 +925,14 @@ extension AppModel {
                 counter += 1
             }
         } else if isNameTaken(name) {
-            return .failure(nameTakenProblem(name))
+            return .failure(nameTakenProblem(name), code: .badRequest)
         }
         // Sizes are in GB. One typed in bytes would overflow further down.
         if let memory = parameters.memoryGigabytes, !(1...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
-            return .failure("\(memory) GB of memory is more than this Mac has. The size is in GB.")
+            return .failure("\(memory) GB of memory is more than this Mac has. The size is in GB.", code: .badRequest)
         }
         if let disk = parameters.diskGigabytes, !(1...HostResources.maximumDiskGigabytes).contains(disk) {
-            return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
+            return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.", code: .badRequest)
         }
         let cpuCount = parameters.cpuCount ?? HostResources.recommendedCPUCount(for: family)
         // What nobody asked for by number is at least what the setup scripts need.
@@ -892,40 +947,40 @@ extension AppModel {
         do {
             location = try creationFolder(at: parameters.location)
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure(error.localizedDescription, code: Self.code(of: error))
         }
         let installsSSHKey = parameters.installsSSHKey ?? true
         let usesRosetta = parameters.rosetta ?? false
         if usesRosetta {
-            guard !isMac else { return .failure("Rosetta is for Linux guests. A macOS guest runs x86-64 programs by itself.") }
+            guard !isMac else { return .failure("Rosetta is for Linux guests. A macOS guest runs x86-64 programs by itself.", code: .badRequest) }
             guard VZLinuxRosettaDirectoryShare.availability == .installed else {
-                return .failure("Rosetta isn't installed on this Mac. Install it with: softwareupdate --install-rosetta")
+                return .failure("Rosetta isn't installed on this Mac. Install it with: softwareupdate --install-rosetta", code: .unavailable)
             }
         }
 
         let usesNestedVirtualization = parameters.nestedVirtualization ?? false
         if usesNestedVirtualization {
-            guard !isMac else { return .failure("--nested-virt is for Linux guests.") }
+            guard !isMac else { return .failure("--nested-virt is for Linux guests.", code: .badRequest) }
             guard VZGenericPlatformConfiguration.isNestedVirtualizationSupported else {
-                return .failure("This Mac can't run virtual machines inside a virtual machine: that takes an M3 or later. Leave out --nested-virt.")
+                return .failure("This Mac can't run virtual machines inside a virtual machine: that takes an M3 or later. Leave out --nested-virt.", code: .unavailable)
             }
         }
 
         if isMac, parameters.acceleratesGraphics != nil {
-            return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.")
+            return .failure("--gpu and --no-gpu are for Linux guests. A macOS guest draws with this Mac's GPU by itself.", code: .badRequest)
         }
         let acceleratesGraphics = parameters.acceleratesGraphics ?? false
         if acceleratesGraphics {
-            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Use --no-gpu to use Rosetta, or leave out --rosetta to use the GPU.") }
-            guard !usesNestedVirtualization else { return .failure("A machine with --gpu runs on QEMU, which can't run virtual machines inside it. Use --no-gpu with --nested-virt, or leave out --nested-virt to use the GPU.") }
+            guard !usesRosetta else { return .failure("A machine with --gpu runs on QEMU, which has no Rosetta. Use --no-gpu to use Rosetta, or leave out --rosetta to use the GPU.", code: .badRequest) }
+            guard !usesNestedVirtualization else { return .failure("A machine with --gpu runs on QEMU, which can't run virtual machines inside it. Use --no-gpu with --nested-virt, or leave out --nested-virt to use the GPU.", code: .badRequest) }
             guard qemuProvider?.canAccelerateGraphics == true else {
-                return .failure("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.")
+                return .failure("Graphics acceleration needs QEMU with OpenGL, which this copy of SwiftVM was built without.", code: .unavailable)
             }
         }
 
         let compressesDisk = parameters.compressed ?? false
         if compressesDisk, isMac {
-            return .failure("The disk of a macOS machine can't be kept compressed: its files are compressed already.")
+            return .failure("The disk of a macOS machine can't be kept compressed: its files are compressed already.", code: .badRequest)
         }
 
         let start: () -> MachineCreation
@@ -933,10 +988,10 @@ extension AppModel {
             // A name that was asked for has to be one Linux takes. Without one, the Mac user's is made to fit.
             let userName = parameters.user ?? CloudInitSeed.userName(from: NSUserName())
             if let problem = CloudInitSeed.problem(withUserName: userName) {
-                return .failure("“\(userName)” can't be the user name. \(problem)")
+                return .failure("“\(userName)” can't be the user name. \(problem)", code: .badRequest)
             }
             if !installsSSHKey, (parameters.password ?? "").isEmpty {
-                return .failure("Without your SSH key the account needs a password, otherwise nobody can sign in. Add --password <password>.")
+                return .failure("Without your SSH key the account needs a password, otherwise nobody can sign in. Add --password <password>.", code: .badRequest)
             }
             let request = LinuxQuickCreateRequest(
                 name: name,
@@ -970,10 +1025,10 @@ extension AppModel {
             if image?.supportsProvisioning ?? true {
                 let userName = parameters.user ?? NSUserName()
                 if let problem = GuestProvisioning.problem(withUserName: userName) {
-                    return .failure("“\(userName)” can't be the account name. \(problem)")
+                    return .failure("“\(userName)” can't be the account name. \(problem)", code: .badRequest)
                 }
                 guard let password = parameters.password, !password.isEmpty else {
-                    return .failure("macOS needs a password for the account. Add --password <password>.")
+                    return .failure("macOS needs a password for the account. Add --password <password>.", code: .badRequest)
                 }
                 // Without the key nothing signs in over SSH by itself, so Remote Login stays off, as it
                 // does when the form is told the same.
@@ -1004,14 +1059,14 @@ extension AppModel {
 
     /// Installs Windows into a new machine, from Microsoft's download or the disc that `--iso` names.
     private func createWindowsMachine(_ parameters: ControlRequest.CreateParameters) async -> ControlResponse {
-        guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.") }
-        guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.") }
-        guard parameters.nestedVirtualization == nil else { return .failure("--nested-virt is for Linux guests.") }
-        guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.") }
-        guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription) }
+        guard parameters.scripts == nil else { return .failure("Setup scripts are for Linux machines.", code: .badRequest) }
+        guard parameters.rosetta == nil else { return .failure("Rosetta is for Linux guests. Windows on Arm runs x86-64 programs by itself.", code: .badRequest) }
+        guard parameters.nestedVirtualization == nil else { return .failure("--nested-virt is for Linux guests.", code: .badRequest) }
+        guard parameters.restoreImagePath == nil else { return .failure("--ipsw is for macOS. Windows installs from an ISO, with --iso.", code: .badRequest) }
+        guard qemuProvider?.isAvailable == true else { return .failure(QEMUError.notInstalled.localizedDescription, code: .unavailable) }
         let canAccelerateGraphics = qemuProvider?.canAccelerateWindowsGraphics == true
         if parameters.acceleratesGraphics == true, !canAccelerateGraphics {
-            return .failure("This copy of SwiftVM can't give Windows the Mac's GPU: its QEMU was built without Direct3D. Leave out --gpu.")
+            return .failure("This copy of SwiftVM can't give Windows the Mac's GPU: its QEMU was built without Direct3D. Leave out --gpu.", code: .unavailable)
         }
         var name = parameters.name ?? "Windows 11"
         if parameters.name == nil {
@@ -1022,20 +1077,20 @@ extension AppModel {
                 counter += 1
             }
         } else if isNameTaken(name) {
-            return .failure(nameTakenProblem(name))
+            return .failure(nameTakenProblem(name), code: .badRequest)
         }
         if let memory = parameters.memoryGigabytes, !(4...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
-            return .failure("Windows needs 4 GB of memory or more, and no more than this Mac has. The size is in GB.")
+            return .failure("Windows needs 4 GB of memory or more, and no more than this Mac has. The size is in GB.", code: .badRequest)
         }
         if let disk = parameters.diskGigabytes, !(64...HostResources.maximumDiskGigabytes).contains(disk) {
-            return .failure("A Windows disk can be from 64 GB to \(HostResources.maximumDiskGigabytes) GB. The size is in GB.")
+            return .failure("A Windows disk can be from 64 GB to \(HostResources.maximumDiskGigabytes) GB. The size is in GB.", code: .badRequest)
         }
         let userName = parameters.user ?? (WindowsSetup.problem(withUserName: NSUserName()) == nil ? NSUserName() : "user")
         if let problem = WindowsSetup.problem(withUserName: userName) {
-            return .failure("“\(userName)” can't be the account name. \(problem)")
+            return .failure("“\(userName)” can't be the account name. \(problem)", code: .badRequest)
         }
         guard let password = parameters.password, WindowsSetup.problem(withPassword: password) == nil else {
-            return .failure("Windows needs a password for the account. Add --password <password>.")
+            return .failure("Windows needs a password for the account. Add --password <password>.", code: .badRequest)
         }
         var media = WindowsInstallRequest.Media.download
         if let path = parameters.installerPath {
@@ -1043,7 +1098,7 @@ extension AppModel {
             do {
                 _ = try await Task.detached(priority: .userInitiated) { try WindowsInstaller.inspect(url) }.value
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, code: Self.code(of: error))
             }
             media = .localFile(url)
         }
@@ -1051,7 +1106,7 @@ extension AppModel {
         do {
             location = try creationFolder(at: parameters.location)
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure(error.localizedDescription, code: Self.code(of: error))
         }
         let request = WindowsInstallRequest(
             name: name,
@@ -1078,32 +1133,32 @@ extension AppModel {
               parameters.nestedVirtualization == nil,
               parameters.installsSSHKey == nil, parameters.compressed == nil, parameters.acceleratesGraphics == nil
         else {
-            return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.")
+            return .failure("A machine made from a template keeps the template's system and account. Only its name, processors, memory, disk size and folder can be set.", code: .badRequest)
         }
         templates.load()
         let template: VMTemplate
         do {
             template = try findTemplate(identifier)
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure(error.localizedDescription, code: Self.code(of: error))
         }
         let name = parameters.name ?? nameForMachine(from: template)
         if parameters.name != nil, isNameTaken(name) {
-            return .failure(nameTakenProblem(name))
+            return .failure(nameTakenProblem(name), code: .badRequest)
         }
         // Sizes are in GB. One typed in bytes would overflow further down.
         if let memory = parameters.memoryGigabytes, !(1...Int(HostResources.memorySize / HostResources.gibibyte)).contains(memory) {
-            return .failure("\(memory) GB of memory is more than this Mac has. The size is in GB.")
+            return .failure("\(memory) GB of memory is more than this Mac has. The size is in GB.", code: .badRequest)
         }
         var diskCapacity: UInt64?
         if let disk = parameters.diskGigabytes {
             guard (1...HostResources.maximumDiskGigabytes).contains(disk) else {
-                return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.")
+                return .failure("\(disk) GB is more than a disk can have (\(HostResources.maximumDiskGigabytes) GB). The size is in GB.", code: .badRequest)
             }
             let capacity = UInt64(disk) * HostResources.gibibyte
             let current = template.configuration.systemDisk?.capacity ?? 0
             guard capacity >= current else {
-                return .failure("The template's disk is \(Formatting.bytes(current)). A disk can grow, but it can't shrink.")
+                return .failure("The template's disk is \(Formatting.bytes(current)). A disk can grow, but it can't shrink.", code: .badRequest)
             }
             diskCapacity = capacity > current ? capacity : nil
         }
@@ -1111,7 +1166,7 @@ extension AppModel {
         do {
             location = try creationFolder(at: parameters.location)
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure(error.localizedDescription, code: Self.code(of: error))
         }
         let request = TemplateCreateRequest(
             name: name, template: template, cpuCount: parameters.cpuCount,
@@ -1137,7 +1192,7 @@ extension AppModel {
     /// that was asked for, and answers for all of it.
     private func finishCreating(named name: String, starting startsMachine: Bool, _ start: () -> MachineCreation) async -> ControlResponse {
         // A quit may have been agreed to while the restore image was being read.
-        guard !isQuittingUnattended else { return .failure("\(AppIdentity.current.name) is quitting.") }
+        guard !isQuittingUnattended else { return .failure("\(AppIdentity.current.name) is quitting.", code: .busy) }
         let result: Result<VirtualMachine, any Error> = await withCheckedContinuation { continuation in
             let creation = start()
             creation.onFinish = { continuation.resume(returning: $0) }
@@ -1156,7 +1211,7 @@ extension AppModel {
             }
             if startsMachine {
                 guard !isQuittingUnattended else {
-                    return .failure("“\(machine.name)” was created but not started, because \(AppIdentity.current.name) is quitting.")
+                    return .failure("“\(machine.name)” was created but not started, because \(AppIdentity.current.name) is quitting.", code: .busy)
                 }
                 await machine.start()
                 if let error = machine.lastError {
@@ -1172,9 +1227,9 @@ extension AppModel {
             creations.removeAll { $0.name == name && $0.errorMessage != nil }
             // Called off from the menu bar panel, or by `swiftvm delete` in another terminal.
             if error is CancellationError || (error as? URLError)?.code == .cancelled {
-                return .failure("Creating “\(name)” was cancelled.")
+                return .failure("Creating “\(name)” was cancelled.", code: .cancelled)
             }
-            return .failure(error.localizedDescription)
+            return .failure(error.localizedDescription, code: Self.code(of: error))
         }
     }
 
@@ -1231,15 +1286,18 @@ extension AppModel {
     }
 
     /// Waits until `creation` has put its machine in the library. Returns why not, if it doesn't.
-    private func waitForCreation(_ creation: MachineCreation, timeout: Duration) async -> String? {
+    private func waitForCreation(_ creation: MachineCreation, timeout: Duration) async -> ControlResponse? {
         let deadline = ContinuousClock.now + timeout
         while creations.contains(where: { $0.id == creation.id }) {
             if let message = creation.errorMessage {
-                return "“\(creation.name)” couldn't be created: \(message)"
+                return .failure("“\(creation.name)” couldn't be created: \(message)")
             }
             guard ContinuousClock.now < deadline else {
                 let progress = creation.fraction.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
-                return "“\(creation.name)” isn't ready yet: it is still being created, \(creation.status)\(progress). `swiftvm wait \(shellWord(creation.name))` waits on."
+                return .failure(
+                    "“\(creation.name)” isn't ready yet: it is still being created, \(creation.status)\(progress). `swiftvm wait \(shellWord(creation.name))` waits on.",
+                    code: .timedOut
+                )
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
@@ -1258,6 +1316,7 @@ extension AppModel {
 
     private struct SnapshotLookupProblem: Error {
         var message: String
+        var code: ControlErrorCode = .notFound
     }
 
     /// Finds a snapshot by UUID or by name (case-insensitive).
@@ -1270,7 +1329,7 @@ extension AppModel {
             return .failure(.init(message: "“\(machine.name)” has no snapshot named “\(identifier)”."))
         }
         guard matches.count == 1 else {
-            return .failure(.init(message: "More than one snapshot is named “\(identifier)”. Use its ID from `swiftvm snapshots`."))
+            return .failure(.init(message: "More than one snapshot is named “\(identifier)”. Use its ID from `swiftvm snapshots`.", code: .badRequest))
         }
         return .success(snapshot)
     }
@@ -1282,10 +1341,10 @@ extension AppModel {
         }
         let matches = templates.templates.filter { $0.name.lowercased() == identifier.lowercased() }
         guard let template = matches.first else {
-            throw VMError.invalidConfiguration(["No template named “\(identifier)”.", missingTemplatesFolderNote].compactMap { $0 }.joined(separator: " "))
+            throw ControlLookupError(message: ["No template named “\(identifier)”.", missingTemplatesFolderNote].compactMap { $0 }.joined(separator: " "), code: .notFound)
         }
         guard matches.count == 1 else {
-            throw VMError.invalidConfiguration("More than one template is named “\(identifier)”. Use its ID from `swiftvm templates`.")
+            throw ControlLookupError(message: "More than one template is named “\(identifier)”. Use its ID from `swiftvm templates`.", code: .badRequest)
         }
         return template
     }
@@ -1326,10 +1385,10 @@ extension AppModel {
             matches = Array(matches.prefix(1))
         }
         guard let device = matches.first else {
-            throw VMError.invalidConfiguration("No USB device “\(text)”. `swiftvm usb` lists the ones this Mac has given \(AppIdentity.current.name).")
+            throw ControlLookupError(message: "No USB device “\(text)”. `swiftvm usb` lists the ones this Mac has given \(AppIdentity.current.name).", code: .notFound)
         }
         guard matches.count == 1 else {
-            throw VMError.invalidConfiguration("More than one USB device fits “\(text)”. Use its number from `swiftvm usb`.")
+            throw ControlLookupError(message: "More than one USB device fits “\(text)”. Use its number from `swiftvm usb`.", code: .badRequest)
         }
         return device
     }
@@ -1403,8 +1462,27 @@ extension AppModel {
         return true
     }
 
-    private func summary(of machine: VirtualMachine) -> MachineSummary {
-        machine.refreshDiskUsage()
+    /// The machines and creations, as `watch` compares them. Reads only what can be observed, and changes
+    /// nothing, so that it can be observed itself.
+    func watchedWorld() -> WatchedWorld {
+        WatchedWorld(
+            machines: library.machines.map { machine in
+                var summary = summary(of: machine, refreshingDiskUsage: false)
+                summary.usage = nil
+                return WatchedWorld.Machine(
+                    summary: summary,
+                    guestTools: machine.agent.version.map { MachineDetails.GuestTools(version: $0, kernel: machine.agent.kernel) },
+                    setup: machine.agent.setup.map { .init(name: $0.name, state: $0.state.rawValue, step: $0.state == .finished ? nil : $0.step) }
+                )
+            },
+            creations: creations.map { summary(of: $0) }
+        )
+    }
+
+    private func summary(of machine: VirtualMachine, refreshingDiskUsage: Bool = true) -> MachineSummary {
+        if refreshingDiskUsage {
+            machine.refreshDiskUsage()
+        }
         let configuration = machine.configuration
         return MachineSummary(
             id: machine.id,
@@ -1431,14 +1509,14 @@ extension AppModel {
         if let creation = creation(named: identifier) {
             let name = shellWord(creation.name)
             guard let error = creation.errorMessage else {
-                return .failure("“\(creation.name)” is still being created: \(progress(of: creation)). `swiftvm wait \(name)` waits until it is ready, `swiftvm delete \(name)` cancels it.")
+                return .failure("“\(creation.name)” is still being created: \(progress(of: creation)). `swiftvm wait \(name)` waits until it is ready, `swiftvm delete \(name)` cancels it.", code: .busy)
             }
-            return .failure("“\(creation.name)” couldn't be created: \(Self.sentence(error)) `swiftvm delete \(name)` clears it, so that the name can be used again.")
+            return .failure("“\(creation.name)” couldn't be created: \(Self.sentence(error)) `swiftvm delete \(name)` clears it, so that the name can be used again.", code: .notFound)
         }
         if let away = library.unavailableMachines.first(where: { $0.name.lowercased() == lowered || $0.sshAlias == lowered }) {
-            return .failure(away.explanation)
+            return .failure(away.explanation, code: .notFound)
         }
-        return .failure("No virtual machine named “\(identifier)”.")
+        return .failure("No virtual machine named “\(identifier)”.", code: .notFound)
     }
 }
 

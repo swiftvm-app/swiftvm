@@ -100,6 +100,13 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         /// Have a macOS guest let its guest tools read the screen, by answering its question with
         /// ``ControlRequest/password``.
         case allowAccessibility = "allow-accessibility"
+        /// What changes: the answer carries the machines and creations there are, as `list` does, and then
+        /// the connection carries one ``ControlEvent`` per line until the client hangs up.
+        case watch
+        /// From `swiftvm serve`: ask the person at the Mac whether the program at
+        /// ``ControlRequest/program`` may use SwiftVM. Answered `ok` when allowed, and with the code
+        /// `not-allowed` when not.
+        case askPermission = "ask-permission"
     }
 
     public struct ForwardParameters: Codable, Sendable, Equatable {
@@ -254,6 +261,10 @@ public struct ControlRequest: Codable, Sendable, Equatable {
     public var bridgedInterfaceIdentifier: String?
     /// For `network` with mode `mac`: the network card's new address.
     public var macAddress: String?
+    /// For `ask-permission`: the path of the program that asks to use SwiftVM.
+    public var program: String?
+    /// For `ask-permission`: what the program is called.
+    public var programName: String?
 
     public init(
         command: Command, machine: String? = nil, create: CreateParameters? = nil, share: ShareParameters? = nil,
@@ -261,9 +272,12 @@ public struct ControlRequest: Codable, Sendable, Equatable {
         forward: ForwardParameters? = nil, cancelsCreations: Bool? = nil, port: UInt32? = nil, usesDisc: Bool? = nil,
         password: String? = nil, isOn: Bool? = nil, usbDevice: String? = nil, system: String? = nil, job: GuestJob? = nil,
         control: ControlCall? = nil, timeout: Double? = nil, location: String? = nil, template: String? = nil,
-        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil, macAddress: String? = nil
+        networkMode: String? = nil, bridgedInterfaceIdentifier: String? = nil, macAddress: String? = nil,
+        program: String? = nil, programName: String? = nil
     ) {
         self.command = command
+        self.program = program
+        self.programName = programName
         self.machine = machine
         self.create = create
         self.share = share
@@ -305,7 +319,7 @@ extension ControlRequest {
 extension ControlRequest.Command {
     /// Whether a successful answer is followed by a byte stream instead of further requests.
     public var opensStream: Bool {
-        self == .console || self == .vsock || self == .job || self == .control
+        self == .console || self == .vsock || self == .job || self == .control || self == .watch
     }
 }
 
@@ -626,6 +640,8 @@ public struct ControlResponse: Codable, Sendable, Equatable {
 
     public var ok: Bool
     public var error: String?
+    /// What kind of failure it was, for a program to act on. Missing from an app older than this.
+    public var code: ControlErrorCode?
     /// The machines the command touched, or all of them for `list`.
     public var machines: [MachineSummary]
     /// The machine's snapshots, for the commands that deal with them.
@@ -661,8 +677,77 @@ public struct ControlResponse: Codable, Sendable, Equatable {
         self.networkInterfaces = networkInterfaces
     }
 
-    public static func failure(_ message: String) -> ControlResponse {
-        ControlResponse(ok: false, error: message)
+    public static func failure(_ message: String, code: ControlErrorCode = .failed) -> ControlResponse {
+        var response = ControlResponse(ok: false, error: message)
+        response.code = code
+        return response
+    }
+}
+
+/// What kind of failure an answer is. The names don't change: they are API v1's error codes, which
+/// `swiftvm serve` passes on to its clients.
+public enum ControlErrorCode: String, Codable, Sendable, CaseIterable {
+    /// Something is missing from the request, or doesn't make sense.
+    case badRequest = "bad-request"
+    /// The person at the Mac didn't allow it.
+    case notAllowed = "not-allowed"
+    /// The machine doesn't let itself be given jobs or be controlled.
+    case automationOff = "automation-off"
+    /// No machine, template, snapshot, device or file goes by that name.
+    case notFound = "not-found"
+    /// The machine isn't in a state for this, such as running when it has to be shut down.
+    case wrongState = "wrong-state"
+    /// Something else is under way that this has to wait for.
+    case busy
+    case timedOut = "timed-out"
+    /// The guest tools aren't there, don't answer, or couldn't do it.
+    case guestTools = "guest-tools"
+    /// This Mac can't do it, or isn't set up for it.
+    case unavailable
+    /// It was called off.
+    case cancelled
+    /// Anything else.
+    case failed
+}
+
+/// Something that changed, as `watch` tells it: one per line after its answer.
+public struct ControlEvent: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        case machineAdded = "machine-added"
+        /// Its state, name or address changed.
+        case machineChanged = "machine-changed"
+        case machineRemoved = "machine-removed"
+        /// Its guest tools connected, went away, or moved on with setting up the guest.
+        case guestTools = "guest-tools"
+        /// A machine is being created, or its creation moved on or failed.
+        case creation
+        /// A creation is over: it worked out, and `machine-added` follows, or it was called off or cleared.
+        case creationEnded = "creation-ended"
+        /// The app started or quit. Only the service says this.
+        case app
+    }
+
+    public var event: Kind
+    /// The machine as it is now. For `machine-removed`, as it was.
+    public var machine: MachineSummary?
+    public var creation: CreationSummary?
+    /// For `guest-tools`: what the guest tools say, while they are connected.
+    public var guestTools: MachineDetails.GuestTools?
+    /// For `guest-tools`: how setting up the guest is going, while there is something to set up.
+    public var setup: MachineDetails.Setup?
+    /// For `app`.
+    public var running: Bool?
+
+    public init(
+        _ event: Kind, machine: MachineSummary? = nil, creation: CreationSummary? = nil, guestTools: MachineDetails.GuestTools? = nil,
+        setup: MachineDetails.Setup? = nil, running: Bool? = nil
+    ) {
+        self.event = event
+        self.machine = machine
+        self.creation = creation
+        self.guestTools = guestTools
+        self.setup = setup
+        self.running = running
     }
 }
 
@@ -688,5 +773,9 @@ public enum ControlPaths {
     }
 
     public static var socket: URL { applicationSupport.appending(path: "control.sock") }
+    /// Where `swiftvm serve` listens.
+    public static var serviceSocket: URL { applicationSupport.appending(path: "service.sock") }
+    /// What `swiftvm serve` says while it runs.
+    public static var serviceLog: URL { applicationSupport.appending(path: "service.log") }
     public static var sshConfig: URL { applicationSupport.appending(path: "ssh_config") }
 }

@@ -7,14 +7,14 @@ use std::time::{Duration, Instant};
 
 use swiftvm_protocol::io;
 use swiftvm_protocol::{
-    Action, Button, Command, ControlCall, ControlClient, ControlOutcome, ControlRequest, ControlStep, ControlTarget, Direction, JobFrame,
-    JobFrameKind, control_exit,
+    Action, Button, Command, ControlCall, ControlOutcome, ControlRequest, ControlStep, ControlTarget, Direction, JobFrame, JobFrameKind,
+    ServiceClient, control_exit,
 };
 
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::format::{self, LocalTime};
-use crate::util::{client, exit, fail_with, ignore_broken_pipe_signal, say, send, warn};
+use crate::util::{client, exit, fail_with, ignore_broken_pipe_signal, prints_json, say, send, set_prints_json, warn};
 
 pub const USAGE: &str = r#"Usage: swiftvm control <machine> <action> [arguments] [--then <action> [arguments]]... [--json]
 
@@ -103,10 +103,13 @@ pub fn run(arguments: &[String]) -> ! {
     if rest[0] == "allow" {
         allow(machine, &rest[1..]);
     }
-    let request = match parse(rest) {
+    let mut request = match parse(rest) {
         Ok(request) => request,
         Err(ParseError(reason)) => fail_with(&format!("{reason}\nFor what there is: swiftvm control --help"), control_exit::COULD_NOT_RUN),
     };
+    // `swiftvm --json control …` asks for the same as `--json` at the end.
+    request.prints_json |= prints_json();
+    set_prints_json(request.prints_json);
     ignore_broken_pipe_signal();
     let outcome = match call(&request.call, machine, deadline(&request.call), &client()) {
         Ok(outcome) => outcome,
@@ -126,10 +129,12 @@ pub fn deadline(call: &ControlCall) -> Duration {
 }
 
 /// Has the app do the steps, and returns how they went. The connection carries the outcome in frames.
-pub fn call(call: &ControlCall, machine: &str, timeout: Duration, client: &ControlClient) -> Result<ControlOutcome, String> {
+pub fn call(call: &ControlCall, machine: &str, timeout: Duration, client: &ServiceClient) -> Result<ControlOutcome, String> {
     let request = ControlRequest { control: Some(call.clone()), ..ControlRequest::for_machine(Command::Control, machine) };
     let (response, connection) = client.open_stream(&request).map_err(|error| error.to_string())?;
-    let Some(connection) = connection else { return Err(response.error.unwrap_or_else(|| "The app didn't take that on.".into())) };
+    let Some(connection) = connection else {
+        return Err(response.error.map(|error| error.message).unwrap_or_else(|| "The app didn't take that on.".into()));
+    };
     let mut collected = Vec::new();
     let deadline = Instant::now() + timeout;
     loop {

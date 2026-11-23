@@ -1,6 +1,9 @@
-//! The messages as the Swift app writes and reads them. The fixtures are shared with
+//! The messages of API v1, and as the Swift app writes and reads them on its control socket. The
+//! fixtures in `tests/fixtures` are shared with
 //! `Packages/SwiftVMKit/Tests/VMControlTests/WireFixtureTests.swift`, which reads them with the app's
-//! own types: a message both sides take back unchanged is one they agree on.
+//! own types: a message both sides take back unchanged is one they agree on. Those in
+//! `tests/fixtures/api-v1` are the same messages as API v1 has them, which the service turns the
+//! app's into.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
@@ -36,23 +39,63 @@ fn round_trip<T: Serialize + DeserializeOwned>(original: &Value) -> T {
     decoded
 }
 
+fn items(name: &str) -> Vec<Value> {
+    fixture(name).as_array().unwrap().clone()
+}
+
 #[test]
-fn requests_go_out_as_the_app_reads_them() {
-    let requests: Vec<ControlRequest> = fixture("requests.json").as_array().unwrap().iter().map(round_trip).collect();
-    let steps = &requests.last().unwrap().control.as_ref().unwrap().steps;
+fn requests_in_api_v1_go_to_the_app_as_it_reads_them() {
+    let requests: Vec<ControlRequest> = items("api-v1/requests.json").iter().map(round_trip).collect();
+    let steps = &requests.iter().find(|request| request.command == Command::Control).unwrap().control.as_ref().unwrap().steps;
     assert_eq!(steps[0].target, Some(ControlTarget::Number(12)));
     assert_eq!(steps[1].target, Some(ControlTarget::Point { x: 10, y: 20 }));
     assert_eq!(steps[1].to, Some(ControlTarget::Text("Trash".into())));
     assert_eq!(steps[2].target, Some(ControlTarget::Id("search".into())));
-    assert_eq!(requests[1].command, Command::ForceStop);
+    assert_eq!(requests[2].command, Command::AskPermission);
+    // What the app takes: the same requests, in its coding and without ids.
+    let for_app = items("requests.json");
+    for (index, request) in items("api-v1/requests.json").into_iter().enumerate().take(for_app.len()) {
+        let converted = api::request_for_app(request);
+        assert!(same(&converted, &for_app[index]), "\n  converted: {converted}\n  app reads: {}", for_app[index]);
+    }
 }
 
 #[test]
-fn responses_are_read_as_the_app_writes_them() {
-    let responses: Vec<ControlResponse> = fixture("responses.json").as_array().unwrap().iter().map(round_trip).collect();
-    assert_eq!(responses[1].machines[0].id.to_string(), "E621E1F8-C36C-495A-93FC-0C247A3E6E5F");
+fn the_apps_answers_reach_the_client_in_api_v1() {
+    let in_api = items("api-v1/answers.json");
+    for (index, answer) in items("responses.json").into_iter().enumerate() {
+        let converted = api::answer_from_app(answer, Some(index as u64 + 1));
+        assert!(same(&converted, &in_api[index]), "\n  converted: {converted}\n  in API v1: {}", in_api[index]);
+    }
+    let answers: Vec<ControlResponse> = in_api.iter().map(round_trip).collect();
+    assert_eq!(answers[0].error, Some(ApiError { code: ErrorCode::Failed, message: "“desk” isn't running.".into() }));
+    assert_eq!(answers[1].error.as_ref().unwrap().code, ErrorCode::NotFound);
+    assert_eq!(answers[2].machines[0].id.to_string(), "E621E1F8-C36C-495A-93FC-0C247A3E6E5F");
     // 2001-01-01 plus the seconds Swift counts from then.
-    assert_eq!(responses[3].snapshots.as_ref().unwrap()[0].created_at.unix_seconds(), 978_307_200.0 + 785_000_000.5);
+    assert_eq!(answers[4].snapshots.as_ref().unwrap()[0].created_at.unix_seconds(), 978_307_200.0 + 785_000_000.5);
+    assert!(!answers.last().unwrap().clients.as_ref().unwrap()[1].allowed);
+}
+
+#[test]
+fn the_handshake_says_what_the_service_is_or_why_not() {
+    let hello = items("api-v1/hello.json");
+    let request: ControlRequest = round_trip(&hello[0]);
+    assert_eq!((request.command, request.protocol, request.id), (Command::Hello, Some(1), Some(0)));
+    let answer: ControlResponse = round_trip(&hello[1]);
+    assert_eq!(answer.service.unwrap().protocol, api::PROTOCOL);
+    let refused: ControlResponse = round_trip(&hello[2]);
+    assert_eq!(refused.error.unwrap().code, ErrorCode::UnsupportedProtocol);
+}
+
+#[test]
+fn events_are_read_as_the_app_writes_them() {
+    let events: Vec<Event> = items("events.json").iter().map(round_trip).collect();
+    assert_eq!(events[1].machine.as_ref().unwrap().address.as_deref(), Some("192.168.64.5"));
+    assert_eq!(events[2].guest_tools.as_ref().unwrap().version.as_deref(), Some("1.4.0"));
+    assert_eq!(events.last().unwrap().event, EventKind::App);
+    // A kind of event from a later version is no reason to stop reading.
+    let later: Event = serde_json::from_value(serde_json::json!({"event": "machine-renamed"})).unwrap();
+    assert_eq!(later.event, EventKind::Unknown);
 }
 
 #[test]
@@ -137,35 +180,44 @@ fn a_frame_cut_short_or_late_is_no_frame() {
 }
 
 #[test]
-fn the_client_hands_over_the_connection_for_a_stream() {
+fn the_client_says_hello_and_hands_over_the_connection_for_a_stream() {
     let folder = std::env::temp_dir().join(format!("swiftvm-client-{}", std::process::id()));
     std::fs::create_dir_all(&folder).unwrap();
-    let socket = folder.join("control.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
+    let paths = ControlPaths { data: folder.clone() };
+    let listener = UnixListener::bind(paths.service_socket()).unwrap();
     let server = std::thread::spawn(move || {
         for _ in 0..2 {
             let (connection, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(connection.try_clone().unwrap());
+            let mut connection = connection;
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
+            let hello: ControlRequest = serde_json::from_str(&line).unwrap();
+            assert_eq!((hello.command, hello.protocol, hello.client.as_deref()), (Command::Hello, Some(1), Some("test 1")));
+            connection.write_all(b"{\"id\":0,\"ok\":true,\"machines\":[]}\n").unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
             let request: ControlRequest = serde_json::from_str(&line).unwrap();
-            let mut connection = connection;
+            assert!(request.id.is_some());
             if request.command == Command::Job {
-                connection.write_all(b"{\"ok\":true,\"machines\":[]}\n").unwrap();
+                connection.write_all(b"{\"id\":1,\"ok\":true,\"machines\":[]}\n").unwrap();
                 JobFrame::write(JobFrameKind::Output, b"streamed", connection.as_raw_fd());
             } else {
-                connection.write_all(b"{\"ok\":false,\"error\":\"No.\",\"machines\":[]}\n").unwrap();
+                connection
+                    .write_all(b"{\"id\":1,\"ok\":false,\"error\":{\"code\":\"wrong-state\",\"message\":\"No.\"},\"machines\":[]}\n")
+                    .unwrap();
             }
         }
     });
-    let client = ControlClient::new(&socket, "SwiftVM");
+    let client = ServiceClient::new(paths, "test 1", None);
     let (response, connection) = client.open_stream(&ControlRequest::for_machine(Command::Job, "desk")).unwrap();
     assert!(response.ok);
     let frame = JobFrame::read(connection.unwrap().as_raw_fd(), Some(Duration::from_secs(5))).unwrap().unwrap();
     assert_eq!(frame.payload, b"streamed");
     let (response, connection) = client.open_stream(&ControlRequest::for_machine(Command::Console, "desk")).unwrap();
-    assert_eq!((response.error.as_deref(), connection.is_none()), (Some("No."), true));
+    assert_eq!((response.error_message(), connection.is_none()), (Some("No."), true));
     server.join().unwrap();
     std::fs::remove_dir_all(&folder).unwrap();
-    assert_eq!(client.send(&ControlRequest::new(Command::List)), Err(ClientError::AppNotRunning("SwiftVM".into())));
+    // Nothing listens, and this client was told not to start a service.
+    assert!(matches!(client.send(&ControlRequest::new(Command::List)), Err(ClientError::ServiceNotRunning(_))));
 }

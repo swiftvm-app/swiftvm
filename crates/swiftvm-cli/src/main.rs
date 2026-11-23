@@ -6,6 +6,7 @@ mod exec_completion;
 mod format;
 mod guest_jobs;
 mod mcp;
+mod service;
 mod skill;
 mod stream;
 mod util;
@@ -22,7 +23,9 @@ use swiftvm_protocol::{
 };
 
 use crate::format::{LocalTime, bytes, pad, print_rows};
-use crate::util::{client, exit, fail, identity, paths, restore_broken_pipe_signal, say, send, tool_path};
+use crate::util::{
+    answer, client, exit, fail, identity, paths, prints_json, restore_broken_pipe_signal, say, send, set_prints_json, tool_path,
+};
 
 /// Every command and option, as `swiftvm help all` prints it.
 const USAGE: &str = include_str!("help/usage.txt");
@@ -81,7 +84,7 @@ fn creation_row(creation: &CreationSummary) -> Vec<String> {
     row
 }
 
-fn print_table(machines: &[MachineSummary], creations: &[CreationSummary]) {
+pub fn print_table(machines: &[MachineSummary], creations: &[CreationSummary]) {
     if machines.is_empty() && creations.is_empty() {
         say("No virtual machines.");
         return;
@@ -338,7 +341,7 @@ fn on_or_off(arguments: &[String], usage: &str) -> bool {
 }
 
 fn first_machine(request: ControlRequest) -> Option<MachineSummary> {
-    send(request).machines.into_iter().next()
+    answer(request).machines.into_iter().next()
 }
 
 fn print_note(note: Option<String>) {
@@ -473,7 +476,7 @@ fn create(arguments: &[String]) {
         })
         .collect();
     let start = parameters.start;
-    let created = send(ControlRequest { create: Some(parameters), ..ControlRequest::new(Command::Create) });
+    let created = answer(ControlRequest { create: Some(parameters), ..ControlRequest::new(Command::Create) });
     for (signal, previous) in interruptions {
         // SAFETY: puts back what was there before.
         unsafe { libc::sigaction(signal, &previous, std::ptr::null_mut()) };
@@ -496,7 +499,26 @@ fn main() {
         say(overview());
         exit(0);
     }
+    // `--json` goes before the command, or last: what is printed is then the service's answer, in API v1.
+    // exec takes it among its options, as what comes after them is the guest's command, and control
+    // reads it itself.
+    if arguments.first().map(String::as_str) == Some("--json") {
+        arguments.remove(0);
+        set_prints_json(true);
+        if arguments.is_empty() {
+            fail("--json goes with a command: swiftvm --json list");
+        }
+    }
     let command_name = arguments.remove(0);
+    // These don't answer once, and some pass their last word on, as `ssh` does to the guest's command.
+    let answers_once = !matches!(command_name.as_str(), "console" | "ssh" | "vsock" | "mcp" | "skill" | "serve" | "help" | "--help" | "-h");
+    if answers_once && !matches!(command_name.as_str(), "exec" | "control") && arguments.last().map(String::as_str) == Some("--json") {
+        arguments.pop();
+        set_prints_json(true);
+    }
+    if prints_json() && !answers_once {
+        fail(&format!("--json isn't for {command_name}, which doesn't answer once."));
+    }
 
     // `swiftvm exec --help` is `swiftvm help exec`.
     if arguments.first().is_some_and(|first| first == "--help" || first == "-h")
@@ -517,7 +539,7 @@ fn main() {
         },
 
         "list" | "ls" => {
-            let listed = send(ControlRequest::new(Command::List));
+            let listed = answer(ControlRequest::new(Command::List));
             print_table(&listed.machines, listed.creations.as_deref().unwrap_or_default());
         }
 
@@ -527,7 +549,7 @@ fn main() {
             if arguments.len() > 1 {
                 fail("Usage: swiftvm scripts [<system>]");
             }
-            let response = send(ControlRequest { system: arguments.first().cloned(), ..ControlRequest::new(Command::Scripts) });
+            let response = answer(ControlRequest { system: arguments.first().cloned(), ..ControlRequest::new(Command::Scripts) });
             print_scripts(response.setup_scripts.as_deref().unwrap_or_default());
             print_note(response.note);
         }
@@ -543,7 +565,7 @@ fn main() {
                 read_only: arguments[2..].iter().any(|option| option == "--read-only"),
             };
             let command = if command_name == "share" { Command::Share } else { Command::Unshare };
-            print_table(&send(ControlRequest { share: Some(share), ..ControlRequest::for_machine(command, machine) }).machines, &[]);
+            print_table(&answer(ControlRequest { share: Some(share), ..ControlRequest::for_machine(command, machine) }).machines, &[]);
         }
 
         "info" => {
@@ -557,10 +579,10 @@ fn main() {
                 fail("Usage: swiftvm stats [<machine>]");
             }
             if let Some(machine) = arguments.first() {
-                print_usage(&send(ControlRequest::for_machine(Command::List, machine.as_str())).machines);
+                print_usage(&answer(ControlRequest::for_machine(Command::List, machine.as_str())).machines);
             } else {
                 // The machines that hold a guest, as the app's own list has them.
-                let running: Vec<MachineSummary> = send(ControlRequest::new(Command::List))
+                let running: Vec<MachineSummary> = answer(ControlRequest::new(Command::List))
                     .machines
                     .into_iter()
                     .filter(|machine| machine.state != "stopped" && machine.state != "suspended")
@@ -593,7 +615,7 @@ fn main() {
             if !arguments.is_empty() {
                 fail("Usage: swiftvm network-interfaces");
             }
-            let response = send(ControlRequest::new(Command::NetworkInterfaces));
+            let response = answer(ControlRequest::new(Command::NetworkInterfaces));
             for interface in response.network_interfaces.iter().flatten() {
                 say(&format!("{}  {}", interface.identifier, interface.name));
             }
@@ -665,7 +687,7 @@ fn main() {
                 password,
                 ..ControlRequest::for_machine(Command::InstallTools, machine)
             };
-            let response = send(request);
+            let response = answer(request);
             if let Some(machine) = response.machines.first() {
                 print_details(machine);
             }
@@ -693,7 +715,7 @@ fn main() {
                 options.drain(index..=index + 1);
             }
             reject_unknown_options(&options, &[]);
-            print_table(&send(ControlRequest { timeout, ..ControlRequest::for_machine(Command::Wait, machine) }).machines, &[]);
+            print_table(&answer(ControlRequest { timeout, ..ControlRequest::for_machine(Command::Wait, machine) }).machines, &[]);
         }
 
         "exec" => guest_jobs::exec(&arguments),
@@ -704,7 +726,7 @@ fn main() {
 
         "usb" => {
             if arguments.is_empty() {
-                let response = send(ControlRequest::new(Command::UsbList));
+                let response = answer(ControlRequest::new(Command::UsbList));
                 print_usb_devices(response.usb_devices.as_deref().unwrap_or_default());
                 print_note(response.note);
                 exit(0);
@@ -742,7 +764,8 @@ fn main() {
             };
             reject_unknown_options(&arguments[2..], &[]);
             print_table(
-                &send(ControlRequest { disk_gigabytes: Some(gigabytes), ..ControlRequest::for_machine(Command::Resize, machine) }).machines,
+                &answer(ControlRequest { disk_gigabytes: Some(gigabytes), ..ControlRequest::for_machine(Command::Resize, machine) })
+                    .machines,
                 &[],
             );
         }
@@ -751,7 +774,7 @@ fn main() {
             let machine = require_machine(&arguments);
             let is_on = on_or_off(&arguments, "Usage: swiftvm compression <machine> on|off");
             print_table(
-                &send(ControlRequest { is_on: Some(is_on), ..ControlRequest::for_machine(Command::Compression, machine) }).machines,
+                &answer(ControlRequest { is_on: Some(is_on), ..ControlRequest::for_machine(Command::Compression, machine) }).machines,
                 &[],
             );
         }
@@ -783,14 +806,14 @@ fn main() {
                 }
                 name = Some(rest.join(" "));
             }
-            print_table(&send(ControlRequest { name, ..ControlRequest::for_machine(Command::Clone, machine) }).machines, &[]);
+            print_table(&answer(ControlRequest { name, ..ControlRequest::for_machine(Command::Clone, machine) }).machines, &[]);
         }
 
         "snapshot" => {
             let machine = require_machine(&arguments);
             let name = (arguments.len() >= 2).then(|| arguments[1..].join(" "));
             print_snapshots(
-                send(ControlRequest { name, ..ControlRequest::for_machine(Command::Snapshot, machine) })
+                answer(ControlRequest { name, ..ControlRequest::for_machine(Command::Snapshot, machine) })
                     .snapshots
                     .as_deref()
                     .unwrap_or_default(),
@@ -799,7 +822,10 @@ fn main() {
 
         "snapshots" => {
             print_snapshots(
-                send(ControlRequest::for_machine(Command::Snapshots, require_machine(&arguments))).snapshots.as_deref().unwrap_or_default(),
+                answer(ControlRequest::for_machine(Command::Snapshots, require_machine(&arguments)))
+                    .snapshots
+                    .as_deref()
+                    .unwrap_or_default(),
             );
         }
 
@@ -810,7 +836,7 @@ fn main() {
             }
             let command = if command_name == "revert" { Command::Revert } else { Command::DeleteSnapshot };
             let response =
-                send(ControlRequest { snapshot: Some(arguments[1..].join(" ")), ..ControlRequest::for_machine(command, machine) });
+                answer(ControlRequest { snapshot: Some(arguments[1..].join(" ")), ..ControlRequest::for_machine(command, machine) });
             if command == Command::Revert {
                 print_table(&response.machines, &[]);
             } else {
@@ -828,14 +854,14 @@ fn main() {
                 snapshot: Some(arguments[1].clone()),
                 ..ControlRequest::for_machine(Command::RenameSnapshot, machine)
             };
-            print_snapshots(send(request).snapshots.as_deref().unwrap_or_default());
+            print_snapshots(answer(request).snapshots.as_deref().unwrap_or_default());
         }
 
         "templates" => {
             if !arguments.is_empty() {
                 fail("Usage: swiftvm templates");
             }
-            let response = send(ControlRequest::new(Command::Templates));
+            let response = answer(ControlRequest::new(Command::Templates));
             print_templates(response.templates.as_deref().unwrap_or_default());
             print_note(response.note);
         }
@@ -850,7 +876,7 @@ fn main() {
             // A name can be several words, as a snapshot's can.
             let name = (!rest.is_empty()).then(|| rest.join(" "));
             print_templates(
-                send(ControlRequest { name, snapshot, ..ControlRequest::for_machine(Command::SaveTemplate, machine) })
+                answer(ControlRequest { name, snapshot, ..ControlRequest::for_machine(Command::SaveTemplate, machine) })
                     .templates
                     .as_deref()
                     .unwrap_or_default(),
@@ -862,7 +888,7 @@ fn main() {
                 fail("Missing template name.");
             }
             let request = ControlRequest { template: Some(arguments.join(" ")), ..ControlRequest::new(Command::DeleteTemplate) };
-            print_templates(send(request).templates.as_deref().unwrap_or_default());
+            print_templates(answer(request).templates.as_deref().unwrap_or_default());
         }
 
         "rename-template" => {
@@ -874,7 +900,7 @@ fn main() {
                 template: Some(arguments[0].clone()),
                 ..ControlRequest::new(Command::RenameTemplate)
             };
-            print_templates(send(request).templates.as_deref().unwrap_or_default());
+            print_templates(answer(request).templates.as_deref().unwrap_or_default());
         }
 
         "console" => {
@@ -891,7 +917,7 @@ fn main() {
                     let name = response.machines.first().map(|machine| machine.name.clone()).unwrap_or(machine);
                     console::run(connection.into_raw_fd(), &name, idle_timeout)
                 }
-                Ok((response, None)) => fail(response.error.as_deref().unwrap_or("The console isn't available.")),
+                Ok((response, None)) => fail(response.error_message().unwrap_or("The console isn't available.")),
                 Err(error) => fail(&error.to_string()),
             }
         }
@@ -899,11 +925,11 @@ fn main() {
         "quit" => {
             reject_unknown_options(&arguments, &["--cancel-creations"]);
             let cancels = arguments.iter().any(|argument| argument == "--cancel-creations");
-            send(ControlRequest { cancels_creations: cancels.then_some(true), ..ControlRequest::new(Command::Quit) });
+            answer(ControlRequest { cancels_creations: cancels.then_some(true), ..ControlRequest::new(Command::Quit) });
         }
 
         "ip" => {
-            let response = send(ControlRequest::for_machine(Command::List, require_machine(&arguments)));
+            let response = answer(ControlRequest::for_machine(Command::List, require_machine(&arguments)));
             match response.machines.first().and_then(|machine| machine.address.clone()) {
                 Some(address) => say(&address),
                 None => fail("The machine has no address yet."),
@@ -918,12 +944,16 @@ fn main() {
             };
             match client().open_stream(&ControlRequest { port: Some(port), ..ControlRequest::for_machine(Command::Vsock, machine) }) {
                 Ok((_, Some(connection))) => stream::run(connection.into_raw_fd()),
-                Ok((response, None)) => fail(response.error.as_deref().unwrap_or("The connection couldn't be made.")),
+                Ok((response, None)) => fail(response.error_message().unwrap_or("The connection couldn't be made.")),
                 Err(error) => fail(&error.to_string()),
             }
         }
 
         "ssh" => ssh(&arguments),
+        "serve" => service::serve(&arguments),
+        "service" => service::service(&arguments),
+        "watch" => service::watch(&arguments),
+        "clients" => service::clients(&arguments),
 
         _ => {
             // What is left takes a machine and nothing else. The USB commands are spelled `usb …`, above.
@@ -944,11 +974,19 @@ fn main() {
                 Command::SaveTemplate,
                 Command::DeleteTemplate,
                 Command::RenameTemplate,
+                Command::Watch,
+                Command::AskPermission,
+                Command::Hello,
+                Command::Clients,
+                Command::ClientsAllow,
+                Command::ClientsDeny,
+                Command::ClientsRemove,
+                Command::ServiceStop,
             ];
             let Some(command) = Command::from_raw_value(&command_name).filter(|command| !others.contains(command)) else {
                 fail(&format!("Unknown command “{command_name}”.\n\n{}", overview()))
             };
-            let response = send(ControlRequest::for_machine(command, require_machine(&arguments)));
+            let response = answer(ControlRequest::for_machine(command, require_machine(&arguments)));
             // `delete` of a machine that was still being created has no machine to show, only what it did.
             if !response.machines.is_empty() || response.note.is_none() {
                 print_table(&response.machines, &[]);

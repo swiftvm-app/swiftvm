@@ -1,0 +1,6 @@
+[
+  {"id": 0, "command": "hello", "protocol": 1, "client": "swiftvm 0.1.0"},
+  {"id": 0, "ok": true, "machines": [], "service": {"version": "0.1.0", "protocol": 1, "platform": "macos", "offers": ["watch", "hello", "clients", "clients-allow", "clients-deny", "clients-remove", "service-stop"], "app": {"running": true}}},
+  {"id": 0, "ok": false, "error": {"code": "unsupported-protocol", "message": "This service speaks version 1 of the API, and the client asked for 2."}, "machines": []},
+  {"id": 0, "ok": false, "error": {"code": "not-allowed", "message": "“Notes Robot” was refused the use of SwiftVM."}, "machines": []}
+]

@@ -1,5 +1,6 @@
 [
   {"ok": false, "error": "“desk” isn't running.", "machines": []},
+  {"ok": false, "error": "No machine is called “desk”.", "code": "not-found", "machines": []},
   {"ok": true, "machines": [
     {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "running", "system": "Ubuntu 26.04", "family": "linux", "address": "192.168.64.5", "sshAlias": "desk", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736, "usage": {"cpuPercent": 123.4, "memoryBytes": 2147483648}},
     {"id": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "win", "state": "stopped", "system": "Windows 11", "cpuCount": 2, "memorySize": 4294967296, "diskAllocated": 0, "diskCapacity": 1099511627776}

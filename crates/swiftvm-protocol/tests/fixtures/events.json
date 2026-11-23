@@ -1,0 +1,11 @@
+[
+  {"event": "machine-added", "machine": {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "stopped", "system": "Ubuntu 26.04", "family": "linux", "sshAlias": "desk", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736}},
+  {"event": "machine-changed", "machine": {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "running", "system": "Ubuntu 26.04", "family": "linux", "address": "192.168.64.5", "sshAlias": "desk", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736}},
+  {"event": "guest-tools", "machine": {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "running", "system": "Ubuntu 26.04", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736}, "guestTools": {"version": "1.4.0", "kernel": "Linux 6.17"}, "setup": {"name": "KDE Plasma", "state": "running", "step": "Installing KDE Plasma"}},
+  {"event": "guest-tools", "machine": {"id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "name": "desk", "state": "stopping", "system": "Ubuntu 26.04", "cpuCount": 4, "memorySize": 8589934592, "diskAllocated": 5368709120, "diskCapacity": 68719476736}},
+  {"event": "machine-removed", "machine": {"id": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "win", "state": "stopped", "system": "Windows 11", "cpuCount": 2, "memorySize": 4294967296, "diskAllocated": 0, "diskCapacity": 1099511627776}},
+  {"event": "creation", "creation": {"name": "new", "system": "debian-13", "status": "Downloading", "fraction": 0.25}},
+  {"event": "creation", "creation": {"name": "broken", "system": "macos", "status": "Failed", "error": "No restore image."}},
+  {"event": "creation-ended", "creation": {"name": "new", "system": "debian-13", "status": "Starting"}},
+  {"event": "app", "running": false}
+]

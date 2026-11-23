@@ -6,10 +6,11 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use swiftvm_protocol::io;
+use swiftvm_protocol::wire::{ApiError, ErrorCode};
 use swiftvm_protocol::{Id, JobEnd};
 
 use crate::guest_jobs::FAILED_STATUS;
-use crate::util::{exit, fail_with, warn};
+use crate::util::{exit, fail_with, say_json, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -56,17 +57,72 @@ impl std::fmt::Display for InvalidDescriptor {
     }
 }
 
+/// `exec --json`: how the command ended, with all it printed, as one object.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiError>,
+    /// What the command printed, as text: bytes that aren't UTF-8 are replaced.
+    pub output: String,
+    pub error_output: String,
+}
+
+/// What a command has printed so far, for `exec --json`.
+#[derive(Debug, Default)]
+struct Collected {
+    output: Vec<u8>,
+    error_output: Vec<u8>,
+}
+
 /// Writes the record, on a duplicate of the descriptor it was given, so that it never lands on a
 /// connection that was opened later under the same number.
 pub struct ExecCompletionWriter {
     descriptor: Option<RawFd>,
     /// The time-out and the reader can finish together. Each writes and exits holding this.
     finishing: Mutex<()>,
+    /// With `--json`, what the command prints is kept here, and printed with how it ended.
+    collected: Option<Mutex<Collected>>,
 }
 
 impl ExecCompletionWriter {
+    /// The longest a command run with `--json` may print, in all.
+    pub const LONGEST_COLLECTED_OUTPUT: usize = 256 << 20;
+
+    /// A writer that keeps what the command prints, for `--json`.
+    pub fn collecting(descriptor: Option<RawFd>) -> Result<Self, InvalidDescriptor> {
+        let mut writer = Self::new(descriptor)?;
+        writer.collected = Some(Mutex::new(Collected::default()));
+        Ok(writer)
+    }
+
+    pub fn is_collecting(&self) -> bool {
+        self.collected.is_some()
+    }
+
+    /// Keeps what the command printed. `false` once it has printed more than it may.
+    pub fn collect(&self, data: &[u8], is_error_output: bool) -> bool {
+        let Some(collected) = &self.collected else { return true };
+        let mut collected = collected.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if collected.output.len() + collected.error_output.len() + data.len() > Self::LONGEST_COLLECTED_OUTPUT {
+            return false;
+        }
+        if is_error_output {
+            collected.error_output.extend_from_slice(data)
+        } else {
+            collected.output.extend_from_slice(data)
+        }
+        true
+    }
+
     pub fn new(descriptor: Option<RawFd>) -> Result<Self, InvalidDescriptor> {
-        let Some(descriptor) = descriptor else { return Ok(ExecCompletionWriter { descriptor: None, finishing: Mutex::new(()) }) };
+        let Some(descriptor) = descriptor else {
+            return Ok(ExecCompletionWriter { descriptor: None, finishing: Mutex::new(()), collected: None });
+        };
         if descriptor <= libc::STDERR_FILENO {
             return Err(InvalidDescriptor);
         }
@@ -85,7 +141,7 @@ impl ExecCompletionWriter {
         unsafe {
             libc::fcntl(owned, libc::F_SETNOSIGPIPE, 1);
         }
-        Ok(ExecCompletionWriter { descriptor: Some(owned), finishing: Mutex::new(()) })
+        Ok(ExecCompletionWriter { descriptor: Some(owned), finishing: Mutex::new(()), collected: None })
     }
 
     /// Writes the record on a line of its own. A caller reads a whole line before trusting it: a write
@@ -96,9 +152,20 @@ impl ExecCompletionWriter {
         io::write_line(descriptor, &data)
     }
 
-    pub fn finish(&self, completion: &ExecCompletion, status: i32, diagnostic: Option<&str>) -> ! {
+    /// Writes the record and ends the program with `status`, saying `diagnostic` first. `code` is what
+    /// kind of failure the diagnostic is, for `--json`.
+    pub fn finish(&self, completion: &ExecCompletion, status: i32, diagnostic: Option<&str>, code: ErrorCode) -> ! {
         let _turn = self.finishing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(diagnostic) = diagnostic {
+        if let Some(collected) = &self.collected {
+            let collected = collected.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            say_json(&ExecOutcome {
+                status: completion.status,
+                signal: completion.signal,
+                error: diagnostic.map(|message| ApiError { code, message: message.to_string() }),
+                output: String::from_utf8_lossy(&collected.output).into_owned(),
+                error_output: String::from_utf8_lossy(&collected.error_output).into_owned(),
+            });
+        } else if let Some(diagnostic) = diagnostic {
             warn(&format!("swiftvm: {diagnostic}"));
         }
         let written = self.write(completion).is_ok();

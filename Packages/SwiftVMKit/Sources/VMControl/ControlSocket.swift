@@ -236,13 +236,13 @@ public final class ControlServer: @unchecked Sendable {
         defer { close(connection) }
         while let line = ControlSocket.readLine(from: connection) {
             let request = try? JSONDecoder().decode(ControlRequest.self, from: line)
-            var response = ControlResponse.failure("The request couldn't be understood.")
+            var response = ControlResponse.failure("The request couldn't be understood.", code: .badRequest)
             var stream: Stream?
             if let request, request.command.opensStream {
                 if let streamHandler {
                     (response, stream) = await streamHandler(request)
                 } else {
-                    response = .failure("This command isn't available.")
+                    response = .failure("This command isn't available.", code: .unavailable)
                 }
             } else if let request {
                 response = await handler(request)

@@ -56,7 +56,7 @@ import Testing
     }
 
     @Test func theConsoleSocketAndJobRequestsOpenAStream() {
-        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console, .vsock, .job, .control])
+        #expect(ControlRequest.Command.allCases.filter(\.opensStream) == [.console, .vsock, .job, .control, .watch])
     }
 
     @Test func aToolThatHasGoneIsNoticed() throws {

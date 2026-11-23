@@ -1,6 +1,6 @@
 [package]
 name = "swiftvm-protocol"
-description = "SwiftVM's control protocol: its messages, guest job frames, and a client for the control socket."
+description = "SwiftVM's API: its messages, guest job frames, and a client for the service's socket."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,7 @@ base64.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 unicode-segmentation.workspace = true
 uuid.workspace = true
 

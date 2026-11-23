@@ -55,9 +55,17 @@ jobs:
           key: ${{ steps.spm-cache.outputs.cache-primary-key }}
 
   linux:
-    # The swiftvm tool builds for Linux too, ahead of SwiftVM running there.
-    name: Linux
-    runs-on: ubuntu-latest
+    # The swiftvm tool and its service build and run on Linux too, on both kinds of host SwiftVM is for.
+    name: Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86-64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -65,12 +73,17 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build --locked --workspace
+
+      - name: Lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --locked --workspace

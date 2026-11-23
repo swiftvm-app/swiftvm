@@ -1,7 +1,8 @@
 # Command Line
 
-`swiftvm` does from a terminal what the app does from the menu bar. It drives
-the running app, so SwiftVM must be open.
+`swiftvm` does from a terminal what the app does from the menu bar. It talks to
+SwiftVM's service, `swiftvm serve`, which it starts when it isn't running. The
+service passes most commands on to the app, so SwiftVM must be open.
 
 ## Install
 
@@ -155,6 +156,35 @@ see [Automation](automation.md#what-works-where).
 | `delete-template <template>` | Move one to the Trash. Machines made from it stay as they are |
 
 `<template>` is a template's name, or its ID from `swiftvm templates`.
+
+## For scripts and other programs
+
+`--json`, before the command or as its last word, prints the answer as one line
+of JSON instead, also when the command fails:
+
+```bash
+swiftvm --json list
+swiftvm --json start desk     # {"id":1,"ok":false,"error":{"code":"wrong-state","message":"…"},"machines":[]}
+swiftvm exec desk --json -- uname -a   # {"status":0,"output":"Linux desk …\n","errorOutput":""}
+```
+
+A script acts on `error.code`, which doesn't change, rather than on the message.
+[API v1](../tech/api.md) lists the codes. `console`, `ssh`, `vsock` and `mcp`
+don't take `--json`.
+
+| Command | What it does |
+| --- | --- |
+| `watch` | Print what changes, a line each, until stopped: machines added, removed, starting and stopping, their guest tools, and machines being created. With `--json`, as API v1 events |
+| `clients` | List the programs that were allowed to use SwiftVM, or refused |
+| `clients allow\|deny\|remove <program>` | Decide for a program, by its full path, or forget what was decided so that it is asked again |
+| `service` | Show the service: its version, whether the app is running, and where it logs |
+| `service stop` | Stop the service. The next command starts it again |
+| `serve` | Run the service in the foreground |
+
+Other programs can talk to the service's socket directly, as described in
+[API v1](../tech/api.md). The first time one does, SwiftVM asks whether to allow
+it. **Settings… → Command Line** lists the programs that asked, and removes
+them.
 
 ## Quitting
 

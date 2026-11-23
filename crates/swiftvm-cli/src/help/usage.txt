@@ -1,4 +1,4 @@
-Usage: swiftvm <command> [arguments]
+Usage: swiftvm [--json] <command> [arguments]
 
   list                              List virtual machines, and those still being created
   info <machine>                    Show one machine in detail
@@ -129,10 +129,23 @@ Usage: swiftvm <command> [arguments]
   skill [install]                   Print what an AI agent needs to know to use this tool, or install it
                                     as a skill for agents on this Mac
   automation <machine> on|off       Let exec, cp and control work in the machine, or not
+  watch                             Print what changes, a line each, until stopped: machines added,
+                                    removed, starting and stopping, their guest tools, and machines
+                                    being created
+  clients [allow|deny|remove <program>]
+                                    List the programs that were allowed to use SwiftVM or refused, or
+                                    decide for one, by its full path. The swiftvm tool needs no permission
+  service [stop]                    Show the service this tool talks to, or stop it. Any command starts
+                                    it when it isn't running
+  serve                             Run the service here, in the foreground
   quit [--cancel-creations]         Quit the app. It refuses while a machine is running, and while one
                                     is being created unless you add --cancel-creations
 
 <machine> is a name, SSH alias or UUID. <template> is a name or UUID.
+
+--json, before the command or as its last word, prints the service's answer as one line of JSON
+instead, also when it says no. exec takes it among its options, and prints the command's status
+and output: {"status":0,"output":"…","errorOutput":"…"}. docs/tech/api.md describes the answers.
 
 exec and cp need the guest tools in the machine: swiftvm install-tools. control works without them, by
 reading the screen's pixels; with them, it knows what the screen's parts are.

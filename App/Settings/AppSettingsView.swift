@@ -112,6 +112,7 @@ struct AppSettingsView: View {
             if let link = model.commandLineToolLink {
                 commandLineSection(link)
             }
+            ClientProgramsSection()
         }
     }
 

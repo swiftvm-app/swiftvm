@@ -1,5 +1,7 @@
 [
   {"command": "list"},
+  {"command": "watch"},
+  {"command": "ask-permission", "program": "/Applications/Notes Robot.app/Contents/MacOS/Notes Robot", "programName": "Notes Robot"},
   {"command": "force-stop", "machine": "desk"},
   {"command": "create", "create": {"distribution": "ubuntu-26.04", "name": "dev box", "cpuCount": 4, "memoryGigabytes": 8, "diskGigabytes": 64, "user": "username", "password": "password", "scripts": ["gnome", "/Users/me/setup.sh"], "location": "/Volumes/External/Machines", "rosetta": true, "nestedVirtualization": false, "compressed": true, "acceleratesGraphics": false, "installsSSHKey": false, "start": true}},
   {"command": "create", "create": {"distribution": "macos", "restoreImagePath": "/Users/me/Downloads/restore.ipsw", "start": false}},

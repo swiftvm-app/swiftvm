@@ -15,11 +15,14 @@ use base64::Engine;
 use swiftvm_protocol::io::{self, is_terminal};
 use swiftvm_protocol::paths::standardized_path;
 use swiftvm_protocol::text::CopyEndpoint;
+use swiftvm_protocol::wire::{ApiError, ControlResponse, ErrorCode};
 use swiftvm_protocol::{Command, ControlRequest, Exec, GuestJob, Id, JobEnd, JobFrame, JobFrameKind};
 
 use crate::exec_completion::{ExecCompletion, ExecCompletionWriter};
 use crate::format;
-use crate::util::{client, exit, fail, fail_with, ignore_broken_pipe_signal, send};
+use crate::util::{
+    client, exit, fail, fail_with, failure_answer, ignore_broken_pipe_signal, prints_json, say_json, send, set_prints_json, tool_path,
+};
 
 /// What `swiftvm exec` exits with when it isn't the command's own status, as `timeout` and `docker` have
 /// it: the time was up, or the command never got to run.
@@ -42,7 +45,7 @@ fn open(job: GuestJob, machine: &str, failure_status: i32) -> OwnedFd {
     let request = ControlRequest { job: Some(job), ..ControlRequest::for_machine(Command::Job, machine) };
     match client().open_stream(&request) {
         Ok((_, Some(connection))) => connection,
-        Ok((response, None)) => fail_with(response.error.as_deref().unwrap_or("The guest tools didn't take that on."), failure_status),
+        Ok((response, None)) => fail_with(response.error_message().unwrap_or("The guest tools didn't take that on."), failure_status),
         Err(error) => fail_with(&error.to_string(), failure_status),
     }
 }
@@ -224,6 +227,7 @@ pub fn exec(arguments: &[String]) -> ! {
                 Ok(seconds) if seconds > 0.0 && seconds.is_finite() => timeout = Some(seconds),
                 _ => fail_with("--timeout needs a number of seconds.", FAILED_STATUS),
             },
+            "--json" => set_prints_json(true),
             "--result-fd" => match value(&mut index, option).parse::<RawFd>() {
                 Ok(descriptor) if result_descriptor.is_none() && descriptor > libc::STDERR_FILENO => result_descriptor = Some(descriptor),
                 _ => fail_with("Give --result-fd once, with a descriptor greater than 2.", FAILED_STATUS),
@@ -239,7 +243,11 @@ pub fn exec(arguments: &[String]) -> ! {
     }
 
     let job = exec_job(command, account.name, directory, (!environment.is_empty()).then_some(environment));
-    let completion = match ExecCompletionWriter::new(result_descriptor) {
+    let completion = match if prints_json() {
+        ExecCompletionWriter::collecting(result_descriptor)
+    } else {
+        ExecCompletionWriter::new(result_descriptor)
+    } {
         Ok(writer) => Arc::new(writer),
         Err(error) => fail_with(&error.to_string(), FAILED_STATUS),
     };
@@ -250,9 +258,13 @@ pub fn exec(arguments: &[String]) -> ! {
         Ok((response, None)) => completion.finish(
             &ExecCompletion::new(&machine, None, None),
             FAILED_STATUS,
-            Some(response.error.as_deref().unwrap_or("The guest tools didn't take that on.")),
+            Some(response.error_message().unwrap_or("The guest tools didn't take that on.")),
+            response.error.as_ref().map_or(ErrorCode::Failed, |error| error.code),
         ),
-        Err(error) => completion.finish(&ExecCompletion::new(&machine, None, None), FAILED_STATUS, Some(&error.to_string())),
+        Err(error) => {
+            let code = failure_answer(&error).error.map_or(ErrorCode::Failed, |error| error.code);
+            completion.finish(&ExecCompletion::new(&machine, None, None), FAILED_STATUS, Some(&error.to_string()), code)
+        }
     };
     if let Some(timeout) = timeout {
         // Leaving is what calls the command off in the guest.
@@ -264,16 +276,43 @@ pub fn exec(arguments: &[String]) -> ! {
                 &ExecCompletion::new(&machine, machine_id, None),
                 TIMED_OUT_STATUS,
                 Some(&format!("The command didn't finish in {} seconds; guest completion is unknown.", format::number(timeout))),
+                ErrorCode::TimedOut,
             );
         });
     }
     // What is typed at a terminal isn't the command's to read: it has no terminal of its own.
     let input = if is_terminal(libc::STDIN_FILENO) { Input::Empty } else { Input::From(libc::STDIN_FILENO) };
-    let end = run(connection.as_raw_fd(), input, &mut write_to(libc::STDOUT_FILENO), &mut write_to(libc::STDERR_FILENO), &|| {
-        completion.finish(&ExecCompletion::new(&machine, machine_id, None), BROKEN_PIPE_STATUS, None)
+    let (mut output, mut error_output): (Sink, Sink) = if completion.is_collecting() {
+        let (first, second) = (Arc::clone(&completion), Arc::clone(&completion));
+        let (machine_a, machine_b) = (machine.clone(), machine.clone());
+        (
+            Box::new(move |data| first.collect(data, false) || too_much_of(&first, &machine_a, machine_id)),
+            Box::new(move |data| second.collect(data, true) || too_much_of(&second, &machine_b, machine_id)),
+        )
+    } else {
+        (Box::new(write_to(libc::STDOUT_FILENO)), Box::new(write_to(libc::STDERR_FILENO)))
+    };
+    let end = run(connection.as_raw_fd(), input, &mut *output, &mut *error_output, &|| {
+        completion.finish(&ExecCompletion::new(&machine, machine_id, None), BROKEN_PIPE_STATUS, None, ErrorCode::Failed)
     });
     let status = end.status.or(end.signal.filter(|signal| (1..=127).contains(signal)).map(|signal| 128 + signal)).unwrap_or(FAILED_STATUS);
-    completion.finish(&ExecCompletion::new(&machine, machine_id, Some(&end)), status, end.shown_error().as_deref())
+    completion.finish(&ExecCompletion::new(&machine, machine_id, Some(&end)), status, end.shown_error().as_deref(), ErrorCode::GuestTools)
+}
+
+/// Where what a command prints goes: `false` when nobody takes it any more.
+type Sink = Box<dyn FnMut(&[u8]) -> bool>;
+
+/// Ends `exec --json` for a command that printed more than it may hold.
+fn too_much_of(completion: &ExecCompletionWriter, machine: &str, machine_id: Option<Id>) -> ! {
+    completion.finish(
+        &ExecCompletion::new(machine, machine_id, None),
+        FAILED_STATUS,
+        Some(&format!(
+            "The command printed more than {} MB, which --json doesn't hold.",
+            ExecCompletionWriter::LONGEST_COLLECTED_OUTPUT >> 20
+        )),
+        ErrorCode::Failed,
+    )
 }
 
 // MARK: cp
@@ -317,6 +356,9 @@ fn local_tar() -> (&'static str, &'static [&'static str]) {
 /// `swiftvm cp`: copies a file or a folder into a guest or out of one, as a tar archive that a command in
 /// the guest unpacks or packs.
 pub fn copy(arguments: &[String]) -> ! {
+    if prints_json() {
+        copy_reporting_json(arguments);
+    }
     let mut account = Account::default();
     let mut places = Vec::new();
     let mut index = 0;
@@ -356,6 +398,28 @@ pub fn copy(arguments: &[String]) -> ! {
             fail("Copying from one virtual machine to another isn't done in one step: copy to this Mac first.")
         }
     }
+}
+
+/// `cp --json`: the copy, in a process of its own as `cp` ends the one it runs in, and then how it went
+/// as an answer: `{"ok":true}`, or `ok` false with the reason.
+fn copy_reporting_json(arguments: &[String]) -> ! {
+    let finished = std::process::Command::new(tool_path())
+        .arg("cp")
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap_or_else(|error| fail(&format!("The copy couldn't start: {error}")));
+    let status = finished.status.code().unwrap_or(1);
+    if status == 0 {
+        say_json(&ControlResponse::success(None));
+    } else {
+        let said = String::from_utf8_lossy(&finished.stderr);
+        let message = said.trim().strip_prefix("swiftvm: ").unwrap_or(said.trim()).to_string();
+        say_json(&ControlResponse { error: Some(ApiError { code: ErrorCode::Failed, message }), ..ControlResponse::default() });
+    }
+    exit(status)
 }
 
 // MARK: cp in Windows

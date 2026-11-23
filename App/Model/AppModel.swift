@@ -91,6 +91,8 @@ final class AppModel {
     @ObservationIgnored private var isAddressRefreshDue = false
     /// Opens the app's windows.
     @ObservationIgnored let windows = AppWindows()
+    /// The `watch` connections from `swiftvm serve`, and what tells them of changes.
+    @ObservationIgnored let controlEvents = ControlEventHub()
     @ObservationIgnored private var controlServer: ControlServer?
     /// The last duplication that was started. Each waits for the one before it, so that two of them can't
     /// pick the same name or SSH alias for their copies.
@@ -202,6 +204,7 @@ final class AppModel {
         // If the host has joined a network that collides with ours, move before any machine starts.
         networkManager?.relocateDefaultSubnetIfNeeded()
         startControlServer()
+        startService()
         startAddressMonitor()
         startUsageMonitor()
         startUSBDevices()
