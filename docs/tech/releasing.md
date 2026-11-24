@@ -38,9 +38,9 @@ With **draft** enabled, **Release** creates a draft and still bumps
 `BETA_VERSION`, but skips Homebrew and the website. After publishing the
 draft, run **Update Homebrew Tap** and **Deploy Website** for its release tag.
 
-The website changes with a stable release and not with a push to `main` or a
-beta, so its documentation is that of the latest stable version. To change it
-in between, run **Deploy Website**.
+The website goes online on every push to `main`, through Cloudflare's builder,
+so its documentation is that of `main`. A stable release also deploys it from
+the release's tag, and **Deploy Website** deploys any ref by hand.
 
 ## Workflows
 

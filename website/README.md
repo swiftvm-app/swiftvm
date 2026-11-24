@@ -62,19 +62,18 @@ shared, is a capture of the hero at 1200 × 630.
 
 ## Deploying
 
-The site changes at two moments, and at no other:
+The site changes:
 
+- On every push to `main`. The Worker is connected to this repository under
+  **Settings → Builds**, so Cloudflare builds `main` and puts it online. The
+  pages of `docs/` online are those of `main`, released or not.
 - When **Release** publishes a stable release with **draft** off. It builds
-  the site from the release's tag, so the documentation online matches that
-  version. Publishing a draft later does not deploy the site automatically.
+  the site from the release's tag.
 - When someone runs **Deploy Website**, under **Actions** on GitHub. It builds
   the branch it is run from, or the branch, tag or commit it is given.
 
-A push to `main` leaves the site as it is, so the pages of `docs/` can
-describe what isn't released yet.
-
-The workflow gives `dist/` to Cloudflare, which serves it as a Worker that is
-nothing but those files. `wrangler.jsonc` says so. To set it up:
+Cloudflare serves `dist/` as a Worker that is nothing but those files.
+`wrangler.jsonc` says so. To set up the workflow:
 
 1. In the Cloudflare dashboard, create an API token from the
    **Edit Cloudflare Workers** template, for the account the site is in.
@@ -85,10 +84,10 @@ nothing but those files. `wrangler.jsonc` says so. To set it up:
 4. In the Worker, open **Settings → Domains & Routes**, choose
    **Add → Custom Domain**, and enter `swiftvm.app`.
 
-- Don't connect the Worker to this repository under **Settings → Builds**.
-  Connected, Cloudflare builds every push to `main` by itself. The build
-  refuses to run there, so nothing goes online, but every push then shows a
-  failed check from Cloudflare.
+5. In the Worker, open **Settings → Builds** and connect this repository,
+   with `website` as the root directory, `npm run build` as the build command
+   and `npx wrangler deploy` as the deploy command.
+
 - `.node-version` tells the workflow which Node.js to build with.
 - `src/static/_headers` sets the headers the site's files are sent with.
 

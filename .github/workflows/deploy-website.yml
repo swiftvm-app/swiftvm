@@ -1,7 +1,7 @@
 name: Deploy Website
 
-# By hand, or as the last step of a stable release. A push to main leaves the site as it is, so the pages
-# of docs/ can describe what isn't released yet.
+# By hand, or as the last step of a stable release. A push to main is deployed by Cloudflare's own builder,
+# which is connected to the repository.
 on:
   workflow_call:
     inputs:
