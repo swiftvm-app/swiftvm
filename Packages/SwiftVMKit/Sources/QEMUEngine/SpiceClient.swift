@@ -28,26 +28,15 @@ final class SpiceClient: GuestScreenInput, @unchecked Sendable {
     /// A size was asked of the guest's display: in pixels, at so many pixels to a point.
     @MainActor var onSizeRequest: ((_ width: Int, _ height: Int, _ scale: Double) -> Void)?
 
-    let directory: URL
-    var socket: URL { directory.appending(path: "display.sock") }
     @MainActor var view: NSView { runtime.view }
 
-    @MainActor init(library: URL) throws {
-        // Unix socket names are limited to 104 bytes. A private directory under /tmp leaves enough
-        // room even when the user's system temporary directory has a long name.
-        var template = Array("/tmp/swiftvm-gpu-XXXXXX".utf8CString)
-        guard let path = mkdtemp(&template) else { throw QEMUError.didNotStart(String(cString: strerror(errno))) }
-        directory = URL(fileURLWithPath: String(cString: path), isDirectory: true)
-        do {
-            var error: NSError?
-            guard let display = SVMGuestDisplayLoad(library, directory.appending(path: "display.sock"), &error) else {
-                throw error ?? QEMUError.didNotStart("The display library that comes with QEMU couldn't be loaded.") as NSError
-            }
-            runtime = display
-        } catch {
-            try? FileManager.default.removeItem(at: directory)
-            throw error
+    /// Shows the display that QEMU's SPICE server, which the service started, has at `socket`.
+    @MainActor init(library: URL, socket: URL) throws {
+        var error: NSError?
+        guard let display = SVMGuestDisplayLoad(library, socket, &error) else {
+            throw error ?? QEMUError.didNotStart("The display library that comes with QEMU couldn't be loaded.") as NSError
         }
+        runtime = display
         runtime.connected = { [weak self] error in
             MainActor.assumeIsolated {
                 guard let self, let opening = self.opening else { return }
@@ -91,7 +80,6 @@ final class SpiceClient: GuestScreenInput, @unchecked Sendable {
         opening?.resume(throwing: QEMUError.disconnected)
         opening = nil
         runtime.close()
-        try? FileManager.default.removeItem(at: directory)
     }
 
     func key(_ scancode: UInt16, down: Bool) {

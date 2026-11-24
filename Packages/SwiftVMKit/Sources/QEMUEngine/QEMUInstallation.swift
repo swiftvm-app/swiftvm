@@ -2,7 +2,8 @@ import Foundation
 
 /// The QEMU that runs Windows guests and Linux guests with graphics acceleration, as it comes inside the
 /// app: its program with the libraries it loads in `Contents/Helpers/QEMU`, and its firmware in
-/// `Contents/Resources/QEMU`.
+/// `Contents/Resources/QEMU`. `swiftvm serve` runs it (crates/swiftvm-qemu); the app looks at what it can
+/// do, and loads its display library.
 ///
 /// `scripts/build-qemu.sh` builds it and `scripts/bundle-app.sh` puts it there. A copy of the app that
 /// was built without it runs every other guest.
@@ -39,46 +40,10 @@ public struct QEMUInstallation: Sendable, Hashable {
         return .d3dMetal(framework: framework)
     }
 
-    /// `swtpm`, the TPM 2.0 that Windows guests get, which runs next to QEMU. Custom builds can leave it out.
-    public var tpmEmulator: URL { program.deletingLastPathComponent().appending(path: "swtpm") }
-
-    /// Whether Windows guests can have a TPM.
-    public var supportsTPM: Bool {
-        FileManager.default.isExecutableFile(atPath: tpmEmulator.path)
-    }
-
     var libraryDirectory: URL { program.deletingLastPathComponent().deletingLastPathComponent().appending(path: "lib") }
     var displayLibrary: URL { libraryDirectory.appending(path: "libSwiftVMDisplay.dylib") }
     var dxmtLibrary: URL { libraryDirectory.appending(path: "libdxmt-native.dylib") }
     var d3dMetalLibrary: URL { libraryDirectory.appending(path: "libd3dmetal-native.dylib") }
-
-    /// What QEMU runs with, and its render server after it, for a guest whose Direct3D goes to `directX`.
-    func environment(in directory: URL, directX: DirectXBackend = .dxmt) -> [String: String] {
-        guard acceleratesGraphics else { return [:] }
-        var environment = [
-            "ANGLE_DEFAULT_PLATFORM": "metal",
-            "RENDER_SERVER_EXEC_PATH": program.deletingLastPathComponent().appending(path: "virgl_render_server").path,
-            "XDG_RUNTIME_DIR": directory.path,
-        ]
-        // The render server takes its half for the backend's library: the Intel one for D3DMetal.
-        let library: URL
-        switch directX {
-        case .dxmt:
-            environment["NPT_BACKEND"] = "dxmt"
-            library = dxmtLibrary
-        case .d3dMetal(let framework):
-            environment["NPT_BACKEND"] = "d3dmetal"
-            environment["D3DMETAL_FRAMEWORK_PATH"] = framework.path
-            // QEMU tells the guest what the backend has before any render server runs. It looks for
-            // Direct3D 12 by loading the library itself, which it can't: the library is for Intel.
-            environment["NPT_CAPSET_D3D12"] = "1"
-            library = d3dMetalLibrary
-        }
-        for name in ["NPT_D3D11_LIBRARY_PATH", "NPT_D3D12_LIBRARY_PATH", "NPT_DXGI_LIBRARY_PATH"] {
-            environment[name] = library.path
-        }
-        return environment
-    }
 
     /// The UEFI firmware, without the padding of the machine's flash.
     public var firmware: URL { dataDirectory.appending(path: "edk2-aarch64-code.fd") }
@@ -102,19 +67,6 @@ public struct QEMUInstallation: Sendable, Hashable {
         return fileManager.isExecutableFile(atPath: program.path) && fileManager.fileExists(atPath: firmware.path)
             && fileManager.fileExists(atPath: variablesTemplate.path)
             && (!acceleratesGraphics || fileManager.fileExists(atPath: displayLibrary.path))
-    }
-
-    /// The size of the flash a machine's variables are kept in. QEMU takes nothing else.
-    static let variableStoreSize: UInt64 = 64 << 20
-
-    /// Writes a fresh store of UEFI variables for a new machine at `url`. It is as large as the flash,
-    /// and as sparse as the file system allows: nearly all of it is never written.
-    public func makeVariableStore(at url: URL) throws {
-        let template = try Data(contentsOf: variablesTemplate)
-        try template.write(to: url, options: .atomic)
-        let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        try handle.truncate(atOffset: Self.variableStoreSize)
     }
 }
 

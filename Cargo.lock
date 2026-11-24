@@ -313,7 +313,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "swiftvm-service"
+name = "swiftvm-qemu"
 version = "0.1.0"
 dependencies = [
  "libc",
@@ -321,6 +321,20 @@ dependencies = [
  "serde_json",
  "swiftvm-protocol",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "swiftvm-service"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "swiftvm-protocol",
+ "swiftvm-qemu",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

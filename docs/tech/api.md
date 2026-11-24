@@ -169,5 +169,44 @@ service](rust-migration.md) closes that socket to everything but the service.
 | --- | --- |
 | `service-stop` | Stops the service once the work under way is done |
 
-`swiftvm service` shows the service, and `swiftvm service stop` stops it. What
-the service says is in `service.log` in the data folder.
+`swiftvm service` shows the service and the machines it runs on QEMU, and
+`swiftvm service stop` stops it. What the service says is in `service.log` in
+the data folder.
+
+## Engine requests
+
+The service runs the app's QEMU machines (Windows, and Linux with graphics
+acceleration). The app hands a machine over and drives it with these requests.
+They are the app's: other clients use the commands above, and these may still
+change. Each names the machine by `machine`, its UUID.
+
+| Command | Does |
+| --- | --- |
+| `qemu-start` | Starts the machine in `bundle` with its guest held, from `savedState` if given. Descriptors ride on the request (`SCM_RIGHTS`), named in order by `descriptors`: `console`, one `network` per card, `display`. `diskSources` names the NBD socket of each compressed disk. Answers with `qemu`, then the connection carries the machine's events |
+| `qemu-attach` | The machine's events, as after `qemu-start`. Answers with `qemu`, or with `exit` for a machine that ended meanwhile |
+| `qemu-continue` | Lets a held guest run |
+| `qemu-stop` | Asks QEMU to quit, or with `force` ends it at once. With `bundle` instead of `machine`, also ends a QEMU left behind for that bundle |
+| `qemu-powerdown`, `qemu-pause`, `qemu-resume` | The power button, and pausing |
+| `qemu-save` | Saves a paused machine's memory to `path` |
+| `qemu-link` | Plugs the cable of network card `index` in or out (`connected`) |
+| `qemu-attach-image`, `qemu-detach-image` | Plugs `image` in as a USB drive, or unplugs `imageId` |
+| `qemu-connect` | A connection to `port` in the guest, over its agent's serial line. The connection carries it |
+| `qemu-frame` | A picture of the display: `frame` with its size, then `length` bytes, four a pixel, blue first |
+| `qemu-pointer`, `qemu-keys` | The machine's own mouse (`pointer`, as `GuestPointer`) and keyboard (`keys`) |
+| `qemu-list` | The machines the service runs, in `qemuMachines` |
+
+A machine's event stream ends with one line:
+
+```json
+{"event":"qemu-exited","machine":"4F2B1C9E-…","exit":{"reason":"guest-shutdown","expected":false}}
+```
+
+`reason` is QEMU's, such as `guest-shutdown` or `guest-reset`, and missing when
+QEMU crashed; `message` then says what it said last. A stream that ends without
+it means the service stopped: QEMU goes on running, and the next service takes
+it on. `qemu-attach` there.
+
+Each machine has a runtime folder for the sockets QEMU listens on, short enough
+for a socket's path: `/tmp/swiftvm-<uid>/<data folder>/<machine>/` on a Mac,
+`$XDG_RUNTIME_DIR/swiftvm/…` on Linux. Its `machine.json` is what the next
+service reads to take the machine on.

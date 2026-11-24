@@ -209,10 +209,38 @@ pub enum Command {
     ClientsRemove,
     /// Stop the service.
     ServiceStop,
+    /// From the app: start a QEMU machine, held until `qemu-continue`. Descriptors come with the request.
+    /// After the answer the connection carries the machine's `QemuEvent`s.
+    QemuStart,
+    /// From the app: the events of a QEMU machine the service runs, as after `qemu-start`.
+    QemuAttach,
+    /// Let a held QEMU machine run, from its saved state if it was started with one.
+    QemuContinue,
+    /// End a QEMU machine: ask QEMU to quit, or with `force` end it at once.
+    QemuStop,
+    /// Press a QEMU machine's power button.
+    QemuPowerdown,
+    QemuPause,
+    QemuResume,
+    /// Save a paused QEMU machine's memory to `path`.
+    QemuSave,
+    /// Plug a QEMU machine's network cable in, or pull it.
+    QemuLink,
+    QemuAttachImage,
+    QemuDetachImage,
+    /// A port in a QEMU machine's guest, over its agent's line. After the answer the connection carries
+    /// that conversation.
+    QemuConnect,
+    /// A picture of a QEMU machine's display: the answer carries `frame`, and its bytes follow.
+    QemuFrame,
+    QemuPointer,
+    QemuKeys,
+    /// The machines the service runs on QEMU, in `qemuMachines`.
+    QemuList,
 }
 
 impl Command {
-    pub const ALL: [Command; 59] = [
+    pub const ALL: [Command; 75] = [
         Command::List,
         Command::Start,
         Command::Stop,
@@ -272,6 +300,22 @@ impl Command {
         Command::ClientsDeny,
         Command::ClientsRemove,
         Command::ServiceStop,
+        Command::QemuStart,
+        Command::QemuAttach,
+        Command::QemuContinue,
+        Command::QemuStop,
+        Command::QemuPowerdown,
+        Command::QemuPause,
+        Command::QemuResume,
+        Command::QemuSave,
+        Command::QemuLink,
+        Command::QemuAttachImage,
+        Command::QemuDetachImage,
+        Command::QemuConnect,
+        Command::QemuFrame,
+        Command::QemuPointer,
+        Command::QemuKeys,
+        Command::QemuList,
     ];
 
     /// The name the command goes by on the wire.
@@ -289,7 +333,17 @@ impl Command {
 
     /// Whether a successful answer is followed by a byte stream instead of further requests.
     pub fn opens_stream(self) -> bool {
-        matches!(self, Command::Console | Command::Vsock | Command::Job | Command::Control | Command::Watch)
+        matches!(
+            self,
+            Command::Console
+                | Command::Vsock
+                | Command::Job
+                | Command::Control
+                | Command::Watch
+                | Command::QemuStart
+                | Command::QemuAttach
+                | Command::QemuConnect
+        )
     }
 
     /// Whether the service answers it itself rather than passing it on to the app.
@@ -303,7 +357,12 @@ impl Command {
                 | Command::ClientsDeny
                 | Command::ClientsRemove
                 | Command::ServiceStop
-        )
+        ) || self.is_qemu()
+    }
+
+    /// Whether it is one of the engine requests, which the service answers for the QEMU machines it runs.
+    pub fn is_qemu(self) -> bool {
+        self.raw_value().starts_with("qemu-")
     }
 }
 
@@ -520,6 +579,18 @@ pub struct ControlResponse {
     /// The answer to `clients` and the commands that change them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clients: Option<Vec<ClientProgram>>,
+    /// The QEMU machine an engine request is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qemu: Option<crate::qemu::QemuMachine>,
+    /// The answer to `qemu-list`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qemu_machines: Option<Vec<crate::qemu::QemuMachine>>,
+    /// For `qemu-attach` to a machine that has ended meanwhile: how it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit: Option<crate::qemu::QemuExit>,
+    /// The answer to `qemu-frame`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame: Option<crate::qemu::Frame>,
 }
 
 impl ControlResponse {

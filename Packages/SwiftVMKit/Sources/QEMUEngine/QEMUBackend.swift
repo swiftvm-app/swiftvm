@@ -1,38 +1,35 @@
 import AppKit
 import DiskTools
 import GuestChannel
-import ImageIO
-import UniformTypeIdentifiers
+import VMControl
 import VMCore
 import VMNetworking
 
-/// A machine running on QEMU, in a process of its own.
+/// A machine running on QEMU, which `swiftvm serve` runs for the app.
 ///
-/// QEMU starts with its guest held, and the app puts its lines in place before letting it run: the
-/// machine protocol (QMP), the display, the network and the agent's serial line. A restart of the guest
-/// ends QEMU (`-no-reboot`), and the machine starts it again, so that the next run gets the hardware the
-/// machine is configured with by then.
+/// The app hands the machine to the service with the lines that only the app can make: the serial
+/// console's, one per network card on vmnet, and the display's. The service starts QEMU with its guest
+/// held, and the app connects the display before letting it run. Everything else is a request to the
+/// service, which tells on a line of its own how QEMU ended. A restart of the guest ends QEMU, and the
+/// machine starts it again, so that the next run gets the hardware the machine is configured with by then.
+///
+/// QEMU outlives the service: a service that stops lets go of it, and the next takes it on. This backend
+/// then hears from the next one.
 @MainActor
 public final class QEMUBackend: VMBackend {
     public var eventHandler: (@MainActor (VMBackendEvent) -> Void)?
 
     private let configuration: VMConfiguration
-    private let bundle: VMBundle
-    private let installation: QEMUInstallation
-    private let adapter: DisplayAdapter
-    /// Where a Windows guest's Direct3D is drawn, with the GPU.
-    private let directX: DirectXBackend
-    private let network: VmnetNetwork?
+    private let service: QEMUService
+    private let info: QEMUMachineInfo
+    let adapter: DisplayAdapter
     private let console: SerialConsole.GuestEnd
-    /// The guest's disk is still empty and an installer disc is plugged in: the disc only starts when a
-    /// key is pressed, which nobody is there to do.
-    private let pressesKeyToBootInstaller: Bool
+    /// The app's end of the console's line, until it is relayed.
+    private var consoleEnd: Int32
 
     private let screen: RFBClient?
     private let spice: SpiceClient?
     private let input: any GuestScreenInput
-    /// QEMU's end of the display's line, until it has been handed over.
-    private var screenEnd: Int32
     private let view: GuestScreenView
     /// Older Windows 3D drivers take a new size only as they start. The guest confirms whether its
     /// active driver can resize; until then the view only reports the size that would fit sharply.
@@ -51,65 +48,47 @@ public final class QEMUBackend: VMBackend {
     private var pointer: GuestCursor?
     /// What waits for the display's next picture. See ``afterDisplayUpdate(_:)``.
     private var afterUpdate: [@MainActor () -> Void] = []
-    private var process: QEMUProcess?
-    /// The machine's TPM, while it has one.
-    private var tpm: QEMUProcess?
-    private var monitor: QMPConnection?
-    private var battery: QEMUBattery?
-    private var agentChannel: AgentChannel?
-    private var ports: [VmnetPort] = []
-    private var diskExports: [CompressedDiskExport] = []
-    /// The drives that are plugged in, which an unplug finds its devices by.
-    private var drives: [UUID: RemovableImage] = [:]
-    /// The USB port of each drive and disk on USB, by its identifier, which a restore puts them back in.
-    private var usbPorts: [UUID: Int] = [:]
+
+    private var ports: [VmnetPort]
+    private var diskExports: [CompressedDiskExport]
+    /// Follows the line the service tells how QEMU ended on.
+    private let follower: EventFollower
     /// The console's line, while it is relayed.
     private var consoleLine: ConsoleLine?
     private var isRunning = false
     /// The app has asked QEMU to end, and its end is no news.
     private var expectsExit = false
-    /// Why QEMU said the guest went down, from its `SHUTDOWN` event.
-    private var shutdownReason: String?
     private var isLaunching = false
     private var hasExited = false
-    private var isMonitorClosed = false
     private var hasReportedExit = false
-    /// Who waits for QEMU to say a device is gone, by the device's ID.
-    private var removals: [String: [CheckedContinuation<Void, Never>]] = [:]
-    /// What was asked of the mouse and the keyboard last. The next thing waits for it.
-    private var turn = Task<Void, Never> {}
+    private var isTornDown = false
 
-    init(
-        configuration: VMConfiguration, bundle: VMBundle, installation: QEMUInstallation, adapter: DisplayAdapter,
-        directX: DirectXBackend = .dxmt, network: VmnetNetwork?, console: SerialConsole.GuestEnd, pressesKeyToBootInstaller: Bool
+    private init(
+        configuration: VMConfiguration, service: QEMUService, info: QEMUMachineInfo, installation: QEMUInstallation,
+        console: SerialConsole.GuestEnd, consoleEnd: Int32, displayEnd: Int32, ports: [VmnetPort], diskExports: [CompressedDiskExport],
+        events: ServiceConnection
     ) throws {
         self.configuration = configuration
-        self.bundle = bundle
-        self.installation = installation
-        self.adapter = adapter
-        self.directX = directX
-        self.network = network
+        self.service = service
+        self.info = info
         self.console = console
-        self.pressesKeyToBootInstaller = pressesKeyToBootInstaller
+        self.consoleEnd = consoleEnd
+        self.ports = ports
+        self.diskExports = diskExports
+        follower = EventFollower(connection: events)
+        adapter = DisplayAdapter(rawValue: info.adapter.rawValue) ?? .framebuffer
         if adapter == .virtioGPU3D {
-            let spice = try SpiceClient(library: installation.displayLibrary)
+            guard let socket = info.spiceSocket else { throw QEMUError.didNotStart("The service didn't say where the display is.") }
+            let spice = try SpiceClient(library: installation.displayLibrary, socket: URL(fileURLWithPath: socket))
             self.spice = spice
             screen = nil
-            screenEnd = -1
             input = spice
             view = GuestScreenView(input: spice, content: spice.view)
         } else {
-            let (app, engine) = try Self.socketPair(SOCK_STREAM)
-            // macOS gives a local stream just 8 KB by default. A frame is several MB: give QEMU's
-            // outgoing pixels room at both ends so each scanline doesn't require a reader/writer handoff.
-            var pixelBufferSize: Int32 = 1 << 20
-            _ = setsockopt(app, SOL_SOCKET, SO_RCVBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
-            _ = setsockopt(engine, SOL_SOCKET, SO_SNDBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
-            let screen = RFBClient(descriptor: app)
+            let screen = RFBClient(descriptor: displayEnd)
             self.screen = screen
             spice = nil
             input = screen
-            screenEnd = engine
             view = GuestScreenView(client: screen)
         }
         needsDisplayResizeSupport = adapter == .virtioGPU3D && configuration.os.family == .windows
@@ -117,6 +96,113 @@ public final class QEMUBackend: VMBackend {
         // Wait for the guest to confirm that its active 3D driver can add modes.
         view.resizesGuest = adapter != .framebuffer && configuration.display.automaticallyResizes && !startsAtDisplaySize
         connectScreen()
+    }
+
+    /// Hands the machine to the service, which starts QEMU with its guest held.
+    ///
+    /// - Parameters:
+    ///   - savedState: The saved state to resume from, for a machine that is restoring.
+    ///   - network: The shared network, for cards that aren't bridged.
+    static func launch(
+        configuration: VMConfiguration, bundle: VMBundle, savedState: URL?, installation: QEMUInstallation, network: VmnetNetwork?,
+        console: SerialConsole.GuestEnd, directX: QEMURequest.DirectX?, refreshRate: Int, service: QEMUService
+    ) async throws -> QEMUBackend {
+        var exports: [CompressedDiskExport] = []
+        var ports: [VmnetPort] = []
+        // QEMU's ends, which go to the service, and the app's ends of the console's and display's lines.
+        var engineEnds: [Int32] = []
+        var appEnds: [Int32] = []
+        defer { engineEnds.forEach { close($0) } }
+        func letGo() async {
+            appEnds.forEach { close($0) }
+            for port in ports { await port.close() }
+            for export in exports { try? export.close() }
+        }
+        do {
+            var request = QEMURequest(command: "qemu-start")
+            request.bundle = bundle.url.path
+            request.savedState = savedState?.path
+            request.directX = directX
+            request.refreshRate = refreshRate
+            var diskSources: [String: String] = [:]
+            for disk in configuration.disks where disk.format == .compressed {
+                let url = bundle.diskURL(for: disk)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw VMError.invalidConfiguration("The virtual machine is missing “\(disk.fileName)”.")
+                }
+                let export = try CompressedDiskExport(diskAt: url, readOnly: disk.readOnly)
+                exports.append(export)
+                diskSources[disk.id.uuidString] = export.socketPath
+            }
+            request.diskSources = diskSources.isEmpty ? nil : diskSources
+
+            let consolePair = try socketPair()
+            appEnds.append(consolePair.app)
+            engineEnds.append(consolePair.engine)
+            var roles: [QEMURequest.Descriptor] = [.console]
+            // Every card is on the network, also one whose cable is out: QEMU drops what goes over a link
+            // that is down, and plugging the cable in is a word to QEMU.
+            for interface in configuration.networkInterfaces {
+                let pair = try VmnetPort.makeSocketPair()
+                engineEnds.append(pair.engine)
+                // The port takes over its end, also when it fails.
+                if let identifier = interface.bridgedInterfaceIdentifier {
+                    ports.append(try await VmnetPort.open(bridgedTo: identifier, peer: pair.port))
+                } else if let network {
+                    ports.append(try await VmnetPort.open(on: network, peer: pair.port))
+                } else {
+                    close(pair.port)
+                    throw QEMUError.didNotStart("The shared network isn't available.")
+                }
+                roles.append(.network)
+            }
+            // The display's one client. macOS gives a local stream just 8 KB by default, and a frame is
+            // several MB: QEMU's outgoing pixels get room at both ends.
+            let displayPair = try socketPair()
+            var pixelBufferSize: Int32 = 1 << 20
+            _ = setsockopt(displayPair.app, SOL_SOCKET, SO_RCVBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
+            _ = setsockopt(displayPair.engine, SOL_SOCKET, SO_SNDBUF, &pixelBufferSize, socklen_t(MemoryLayout<Int32>.size))
+            appEnds.append(displayPair.app)
+            engineEnds.append(displayPair.engine)
+            roles.append(.display)
+            request.descriptors = roles
+
+            let handed = engineEnds
+            let (events, answer) = try await Task.detached { () throws -> (ServiceConnection, QEMUAnswer) in
+                let connection = try service.connect()
+                do {
+                    return (connection, try connection.send(request, passing: handed))
+                } catch {
+                    connection.close()
+                    throw error
+                }
+            }.value
+            guard let info = answer.qemu else {
+                events.close()
+                throw QEMUError.didNotStart("The service didn't say what it started.")
+            }
+            do {
+                let backend = try QEMUBackend(
+                    configuration: configuration, service: service, info: info, installation: installation, console: console,
+                    consoleEnd: consolePair.app, displayEnd: displayPair.app, ports: ports, diskExports: exports, events: events
+                )
+                // The display is shown over SPICE: its VNC line is of no use.
+                if backend.adapter == .virtioGPU3D {
+                    close(displayPair.app)
+                }
+                appEnds = []
+                return backend
+            } catch {
+                events.close()
+                var stop = QEMURequest(command: "qemu-stop", machine: info.machine)
+                stop.force = true
+                _ = try? await service.call(stop)
+                throw error
+            }
+        } catch {
+            await letGo()
+            throw error
+        }
     }
 
     // MARK: Display
@@ -253,15 +339,19 @@ public final class QEMUBackend: VMBackend {
     // MARK: Host process
 
     public func hostProcessID() async -> pid_t? {
-        guard let process, !process.hasExited else { return nil }
-        return process.pid
+        hasExited ? nil : info.pid
     }
 
     // MARK: Lifecycle
 
-    public var canSaveState: Bool { adapter != .virtioGPU3D }
+    public var canSaveState: Bool { info.canSaveState }
 
-    public var canRequestStop: Bool { monitor != nil && isRunning }
+    public var canRequestStop: Bool { isRunning }
+
+    /// A request about this machine.
+    private func request(_ command: String) -> QEMURequest {
+        QEMURequest(command: command, machine: info.machine)
+    }
 
     public func start(options: VMStartOptions) async throws {
         // A desktop that doesn't follow the display's size by itself is told by the machine.
@@ -271,314 +361,72 @@ public final class QEMUBackend: VMBackend {
         isLaunching = true
         defer { isLaunching = false }
         do {
-            try await launch(restoringFrom: options.savedState)
+            relayConsole()
+            follower.start(service: service, machine: info.machine) { [weak self] exit in
+                Task { @MainActor in self?.qemuDidExit(exit) }
+            }
+            if let spice {
+                try await spice.open()
+            } else if let screen {
+                try await Task.detached { try screen.open() }.value
+            }
+            try await service.call(request("qemu-continue"))
+            isRunning = true
         } catch {
             await tearDown()
             throw error
         }
     }
 
-    private func launch(restoringFrom savedState: URL?) async throws {
-        await QEMUProcess.endLeftover(pidFile: Self.pidFile(in: bundle), machineID: configuration.id)
-        // Once its QEMU is gone, a TPM left behind ends by itself. This waits for it.
-        await TPMEmulator.endLeftover(in: bundle)
-
-        var sources: [UUID: QEMUCommandLine.DiskSource] = [:]
-        for disk in configuration.disks {
-            let url = bundle.diskURL(for: disk)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw VMError.invalidConfiguration("The virtual machine is missing “\(disk.fileName)”.")
-            }
-            switch disk.format {
-            case .raw:
-                sources[disk.id] = .file(url)
-            case .compressed:
-                let export = try CompressedDiskExport(diskAt: url, readOnly: disk.readOnly)
-                diskExports.append(export)
-                sources[disk.id] = .nbd(socketPath: export.socketPath)
-            case .asif:
-                throw VMError.invalidConfiguration(
-                    "QEMU can't read “\(disk.fileName)”, which is in Apple's sparse image format. Convert the disk to a raw or compressed one in the machine's settings."
-                )
-            }
-        }
-        for image in configuration.removableImages where !FileManager.default.fileExists(atPath: image.path) {
-            throw VMError.invalidConfiguration("The disk image “\(image.name)” can't be found. Put it back, or eject it in the virtual machine's settings.")
-        }
-        if !FileManager.default.fileExists(atPath: bundle.efiVariableStoreURL.path) {
-            try installation.makeVariableStore(at: bundle.efiVariableStoreURL)
-        }
-
-        let header = try savedState.map { try SavedStateHeader.read(from: $0) }
-        let attachesTPM = try QEMUCommandLine.attachesTPM(
-            configuration: configuration, supportsTPM: installation.supportsTPM, savedWithTPM: header?.hasTPM
-        )
-        let commandLine = QEMUCommandLine(
-            configuration: configuration, bundle: bundle, installation: installation, diskSources: sources,
-            display: adapter == .virtioGPU3D ? .virtioGPU3D : adapter == .virtioGPU ? .virtioGPU : .framebuffer, restoresSavedState: savedState != nil,
-            usbPorts: header?.usbPorts ?? [:], spiceSocket: spice?.socket, attachesTPM: attachesTPM,
-            displayRefreshRate: QEMUCommandLine.displayRefreshRate(forScreens: NSScreen.screens.map(\.maximumFramesPerSecond))
-        )
-        let arguments = try commandLine.arguments()
-        usbPorts = try commandLine.startingUSBPorts()
-
-        // The lines, in the order QEMU's command line numbers them.
-        let monitorPair = try Self.socketPair(SOCK_STREAM)
-        let consolePair = try Self.socketPair(SOCK_STREAM)
-        let agentPair = try Self.socketPair(SOCK_STREAM)
-        var networkPairs: [(port: Int32, engine: Int32)] = []
-        for _ in configuration.networkInterfaces {
-            networkPairs.append(try VmnetPort.makeSocketPair())
-        }
-        var engineEnds = [monitorPair.engine, consolePair.engine, agentPair.engine] + networkPairs.map(\.engine)
-        let appEnds = [monitorPair.app, consolePair.app, agentPair.app] + networkPairs.map(\.port)
-        // The TPM is up before QEMU, which starts it as soon as it is up itself.
-        if attachesTPM {
-            do {
-                let tpm = try TPMEmulator.launch(program: installation.tpmEmulator, bundle: bundle)
-                self.tpm = tpm.process
-                engineEnds.append(tpm.engineEnd)
-            } catch {
-                (engineEnds + appEnds).forEach { close($0) }
-                throw QEMUError.didNotStart("Its TPM couldn't be started: \(error.localizedDescription)")
-            }
-        }
-        let process: QEMUProcess
-        do {
-            process = try QEMUProcess.launch(
-                program: installation.program, arguments: arguments, descriptors: engineEnds,
-                log: bundle.logsDirectory.appending(path: "qemu.log"), pidFile: Self.pidFile(in: bundle),
-                environment: spice.map { installation.environment(in: $0.directory, directX: directX) } ?? [:]
-            )
-        } catch {
-            (engineEnds + appEnds).forEach { close($0) }
-            throw error
-        }
-        engineEnds.forEach { close($0) }
-        self.process = process
-        process.onExit = { [weak self] status in
-            Task { @MainActor in self?.processDidExit(status) }
-        }
-
-        relayConsole(over: consolePair.app)
-        let agentChannel = AgentChannel(descriptor: agentPair.app)
-        agentChannel.start()
-        self.agentChannel = agentChannel
-
-        // Every card is on the network, also one whose cable is out: QEMU drops what goes over a
-        // link that is down, and plugging the cable in is a word to QEMU.
-        for (index, pair) in networkPairs.enumerated() {
-            do {
-                if let identifier = configuration.networkInterfaces[index].bridgedInterfaceIdentifier {
-                    ports.append(try await VmnetPort.open(bridgedTo: identifier, peer: pair.port))
-                } else if let network {
-                    ports.append(try await VmnetPort.open(on: network, peer: pair.port))
-                } else {
-                    close(pair.port)
-                    throw QEMUError.didNotStart("The shared network isn't available.")
-                }
-            } catch {
-                // The port has let go of its end. The others, and the monitor's line, are nobody's yet.
-                networkPairs[(index + 1)...].forEach { close($0.port) }
-                close(monitorPair.app)
-                throw error
-            }
-        }
-
-        let monitor = QMPConnection(descriptor: monitorPair.app)
-        monitor.onEvent = { [weak self] event in
-            Task { @MainActor in self?.handle(event) }
-        }
-        // After the events it passed on, which come over the same line.
-        monitor.onClose = { [weak self] in
-            Task { @MainActor in self?.monitorDidClose() }
-        }
-        self.monitor = monitor
-        do {
-            try await monitor.open()
-        } catch {
-            throw QEMUError.didNotStart(await reason(process))
-        }
-
-        if let spice {
-            try await spice.open()
-        } else if let screen {
-            // The display's line, handed to QEMU over the machine protocol, which carries descriptors.
-            try await monitor.execute("getfd", ["fdname": "screen"], passing: screenEnd)
-            close(screenEnd)
-            screenEnd = -1
-            try await monitor.execute("add_client", ["protocol": "vnc", "fdname": "screen", "skipauth": true])
-            try await Task.detached { try screen.open() }.value
-        }
-
-        for (index, interface) in configuration.networkInterfaces.enumerated() where !interface.isConnected {
-            try await monitor.execute("set_link", ["name": .string(QEMUCommandLine.networkDeviceID(at: index)), "up": false])
-        }
-        for image in configuration.removableImages {
-            drives[image.id] = image
-        }
-
-        if let savedState {
-            try await monitor.execute("migrate-incoming", ["channels": Self.migrationChannels(to: savedState)])
-            try await waitForMigration()
-            await plugInAudio()
-        }
-        let battery = QEMUBattery { try await monitor.execute($0, $1) }
-        self.battery = battery
-        await battery.start()
-        try await monitor.execute("cont")
-        isRunning = true
-        if pressesKeyToBootInstaller, savedState == nil {
-            pressKeyForInstaller()
-        }
-    }
-
-    /// Why QEMU didn't start: what it said as it ended, which it says once it has.
-    private func reason(_ process: QEMUProcess) async -> String {
-        _ = await process.waitForExit(timeout: .seconds(2))
-        // QEMU only says it lost its TPM. The TPM says why, when that is what went wrong.
-        if let tpm, let complaint = TPMEmulator.complaint(in: tpm.lastOutput) {
-            return "Its TPM said: \(complaint)"
-        }
-        return process.complaint.map { "It said: \($0)" } ?? "It ended without saying why."
-    }
-
-    /// An installer disc's firmware asks for a key before it starts the installer, and starts from the
-    /// empty disk instead when none comes. A few seconds of pressing the space bar is that key.
-    private func pressKeyForInstaller() {
-        Task { [weak self] in
-            for _ in 0..<20 {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard let self, isRunning, let monitor else { return }
-                _ = try? await monitor.execute("send-key", ["keys": [["type": "qcode", "data": "spc"]]])
-            }
-        }
-    }
-
     public func requestStop() throws {
-        guard let monitor, isRunning else { throw VMError.notRunning(name: configuration.name) }
-        Task { _ = try? await monitor.execute("system_powerdown") }
+        guard isRunning else { throw VMError.notRunning(name: configuration.name) }
+        let request = request("qemu-powerdown")
+        let service = service
+        Task { _ = try? await service.call(request) }
     }
 
     public func stop() async throws {
-        guard let process, !process.hasExited else { return }
+        guard !hasExited else { return }
         expectsExit = true
         isRunning = false
-        _ = try? await monitor?.execute("quit")
-        if !(await process.waitForExit(timeout: .seconds(5))) {
-            process.forceKill()
-            _ = await process.waitForExit(timeout: .seconds(5))
+        do {
+            try await service.call(request("qemu-stop"))
+        } catch ServiceClientError.failed(let code, _) where code == "wrong-state" {
+            // The service doesn't run it any more: it has ended.
         }
     }
 
     public func pause() async throws {
-        guard let monitor else { throw VMError.notRunning(name: configuration.name) }
-        try await monitor.execute("stop")
+        try await service.call(request("qemu-pause"))
         isRunning = false
     }
 
     public func resume() async throws {
-        guard let monitor else { throw VMError.notRunning(name: configuration.name) }
-        await battery?.refresh()
-        try await monitor.execute("cont")
+        try await service.call(request("qemu-resume"))
         isRunning = true
     }
 
     public func saveState(to url: URL) async throws {
         guard canSaveState else { throw QEMUError.refused("The GPU cannot save running graphics state.") }
-        guard let monitor else { throw VMError.notRunning(name: configuration.name) }
-        try? FileManager.default.removeItem(at: url)
-        // QEMU can't save its USB sound card, which is unplugged for the moment saving takes.
-        if configuration.audio.outputEnabled {
-            await removeDevice(QEMUCommandLine.audioDeviceID)
-        }
-        do {
-            try await monitor.execute("migrate", ["channels": Self.migrationChannels(to: url)])
-            try await waitForMigration()
-            try SavedStateHeader(usbPorts: usbPorts, hasTPM: tpm != nil).write(into: url)
-        } catch {
-            await plugInAudio()
-            throw error
-        }
-        await plugInAudio()
+        var request = request("qemu-save")
+        request.path = url.path
+        try await service.call(request)
     }
 
-    /// Plugs the sound card in, which a machine that was saved is without.
-    private func plugInAudio() async {
-        guard configuration.audio.outputEnabled, let monitor else { return }
-        // A machine without sound is still of use.
-        _ = try? await monitor.execute("device_add", QEMUCommandLine.audioDevice)
-    }
-
-    /// Where the machine's memory goes, or comes from: a file, given by its name rather than in a URI,
-    /// which a comma in the path would cut short. It starts after the header that is SwiftVM's.
-    private static func migrationChannels(to url: URL) -> QMPValue {
-        [["channel-type": "main", "addr": [
-            "transport": "file", "filename": .string(url.path), "offset": .number(Double(SavedStateHeader.size)),
-        ]]]
-    }
-
-    private func waitForMigration() async throws {
-        guard let monitor else { throw QEMUError.disconnected }
-        while true {
-            let status = try await monitor.execute("query-migrate")
-            switch status["status"]?.string {
-            case "completed":
-                return
-            case "failed", "cancelled":
-                throw QEMUError.refused(status["error-desc"]?.string ?? "The machine's memory couldn't be saved or read back.")
-            default:
-                try await Task.sleep(for: .milliseconds(100))
-            }
-        }
-    }
-
-    // MARK: QEMU's own word
-
-    private func handle(_ event: QMPEvent) {
-        switch event.name {
-        case "SHUTDOWN":
-            shutdownReason = event.data["reason"]?.string
-        case "DEVICE_DELETED":
-            if let device = event.data["device"]?.string {
-                finishRemoval(of: device)
-            }
-        case "VSERPORT_CHANGE":
-            // The agent's side of its line was closed, or opened anew: what was open on it is gone.
-            if event.data["open"]?.bool == false {
-                agentChannel?.agentLeft()
-            } else {
-                agentChannel?.agentArrived()
-            }
-        default:
-            break
-        }
-    }
-
-    private func processDidExit(_ status: Int32) {
-        battery?.stop()
+    /// QEMU has ended, as the service says. Says why, unless the app asked for it, or a start that
+    /// fails says so itself.
+    private func qemuDidExit(_ exit: QEMUExit?) {
         isRunning = false
         hasExited = true
-        if isMonitorClosed { reportExit() }
-    }
-
-    private func monitorDidClose() {
-        isMonitorClosed = true
-        if hasExited { reportExit() }
-    }
-
-    /// Says why QEMU ended, once it has and its line has closed: what it said last, its reason for the
-    /// guest going down among it, has been heard by then. A start that fails says so itself.
-    private func reportExit() {
-        guard !expectsExit, !isLaunching, !hasReportedExit else { return }
+        guard !expectsExit, exit?.expected != true, !isLaunching, !isTornDown, !hasReportedExit else { return }
         hasReportedExit = true
-        switch shutdownReason {
+        switch exit?.reason {
         case "guest-reset":
             eventHandler?(.guestDidRestart)
         case "guest-shutdown", "guest-panic", "host-signal", "host-qmp-quit":
             eventHandler?(.guestDidStop)
         default:
-            let said = process?.complaint.map { " It said: \($0)" } ?? ""
+            let said = exit?.message.map { " It said: \($0)" } ?? ""
             eventHandler?(.stoppedWithError("QEMU stopped unexpectedly.\(said)"))
         }
     }
@@ -586,7 +434,7 @@ public final class QEMUBackend: VMBackend {
     public func invalidate() {
         // The disks a QEMU that has gone was served are let go of at once. A guest that restarted is
         // started again right away, and two that hold one disk would each reclaim space the other uses.
-        if process?.hasExited ?? true {
+        if hasExited {
             closeDiskExports()
         }
         Task { await tearDown() }
@@ -600,114 +448,60 @@ public final class QEMUBackend: VMBackend {
     /// Lets go of everything the machine had: QEMU itself if it is still there, its lines, the network
     /// ports and the disks the app served it.
     private func tearDown() async {
-        battery?.stop()
-        battery = nil
+        guard !isTornDown else { return }
+        isTornDown = true
         isRunning = false
         expectsExit = true
-        if let process, !process.hasExited {
-            process.forceKill()
-            _ = await process.waitForExit(timeout: .seconds(5))
+        if !hasExited {
+            var stop = request("qemu-stop")
+            stop.force = true
+            do {
+                try await service.call(stop)
+            } catch {
+                NSLog("SwiftVM: QEMU of “\(configuration.name)” couldn't be stopped: \(error.localizedDescription)")
+            }
         }
-        // It ends by itself once QEMU has: this is for a start that failed before QEMU was there.
-        if let tpm, !tpm.hasExited, !(await tpm.waitForExit(timeout: .seconds(2))) {
-            tpm.forceKill()
-            _ = await tpm.waitForExit(timeout: .seconds(5))
-        }
-        tpm = nil
-        monitor?.close()
-        monitor = nil
+        follower.stop()
         screen?.close()
         spice?.close()
-        if screenEnd >= 0 {
-            close(screenEnd)
-            screenEnd = -1
-        }
-        agentChannel?.close()
-        agentChannel = nil
         consoleLine?.shutdown()
         consoleLine = nil
+        if consoleEnd >= 0 {
+            close(consoleEnd)
+            consoleEnd = -1
+        }
         let ports = ports
         self.ports = []
         for port in ports {
             await port.close()
         }
         closeDiskExports()
-        for waiting in removals.values.joined() { waiting.resume() }
-        removals = [:]
     }
 
     // MARK: Devices
 
     public func setNetworkInterface(_ id: UUID, connected: Bool) throws {
-        guard let index = configuration.networkInterfaces.firstIndex(where: { $0.id == id }), let monitor else { return }
-        Task { _ = try? await monitor.execute("set_link", ["name": .string(QEMUCommandLine.networkDeviceID(at: index)), "up": .bool(connected)]) }
+        guard let index = configuration.networkInterfaces.firstIndex(where: { $0.id == id }) else { return }
+        var request = request("qemu-link")
+        request.index = index
+        request.connected = connected
+        let service = service
+        Task { _ = try? await service.call(request) }
     }
 
     /// Shared folders reach a Windows guest over the network, through its agent: QEMU has no part in it.
     public func setSharedFolders(_ folders: [SharedFolder]) throws {}
 
     public func attachRemovableImage(_ image: RemovableImage) async throws {
-        guard let monitor else { throw VMError.notRunning(name: configuration.name) }
-        guard let port = QEMUCommandLine.freeUSBPort(besides: usbPorts.values) else {
-            throw VMError.invalidConfiguration("“\(configuration.name)” has no free USB port for “\(image.name)”. Eject another drive first.")
-        }
-        try await monitor.execute("blockdev-add", QEMUCommandLine.imageNode(for: image))
-        do {
-            for device in QEMUCommandLine.imageDevices(for: image, port: port) {
-                try await monitor.execute("device_add", device)
-            }
-            // A drive for discs that is plugged in while the guest runs waits for its disc before the
-            // guest sees it, and is told when it has one.
-            if RemovableImage.isDiscImage(image.url) {
-                try await monitor.execute("qom-set", [
-                    "path": .string("/machine/peripheral/" + QEMUCommandLine.imageDeviceID(for: image)),
-                    "property": "attached", "value": true,
-                ])
-            }
-        } catch {
-            _ = try? await monitor.execute("device_del", ["id": .string(QEMUCommandLine.imageDeviceID(for: image))])
-            _ = try? await monitor.execute("blockdev-del", ["node-name": .string(QEMUCommandLine.imageNodeName(for: image.id))])
-            throw error
-        }
-        drives[image.id] = image
-        usbPorts[image.id] = port
+        var request = request("qemu-attach-image")
+        request.image = QEMURequest.Image(id: image.id, path: image.path, readOnly: image.readOnly)
+        try await service.call(request)
     }
 
     public func detachRemovableImage(_ id: UUID) async throws {
-        guard let monitor, let image = drives[id] else { return }
-        await removeDevice(QEMUCommandLine.imageDeviceID(for: image))
-        _ = try? await monitor.execute("blockdev-del", ["node-name": .string(QEMUCommandLine.imageNodeName(for: id))])
-        drives[id] = nil
-        usbPorts[id] = nil
-    }
-
-    /// Unplugs a device, and returns once QEMU says the guest has let go of it, or after a while.
-    private func removeDevice(_ device: String) async {
-        guard let monitor else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // Who asks for it while it is on its way waits for the same.
-            let isUnderWay = removals[device] != nil
-            removals[device, default: []].append(continuation)
-            guard !isUnderWay else { return }
-            Task { [weak self] in
-                do {
-                    try await monitor.execute("device_del", ["id": .string(device)])
-                } catch {
-                    self?.finishRemoval(of: device)
-                }
-            }
-            // A guest that never lets go doesn't keep anyone waiting for long, nor the machine with them.
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                self?.finishRemoval(of: device)
-            }
-        }
-    }
-
-    private func finishRemoval(of device: String) {
-        for waiting in removals.removeValue(forKey: device) ?? [] {
-            waiting.resume()
-        }
+        var request = request("qemu-detach-image")
+        request.imageId = id
+        try await service.call(request)
     }
 
     public func setCapturesSystemKeys(_ capturesSystemKeys: Bool) {
@@ -717,14 +511,30 @@ public final class QEMUBackend: VMBackend {
     // MARK: Guest socket
 
     public func connectToGuest(port: UInt32) async throws -> FileHandle {
-        guard let agentChannel else { throw VMError.notRunning(name: configuration.name) }
-        return try await agentChannel.connect(port: port)
+        guard !hasExited else { throw VMError.notRunning(name: configuration.name) }
+        var request = request("qemu-connect")
+        request.port = port
+        let service = service
+        let descriptor = try await Task.detached {
+            let connection = try service.connect()
+            do {
+                try connection.send(request)
+                return connection.detach()
+            } catch {
+                connection.close()
+                throw error
+            }
+        }.value
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 
     // MARK: The console
 
     /// Passes bytes between the console's line to QEMU and the machine's serial console.
-    private func relayConsole(over line: Int32) {
+    private func relayConsole() {
+        guard consoleEnd >= 0 else { return }
+        let line = consoleEnd
+        consoleEnd = -1
         let consoleLine = ConsoleLine(line)
         self.consoleLine = consoleLine
         let input = console.input.fileDescriptor
@@ -774,169 +584,132 @@ public final class QEMUBackend: VMBackend {
             guard let frame = ScreenFrame(png: try await spice.screenshot()) else { throw MachineDeskError.nothingShown }
             return frame
         }
-        guard let picture = screen?.picture else { throw MachineDeskError.nothingShown }
-        return withExtendedLifetime(picture) {
-            let surface = picture.surface
-            surface.lock(options: .readOnly, seed: nil)
-            defer { surface.unlock(options: .readOnly, seed: nil) }
-            return ScreenFrame(
-                width: picture.width, height: picture.height, bytesPerRow: surface.bytesPerRow,
-                pixels: Data(bytes: surface.baseAddress, count: surface.bytesPerRow * surface.height)
-            )
-        }
+        let request = request("qemu-frame")
+        let service = service
+        return try await Task.detached {
+            let connection = try service.connect()
+            defer { connection.close() }
+            let answer: QEMUAnswer
+            do {
+                answer = try connection.send(request)
+            } catch ServiceClientError.failed(let code, _) where code == "unavailable" {
+                throw MachineDeskError.nothingShown
+            }
+            guard let frame = answer.frame, let pixels = connection.read(count: frame.length) else { throw MachineDeskError.nothingShown }
+            return ScreenFrame(width: frame.width, height: frame.height, bytesPerRow: frame.bytesPerRow, pixels: pixels)
+        }.value
     }
 
-    /// How long the guest gets to take in what the mouse did before the next thing.
-    private static let mousePause: Duration = .milliseconds(20)
-    /// How long the guest gets to take in a key before the next. Keys typed over SPICE come in bunches,
-    /// and a guest's USB keyboard that gets them faster than it reports them loses some: at a login
-    /// screen, the password typed is then not the one it gets.
-    private static let wheelPause: Duration = .milliseconds(12)
-    private var keyPause: Duration { spice == nil ? .milliseconds(12) : .milliseconds(40) }
-
     public func pointer(_ request: GuestPointer, guestTurnsWheel: Bool) async throws {
-        let size: (width: Int, height: Int)
-        if let spice, spice.size.width > 0, spice.size.height > 0 {
-            size = (Int(spice.size.width), Int(spice.size.height))
-        } else if let picture = screen?.picture {
-            size = (picture.width, picture.height)
-        } else {
-            throw MachineDeskError.nothingShown
+        var pointer = self.request("qemu-pointer")
+        pointer.pointer = request
+        // The service can't take a picture of a display the guest draws with the GPU, to learn its size.
+        if let spice {
+            guard spice.size.width > 0, spice.size.height > 0 else { throw MachineDeskError.nothingShown }
+            pointer.size = QEMURequest.Size(width: Int(spice.size.width), height: Int(spice.size.height))
         }
-        func place(_ x: Int, _ y: Int) throws -> (Int, Int) {
-            guard (0..<size.width).contains(x), (0..<size.height).contains(y) else {
-                throw MachineDeskError.invalid("(\(x), \(y)) isn't on the screen, which is \(size.width) by \(size.height).")
-            }
-            return (x, y)
-        }
-        let start = try place(request.x, request.y)
-        let button: RFBClient.Buttons = switch request.button ?? .left {
-        case .left: .left
-        case .right: .right
-        case .middle: .middle
-        }
-        let screen = input
-        try await inTurn {
-            func move(_ point: (Int, Int), _ buttons: RFBClient.Buttons) async throws {
-                screen.pointer(x: point.0, y: point.1, buttons: buttons)
-                try await Task.sleep(for: Self.mousePause)
-            }
-            // From a pixel aside, so that the guest sees the pointer arrive where it is put.
-            let aside = (start.0 + (start.0 + 2 < size.width ? 2 : -2), start.1)
-            switch request.action {
-            case .move:
-                try await move(start, [])
-            case .click:
-                let count = request.count ?? 1
-                guard (1...3).contains(count) else { throw MachineDeskError.invalid("A click is one, two or three clicks.") }
-                try await move(aside, [])
-                try await move(start, [])
-                for _ in 1...count {
-                    try await move(start, button)
-                    try await move(start, [])
-                }
-            case .drag:
-                guard let toX = request.toX, let toY = request.toY else { throw MachineDeskError.invalid("The request doesn't say where the drag ends.") }
-                let end = try place(toX, toY)
-                try await move(aside, [])
-                try await move(start, [])
-                try await move(start, button)
-                let steps = 12
-                for step in 1...steps {
-                    let part = Double(step) / Double(steps)
-                    try await move((start.0 + Int(Double(end.0 - start.0) * part), start.1 + Int(Double(end.1 - start.1) * part)), button)
-                }
-                try await move(end, [])
-            case .scroll:
-                let (deltaX, deltaY) = (request.deltaX ?? 0, request.deltaY ?? 0)
-                guard abs(deltaX) <= 100, abs(deltaY) <= 100 else { throw MachineDeskError.invalid("That is further than the wheel is turned in one go.") }
-                try await move(start, [])
-                // Positive is down and to the right. Windows turns its wheel as it is turned.
-                for notch in 0..<max(abs(deltaX), abs(deltaY)) {
-                    var wheel: RFBClient.Buttons = []
-                    if notch < abs(deltaY) { wheel.insert(deltaY > 0 ? .wheelDown : .wheelUp) }
-                    if notch < abs(deltaX) { wheel.insert(deltaX > 0 ? .wheelRight : .wheelLeft) }
-                    screen.pointer(x: start.0, y: start.1, buttons: wheel)
-                    screen.pointer(x: start.0, y: start.1, buttons: [])
-                    try await Task.sleep(for: Self.wheelPause)
-                }
-            }
-        }
+        try await service.call(pointer)
     }
 
     public func keys(_ request: GuestJob.Keys) async throws {
-        // Everything is looked up before anything is typed: half of it is worse than none.
-        var presses: [MacKeys.Press] = []
-        for character in request.text ?? "" {
-            guard let press = MacKeys.press(typing: character) else { throw MachineDeskError.notOnTheKeyboard(character) }
-            presses.append(press)
-        }
-        do {
-            presses += try (request.keys ?? []).map(MacKeys.press(for:))
-        } catch let problem as MacKeys.NoSuchKey {
-            throw MachineDeskError.invalid(problem.message)
-        }
-        guard !presses.isEmpty else { throw MachineDeskError.invalid("The request has neither text to type nor keys to press.") }
-        let codes = try presses.map { press in
-            do {
-                return try PCKeys.scancodes(for: press)
-            } catch {
-                throw MachineDeskError.invalid("The machine's keyboard has no such key.")
-            }
-        }
-        let screen = input
-        let pause = keyPause
-        try await inTurn {
-            for (held, key) in codes {
-                for code in held {
-                    screen.key(code, down: true)
-                    try await Task.sleep(for: pause)
-                }
-                if let key {
-                    screen.key(key, down: true)
-                    try await Task.sleep(for: pause)
-                    screen.key(key, down: false)
-                    try await Task.sleep(for: pause)
-                }
-                for code in held.reversed() {
-                    screen.key(code, down: false)
-                    try await Task.sleep(for: pause)
-                }
-            }
-        }
-    }
-
-    private func inTurn(_ work: @escaping @MainActor () async throws -> Void) async throws {
-        let before = turn
-        let mine = Task { @MainActor in
-            await before.value
-            try await work()
-        }
-        turn = Task { _ = try? await mine.value }
-        try await mine.value
+        var keys = self.request("qemu-keys")
+        keys.keys = request
+        try await service.call(keys)
     }
 
     // MARK: Helpers
 
-    /// Ends the QEMU that a machine was left running with by an app that stopped without stopping it,
-    /// in a crash. A machine on the Virtualization framework ends with the app; one on QEMU would run on
-    /// unseen, writing to its disk.
-    public static func endLeftover(of configuration: VMConfiguration, in bundle: VMBundle) async {
-        await QEMUProcess.endLeftover(pidFile: pidFile(in: bundle), machineID: configuration.id)
-    }
-
-    static func pidFile(in bundle: VMBundle) -> URL {
-        bundle.url.appending(path: "qemu.pid")
-    }
-
-    private static func socketPair(_ type: Int32) throws -> (app: Int32, engine: Int32) {
+    private static func socketPair() throws -> (app: Int32, engine: Int32) {
         var ends: [Int32] = [0, 0]
-        guard socketpair(AF_UNIX, type, 0, &ends) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         for end in ends {
             _ = fcntl(end, F_SETNOSIGPIPE, 1)
             _ = fcntl(end, F_SETFD, FD_CLOEXEC)
         }
         return (ends[0], ends[1])
+    }
+}
+
+/// Reads the line the service tells how QEMU ended on. When the service stops before QEMU has, the line
+/// ends without that: the next service has taken the machine on, and is asked to tell instead.
+private final class EventFollower: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connection: ServiceConnection?
+    private var isStopped = false
+
+    init(connection: ServiceConnection) {
+        self.connection = connection
+    }
+
+    /// Starts following, on a thread of its own. `ended` is called once, with how QEMU ended, or `nil`
+    /// when nobody can tell any more.
+    func start(service: QEMUService, machine: UUID, ended: @escaping @Sendable (QEMUExit?) -> Void) {
+        Thread.detachNewThread { [self] in
+            while let connection = lock.withLock({ isStopped ? nil : self.connection }) {
+                while let line = connection.readLine() {
+                    guard let event = try? JSONDecoder().decode(QEMUEvent.self, from: line), event.event == "qemu-exited" else { continue }
+                    connection.close()
+                    ended(event.exit)
+                    return
+                }
+                connection.close()
+                switch reattach(service: service, machine: machine) {
+                case .following(let next):
+                    let isStillWanted = lock.withLock {
+                        guard !isStopped else { return false }
+                        self.connection = next
+                        return true
+                    }
+                    if !isStillWanted { next.close() }
+                case .ended(let exit):
+                    ended(exit)
+                    return
+                case .stopped:
+                    return
+                }
+            }
+        }
+    }
+
+    private enum Reattached {
+        case following(ServiceConnection)
+        case ended(QEMUExit?)
+        case stopped
+    }
+
+    /// Asks the next service about the machine, while it starts.
+    private func reattach(service: QEMUService, machine: UUID) -> Reattached {
+        for _ in 0..<40 {
+            guard !lock.withLock({ isStopped }) else { return .stopped }
+            do {
+                let connection = try service.connect()
+                do {
+                    let answer = try connection.send(QEMURequest(command: "qemu-attach", machine: machine))
+                    if let exit = answer.exit {
+                        connection.close()
+                        return .ended(exit)
+                    }
+                    return .following(connection)
+                } catch {
+                    connection.close()
+                    throw error
+                }
+            } catch ServiceClientError.failed {
+                // It doesn't run the machine: QEMU ended while no service heard how.
+                return .ended(nil)
+            } catch {
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+        }
+        return .ended(nil)
+    }
+
+    func stop() {
+        let connection = lock.withLock {
+            isStopped = true
+            return self.connection
+        }
+        connection?.shutdown()
     }
 }
 

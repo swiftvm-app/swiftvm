@@ -1,0 +1,24 @@
+{
+  "requests": [
+    {"id": 1, "command": "qemu-start", "bundle": "/Users/me/VMs/Windows, 11.swiftvm", "savedState": "/Users/me/VMs/Windows, 11.swiftvm/state.vzvmsave", "directX": {"backend": "d3dmetal", "framework": "/Users/me/Library/Application Support/SwiftVM/D3DMetal/D3DMetal.framework"}, "refreshRate": 120, "diskSources": {"0B6A8C42-1D3E-4F50-9A7B-2C4D6E8F0A1B": "/tmp/swiftvm-nbd-1/disk.sock"}, "descriptors": ["console", "network", "network", "display"]},
+    {"id": 2, "command": "qemu-stop", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "force": true},
+    {"id": 3, "command": "qemu-link", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "index": 1, "connected": false},
+    {"id": 4, "command": "qemu-attach-image", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "image": {"id": "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D", "path": "/Downloads/drivers.iso", "readOnly": true}},
+    {"id": 5, "command": "qemu-detach-image", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "imageId": "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D"},
+    {"id": 6, "command": "qemu-connect", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "port": 7000},
+    {"id": 7, "command": "qemu-pointer", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "pointer": {"action": "drag", "x": 10, "y": 20, "button": "right", "toX": 300, "toY": 400}, "size": {"width": 1920, "height": 1080}},
+    {"id": 8, "command": "qemu-keys", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "keys": {"text": "password", "keys": ["Return", "cmd+r"]}},
+    {"id": 9, "command": "qemu-save", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "path": "/Users/me/VMs/Windows, 11.swiftvm/state.vzvmsave"}
+  ],
+  "answers": [
+    {"id": 1, "ok": true, "machines": [], "qemu": {"machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "name": "Windows", "bundle": "/Users/me/VMs/Windows, 11.swiftvm", "pid": 4242, "state": "held", "adapter": "virtioGPU3D", "canSaveState": false, "spiceSocket": "/tmp/swiftvm-501/1a2b3c4d/4f2b1c9e3a5d4e6f/gpu/display.sock"}},
+    {"id": 2, "ok": true, "machines": [], "qemuMachines": [{"machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "name": "Windows", "bundle": "/Users/me/VMs/Windows, 11.swiftvm", "pid": 4242, "state": "running", "adapter": "framebuffer", "canSaveState": true}]},
+    {"id": 3, "ok": true, "machines": [], "exit": {"reason": "guest-reset", "expected": false}},
+    {"id": 4, "ok": true, "machines": [], "frame": {"width": 1920, "height": 1080, "bytesPerRow": 7680, "length": 8294400}},
+    {"id": 5, "ok": false, "error": {"code": "guest-tools", "message": "Nothing listens on port 7000 in the guest."}, "machines": []}
+  ],
+  "events": [
+    {"event": "qemu-exited", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "exit": {"reason": "guest-shutdown", "expected": false}},
+    {"event": "qemu-exited", "machine": "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B", "exit": {"expected": false, "message": "Could not open 'disk.img'"}}
+  ]
+}

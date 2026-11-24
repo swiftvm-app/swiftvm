@@ -49,9 +49,20 @@ pub fn service(arguments: &[String]) -> ! {
                 fail(response.error_message().unwrap_or("The service didn't say what it is."))
             };
             let app = if info.app.running { "running" } else { "not running" };
+            // The machines the service runs on QEMU itself.
+            let qemu = existing
+                .send(&ControlRequest::new(Command::QemuList))
+                .ok()
+                .and_then(|response| response.qemu_machines)
+                .map(|machines| {
+                    let names: Vec<String> = machines.iter().map(|machine| format!("{} (process {})", machine.name, machine.pid)).collect();
+                    if names.is_empty() { "none".to_string() } else { names.join(", ") }
+                })
+                .unwrap_or_else(|| "unknown".into());
             print_rows(&[
                 vec!["Service:".into(), format!("swiftvm {}, API {}, on {}", info.version, info.protocol, info.platform)],
                 vec![format!("{}:", identity().name()), app.into()],
+                vec!["On QEMU:".into(), qemu],
                 vec!["Socket:".into(), paths().service_socket().display().to_string()],
                 vec!["Log:".into(), paths().service_log().display().to_string()],
             ]);

@@ -10,7 +10,7 @@ engines.
 | --- | --- | --- |
 | SwiftVM | Your Mac | Manages machines, windows, storage, and networking |
 | `swiftvm` | Your Mac | The command-line tool, and as `swiftvm serve` the service that every client talks to. Written in Rust |
-| `qemu-system-aarch64` | Your Mac | Runs Windows guests, and Linux guests with graphics acceleration |
+| `qemu-system-aarch64` | Your Mac | Runs Windows guests, and Linux guests with graphics acceleration. `swiftvm serve` starts and drives it |
 | `swiftvm-agent` | macOS guests | Power, clock, clipboard, and what is on the screen |
 | `swiftvm-agent.py` | Linux guests | Power, clock, shared-folder mounting, setup progress, commands, and what is on the screen |
 | `swiftvm-agent.exe` | Windows guests | Power, clock, clipboard, display resizing, window lists for Seamless Mode, setup progress, commands, and what is on the screen |
@@ -26,7 +26,8 @@ in `Packages/SwiftVMKit`. The `swiftvm` tool is the Rust workspace in `crates/`:
 | Crate | Role |
 | --- | --- |
 | `swiftvm-protocol` | API v1's messages, guest job frames, a client for the service, and the turning of the app's messages into API v1 |
-| `swiftvm-service` | `swiftvm serve`: the handshake, events, client permission, and passing requests on to the app |
+| `swiftvm-service` | `swiftvm serve`: the handshake, events, client permission, the QEMU machines it runs, and passing other requests on to the app |
+| `swiftvm-qemu` | The QEMU engine: QEMU's command line from a machine's `config.json`, its process and TPM, QMP, the guest agent's serial line, the machine's own mouse, keyboard and screenshots, and taking a machine on again after the service restarts |
 | `swiftvm-cli` | The `swiftvm` command, including its MCP server |
 
 The Swift modules:
@@ -35,7 +36,7 @@ The Swift modules:
 | --- | --- |
 | `VMCore` | Machine configuration, state, library, snapshots, templates, and backend interfaces |
 | `VZEngine` | macOS and Linux guests using Apple's Virtualization framework |
-| `QEMUEngine` | Windows guests, and Linux guests with graphics acceleration, using QEMU, including display and input |
+| `QEMUEngine` | Hands Windows guests, and Linux guests with graphics acceleration, to `swiftvm serve`, and shows their display over VNC or SPICE |
 | `VMNetworking` | Shared NAT network, address reservations, and port forwarding |
 | `DiskTools` | Disk creation, resizing, conversion, compression, and ISO images |
 | `FileSharing` | WebDAV shared folders for Windows guests |
@@ -48,6 +49,14 @@ The Swift modules:
 
 `VMCore` defines the backend interface. `BackendRouter` selects `VZEngine` or
 `QEMUEngine` from each machine's configuration.
+
+A QEMU machine runs under `swiftvm serve`. The app makes the lines only it can
+make, the serial console, a socket per network card on vmnet and the display's
+VNC client, and hands them over with `qemu-start` (see [API v1](api.md)). It
+serves compressed disks over NBD itself. QEMU listens for its machine protocol
+and the guest agent's line in a runtime folder of the machine's, and writes its
+output to `logs/qemu.log`, so it outlives the service: the next service takes
+it on from there.
 
 ## A machine on disk
 
@@ -196,7 +205,7 @@ process or a socket between them, and the outcome comes back as one document.
 
 | Part | Where it happens |
 | --- | --- |
-| The screen, the mouse, the keyboard | In the app, on every guest: the virtual machine's display and input view on Apple's backend, and QEMU's display connection on QEMU. Nothing in the guest is asked |
+| The screen, the mouse, the keyboard | On Apple's backend, in the app: the virtual machine's display and input view. On QEMU, the service: QMP's screendump and input events, and for a guest that draws with the GPU, the app's SPICE connection for the picture. Nothing in the guest is asked |
 | Reading text off the pixels | In the app, with Apple's Vision framework |
 | What is on the screen by its parts | Guest tools, in the desktop session: accessibility on macOS, AT-SPI on Linux, UI Automation on Windows. All give the same tree, which the app makes into a list |
 | Text the keyboard has no keys for | Guest tools |

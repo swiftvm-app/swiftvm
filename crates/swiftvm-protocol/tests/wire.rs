@@ -221,3 +221,27 @@ fn the_client_says_hello_and_hands_over_the_connection_for_a_stream() {
     // Nothing listens, and this client was told not to start a service.
     assert!(matches!(client.send(&ControlRequest::new(Command::List)), Err(ClientError::ServiceNotRunning(_))));
 }
+
+#[test]
+fn the_engine_requests_answers_and_events_read_as_the_app_writes_and_reads_them() {
+    use swiftvm_protocol::qemu::{DescriptorRole, DisplayAdapter, QemuEvent, QemuRequest, QemuState};
+    let fixture = fixture("api-v1/qemu.json");
+    for request in fixture["requests"].as_array().unwrap() {
+        // The id and command are read apart from the rest.
+        let mut rest = request.clone();
+        let object = rest.as_object_mut().unwrap();
+        assert!(object.remove("id").is_some() && object.remove("command").is_some());
+        round_trip::<QemuRequest>(&rest);
+    }
+    let start: QemuRequest = serde_json::from_value(fixture["requests"][0].clone()).unwrap();
+    assert_eq!(
+        start.descriptors.unwrap(),
+        [DescriptorRole::Console, DescriptorRole::Network, DescriptorRole::Network, DescriptorRole::Display]
+    );
+    let answers: Vec<ControlResponse> = fixture["answers"].as_array().unwrap().iter().map(round_trip).collect();
+    let started = answers[0].qemu.as_ref().unwrap();
+    assert_eq!((started.state, started.adapter, started.pid), (QemuState::Held, DisplayAdapter::VirtioGpu3d, 4242));
+    assert_eq!(answers[4].error.as_ref().unwrap().code, ErrorCode::GuestTools);
+    let events: Vec<QemuEvent> = fixture["events"].as_array().unwrap().iter().map(round_trip).collect();
+    assert_eq!(events[0].exit.as_ref().unwrap().reason.as_deref(), Some("guest-shutdown"));
+}

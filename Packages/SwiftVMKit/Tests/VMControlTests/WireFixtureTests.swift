@@ -56,4 +56,28 @@ import VMControl
         #expect(decoded.clients?.map(\.name) == ["Notes Robot", "notes-robot"])
         #expect(decoded.clients?.last?.allowed == false)
     }
+
+    /// The engine requests the app sends `swiftvm serve` for its QEMU machines, and what it reads back.
+    @Test func theEngineRequestsAreWrittenAndItsAnswersReadAsTheServiceHasThem() throws {
+        let data = try Data(contentsOf: Self.fixtures.appending(path: "api-v1/qemu.json"))
+        let fixture = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        for request in try #require(fixture["requests"] as? [Any]) {
+            let sent = try JSONSerialization.data(withJSONObject: request)
+            let again = try JSONSerialization.jsonObject(with: JSONEncoder().encode(JSONDecoder().decode(QEMURequest.self, from: sent)))
+            #expect((request as AnyObject).isEqual(again), "\(String(decoding: sent, as: UTF8.self))")
+        }
+        let answers = try (fixture["answers"] as? [Any] ?? []).map {
+            try JSONDecoder().decode(QEMUAnswer.self, from: JSONSerialization.data(withJSONObject: $0))
+        }
+        #expect(answers[0].qemu?.adapter == .virtioGPU3D && answers[0].qemu?.pid == 4242)
+        #expect(answers[1].qemuMachines?.first?.canSaveState == true)
+        #expect(answers[2].exit?.reason == "guest-reset")
+        #expect(answers[3].frame?.bytesPerRow == 7680)
+        #expect(answers[4].error?.code == "guest-tools")
+        let events = try (fixture["events"] as? [Any] ?? []).map {
+            try JSONDecoder().decode(QEMUEvent.self, from: JSONSerialization.data(withJSONObject: $0))
+        }
+        #expect(events.map { $0.exit?.reason } == ["guest-shutdown", nil])
+        #expect(events[1].exit?.message == "Could not open 'disk.img'")
+    }
 }

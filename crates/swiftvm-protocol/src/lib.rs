@@ -10,6 +10,7 @@ pub mod client;
 pub mod frames;
 pub mod io;
 pub mod paths;
+pub mod qemu;
 pub mod text;
 pub mod wire;
 

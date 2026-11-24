@@ -11,11 +11,11 @@ use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
-use crate::transport::Peer;
-use crate::{Service, events, lines, log};
+use crate::transport::{DescriptorReader, Peer};
+use crate::{Service, engine, events, lines, log};
 
 pub(crate) struct Connection {
-    pub reader: BufReader<OwnedReadHalf>,
+    pub reader: BufReader<DescriptorReader>,
     pub writer: OwnedWriteHalf,
     pub service: Arc<Service>,
 }
@@ -40,8 +40,13 @@ impl Connection {
     /// The connection whole again, with what was read from it and not used yet.
     pub fn into_stream(self) -> Option<(UnixStream, Vec<u8>)> {
         let left = self.reader.buffer().to_vec();
-        let stream = self.reader.into_inner().reunite(self.writer).ok()?;
+        let stream = self.reader.into_inner().into_inner().reunite(self.writer).ok()?;
         Some((stream, left))
+    }
+
+    /// The descriptors that came with what was read since this was last asked.
+    pub fn take_descriptors(&mut self) -> Vec<std::os::fd::OwnedFd> {
+        std::mem::take(&mut self.reader.get_mut().descriptors)
     }
 }
 
@@ -67,7 +72,7 @@ pub(crate) async fn handle(stream: UnixStream, service: Arc<Service>) {
         return;
     }
     let (reader, writer) = stream.into_split();
-    let mut connection = Connection { reader: BufReader::new(reader), writer, service };
+    let mut connection = Connection { reader: BufReader::new(DescriptorReader::new(reader)), writer, service };
     if !hello(&mut connection, &peer).await {
         return;
     }
@@ -101,6 +106,13 @@ pub(crate) async fn handle(stream: UnixStream, service: Arc<Service>) {
             Some(Command::AskPermission) => {
                 connection.answer(&ControlResponse::failure(Some(id), ErrorCode::BadRequest, "Only the service asks the app that.")).await
             }
+            Some(command) if command.is_qemu() => match engine::handle(connection, id, command, request).await {
+                Some(back) => {
+                    connection = back;
+                    true
+                }
+                None => return,
+            },
             known => match forward(connection, id, known.is_some_and(Command::opens_stream), request).await {
                 Some(back) => {
                     connection = back;
@@ -112,6 +124,8 @@ pub(crate) async fn handle(stream: UnixStream, service: Arc<Service>) {
         if !answered {
             return;
         }
+        // Descriptors nobody took are closed.
+        drop(connection.take_descriptors());
     }
 }
 

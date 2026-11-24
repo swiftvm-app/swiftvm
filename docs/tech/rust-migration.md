@@ -26,7 +26,7 @@ Each step ships on its own.
 | Step | What changes | State |
 | --- | --- | --- |
 | 1. Rust CLI | `swiftvm` is rewritten in Rust as a client of today's app, with the same commands, output, and exit statuses. The protocol crate starts here | Done |
-| 2. `swiftvm serve` | A long-running service that runs QEMU machines. The app hands those machines to it. This is the first part that runs on Linux, on KVM, on arm64 and x86-64 hosts | In progress: 2a, the service and [API v1](api.md), is done. Next are the QEMU engine in Rust (2b) and Linux hosts (2c) |
+| 2. `swiftvm serve` | A long-running service that runs QEMU machines. The app hands those machines to it. This is the first part that runs on Linux, on KVM, on arm64 and x86-64 hosts | In progress: 2a, the service and [API v1](api.md), and 2b, the QEMU engine in Rust, are done: the service runs the app's QEMU machines, and they outlive a restart of the service. Next are Linux hosts (2c) |
 | 3. Machine library | The machine library, creation, templates, and snapshots move into the service. The app reads them from it | Planned |
 | 4. VZ runner | Machines on Apple's Virtualization framework run in a process of their own: the app's program started as a runner, inside the app bundle | Planned |
 

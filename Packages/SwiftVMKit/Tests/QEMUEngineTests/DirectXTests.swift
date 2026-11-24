@@ -63,27 +63,6 @@ import Testing
         #expect(installation.directXBackend(on: ready) == .dxmt)
     }
 
-    @Test func eachBackendTellsTheRenderServerWhichHalfAndLibraryToRun() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let installation = try installation()
-        let runtime = directory.appending(path: "Runtime")
-        let libraries = ["NPT_D3D11_LIBRARY_PATH", "NPT_D3D12_LIBRARY_PATH", "NPT_DXGI_LIBRARY_PATH"]
-
-        let dxmt = installation.environment(in: runtime, directX: .dxmt)
-        #expect(dxmt["NPT_BACKEND"] == "dxmt")
-        #expect(libraries.allSatisfy { dxmt[$0] == installation.dxmtLibrary.path })
-        // The guest is offered Direct3D 12 only by a backend that has it.
-        #expect(dxmt["NPT_CAPSET_D3D12"] == nil)
-        #expect(dxmt["D3DMETAL_FRAMEWORK_PATH"] == nil)
-
-        let framework = directory.appending(path: "Support/D3DMetal/D3DMetal.framework")
-        let d3dMetal = installation.environment(in: runtime, directX: .d3dMetal(framework: framework))
-        #expect(d3dMetal["NPT_BACKEND"] == "d3dmetal")
-        #expect(libraries.allSatisfy { d3dMetal[$0] == installation.d3dMetalLibrary.path })
-        #expect(d3dMetal["NPT_CAPSET_D3D12"] == "1")
-        #expect(d3dMetal["D3DMETAL_FRAMEWORK_PATH"] == framework.path)
-    }
-
     @Test func findsD3DMetalInWhatTheGamePortingToolkitBrings() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let volume = directory.appending(path: "Game Porting Toolkit")

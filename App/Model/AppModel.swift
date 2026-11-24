@@ -141,8 +141,10 @@ final class AppModel {
                 self?.remapReservedAddresses(from: previous, to: current)
             }
             let graphics = windowsGraphics
+            let tool = commandLineToolURL
             let qemu = QEMUBackendProvider(
                 networkManager: networkManager, installation: QEMUInstallation.inApp(),
+                service: QEMUService(socketURL: ControlPaths.serviceSocket) { ServiceLauncher.startIfNotRunning(tool: tool) },
                 directXHost: { graphics.currentHost() }
             )
             let router = BackendRouter(providers: [
@@ -191,11 +193,13 @@ final class AppModel {
         library.removeStagedBundles()
         library.load()
         // Nothing is shown of a machine that an app before this one left running on QEMU as it crashed,
-        // and its disk would be copied while it writes to it.
+        // and its disk would be copied while it writes to it. The service ends it.
         let leftovers = library.machines.filter { $0.configuration.engine == .qemu }
-        Task {
-            for machine in leftovers where !machine.state.isActive {
-                await QEMUBackend.endLeftover(of: machine.configuration, in: machine.bundle)
+        if let service = qemuProvider?.service {
+            Task {
+                for machine in leftovers where !machine.state.isActive {
+                    await service.endLeftover(bundle: machine.bundle.url)
+                }
             }
         }
         templates.removeUnfinished()

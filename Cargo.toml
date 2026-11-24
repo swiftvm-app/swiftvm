@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 swiftvm-protocol = { path = "crates/swiftvm-protocol" }
 swiftvm-service = { path = "crates/swiftvm-service" }
+swiftvm-qemu = { path = "crates/swiftvm-qemu" }
 base64 = "0.22"
 libc = "0.2"
 plist = "1"

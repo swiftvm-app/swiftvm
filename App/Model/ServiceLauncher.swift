@@ -7,14 +7,22 @@ extension AppModel {
     /// Starts the service from the tool in the app, unless one already answers. A service the app starts
     /// has the app as the one responsible for it, so macOS asks about what it does in SwiftVM's name.
     func startService() {
-        guard let tool = commandLineToolURL else { return }
+        ServiceLauncher.startIfNotRunning(tool: commandLineToolURL)
+    }
+}
+
+nonisolated enum ServiceLauncher {
+    /// Starts the service from `tool`, unless one already answers. A service the app starts has the app as
+    /// the one responsible for it, and for the QEMU it runs.
+    static func startIfNotRunning(tool: URL?) {
+        guard let tool else { return }
         if let connection = try? ControlSocket.connect(to: ControlPaths.serviceSocket) {
             close(connection)
             return
         }
         do {
             try FileManager.default.createDirectory(at: ControlPaths.applicationSupport, withIntermediateDirectories: true)
-            let pid = try ServiceLauncher.spawn(tool: tool, log: ControlPaths.serviceLog)
+            let pid = try spawn(tool: tool, log: ControlPaths.serviceLog)
             // Collected when it ends, so that it doesn't linger as a zombie while the app runs.
             Thread.detachNewThread {
                 var status: Int32 = 0
@@ -24,9 +32,7 @@ extension AppModel {
             NSLog("SwiftVM: the service couldn't be started: \(error.localizedDescription)")
         }
     }
-}
 
-nonisolated enum ServiceLauncher {
     /// Runs `<tool> serve` in a session of its own, so that what ends the app's doesn't end it, with what
     /// it says added to `log`.
     static func spawn(tool: URL, log: URL) throws -> pid_t {

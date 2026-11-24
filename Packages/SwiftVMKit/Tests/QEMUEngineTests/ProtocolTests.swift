@@ -58,45 +58,6 @@ private final class Peer: @unchecked Sendable {
     }
 }
 
-@Suite struct QMPConnectionTests {
-    @Test func answersCommandsAndPassesEventsOn() async throws {
-        let (app, qemu) = Peer.pair()
-        let connection = QMPConnection(descriptor: app)
-        let events = EventLog()
-        connection.onEvent = { events.add($0.name) }
-        let server = Thread {
-            qemu.write("{\"QMP\": {\"version\": {}, \"capabilities\": []}}\r\n")
-            let capabilities = try? JSONSerialization.jsonObject(with: Data(qemu.readLine().utf8)) as? [String: Any]
-            qemu.write("{\"return\": {}, \"id\": \(capabilities?["id"] ?? 0)}\r\n")
-            let status = try? JSONSerialization.jsonObject(with: Data(qemu.readLine().utf8)) as? [String: Any]
-            // An event arrives between a question and its answer.
-            qemu.write("{\"event\": \"RESET\", \"data\": {}}\r\n")
-            qemu.write("{\"return\": {\"status\": \"running\"}, \"id\": \(status?["id"] ?? 0)}\r\n")
-            let bad = try? JSONSerialization.jsonObject(with: Data(qemu.readLine().utf8)) as? [String: Any]
-            qemu.write("{\"error\": {\"class\": \"GenericError\", \"desc\": \"No such device\"}, \"id\": \(bad?["id"] ?? 0)}\r\n")
-        }
-        server.start()
-
-        try await connection.open()
-        let status = try await connection.execute("query-status")
-        #expect(status["status"]?.string == "running")
-        await #expect(throws: QEMUError.refused("No such device")) {
-            try await connection.execute("device_del", ["id": "nothing"])
-        }
-        #expect(events.names == ["RESET"])
-        connection.close()
-    }
-
-    @Test func tellsWhoWaitsThatQEMUHasGone() async throws {
-        let (app, qemu) = Peer.pair()
-        let connection = QMPConnection(descriptor: app)
-        _ = qemu
-        let opening = Task { try await connection.open() }
-        shutdown(qemu.descriptor, SHUT_RDWR)
-        await #expect(throws: QEMUError.disconnected) { try await opening.value }
-    }
-}
-
 private final class EventLog: @unchecked Sendable {
     private let lock = NSLock()
     private var list: [String] = []
@@ -585,80 +546,5 @@ private final class CursorLog: @unchecked Sendable {
         // Acknowledging a size must not send it again and start a resize feedback loop: what follows is
         // a request for the whole picture at the new size.
         #expect(server.read(10) == Data([3, 0, 0, 0, 0, 0, 20, 0, 11, 64]))
-    }
-}
-
-@Suite struct AgentChannelTests {
-    /// Plays a guest's agent: reads the app's frames and answers them.
-    private final class Guest: @unchecked Sendable {
-        let peer: Peer
-        private var reader = ChannelFrame.Reader()
-        private var pending: [ChannelFrame] = []
-
-        init(_ peer: Peer) {
-            self.peer = peer
-        }
-
-        func send(_ frame: ChannelFrame) {
-            peer.write(frame.encoded)
-        }
-
-        func next() -> ChannelFrame? {
-            while pending.isEmpty {
-                let bytes = peer.read(1)
-                guard !bytes.isEmpty else { return nil }
-                pending += reader.receive(bytes)
-            }
-            return pending.removeFirst()
-        }
-    }
-
-    @Test func carriesAConnectionBothWaysAndEachWayEndsByItself() async throws {
-        let (app, peer) = Peer.pair()
-        let guest = Guest(peer)
-        let channel = AgentChannel(descriptor: app)
-        channel.start()
-        // The app says hello first, and the agent answers in kind.
-        #expect(guest.next()?.kind == .hello)
-        await #expect(throws: AgentChannel.ChannelError.self) { _ = try await channel.connect(port: 717, timeout: 1) }
-        guest.send(.hello)
-        try await Task.sleep(for: .milliseconds(100))
-
-        let answering = Thread {
-            guard let open = guest.next(), open.kind == .open, open.port == 718 else { return }
-            guest.send(ChannelFrame(.accept, connection: open.connection))
-            guard let data = guest.next(), data.kind == .data else { return }
-            guest.send(ChannelFrame(.data, connection: open.connection, payload: Data("got ".utf8) + data.payload))
-            // The agent says it is done sending, and listens for the app to hang up.
-            guest.send(ChannelFrame(.end, connection: open.connection))
-        }
-        answering.start()
-
-        let connection = try await channel.connect(port: 718, timeout: 2)
-        try connection.write(contentsOf: Data("job".utf8))
-        let answer = try connection.readToEnd() ?? Data()
-        #expect(String(decoding: answer, as: UTF8.self) == "got job")
-        // Hanging up reaches the guest.
-        try connection.close()
-        let closing = guest.next()
-        #expect(closing?.kind == .end || closing?.kind == .close)
-        channel.close()
-    }
-
-    @Test func saysWhenNothingListensOnAPort() async throws {
-        let (app, peer) = Peer.pair()
-        let guest = Guest(peer)
-        let channel = AgentChannel(descriptor: app)
-        channel.start()
-        _ = guest.next()
-        guest.send(.hello)
-        try await Task.sleep(for: .milliseconds(100))
-        let refusing = Thread {
-            guard let open = guest.next() else { return }
-            guest.send(ChannelFrame(.refuse, connection: open.connection))
-        }
-        refusing.start()
-        await #expect(throws: AgentChannel.ChannelError.self) { _ = try await channel.connect(port: 9, timeout: 2) }
-        channel.close()
     }
 }

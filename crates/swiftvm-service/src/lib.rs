@@ -1,9 +1,11 @@
 //! `swiftvm serve`: the one service that SwiftVM's clients talk to, over API v1 on `service.sock`.
 //!
-//! It answers the handshake, events and the permission of programs itself, and passes every other
-//! request on to the app's `control.sock`, which still does that work. See `docs/tech/api.md`.
+//! It answers the handshake, events and the permission of programs itself, and runs the QEMU machines the
+//! app hands it (`engine`). It passes every other request on to the app's `control.sock`, which still does
+//! that work. See `docs/tech/api.md`.
 
 mod connection;
+mod engine;
 mod events;
 mod lines;
 mod permission;
@@ -29,11 +31,17 @@ pub struct Config {
     pub watches_program: bool,
     /// Whether the service's own program, and the app it is in, need no permission.
     pub trusts_own_program: bool,
+    /// The QEMU that runs machines: the one next to the program, unless another is named. `None` without one.
+    pub qemu: Option<swiftvm_qemu::installation::Installation>,
+    /// Where the machines' runtime folders are, with their sockets.
+    pub runtime: PathBuf,
 }
 
 impl Config {
     pub fn new(paths: ControlPaths, app_name: impl Into<String>, program: PathBuf) -> Self {
-        Config { paths, app_name: app_name.into(), program, watches_program: true, trusts_own_program: true }
+        let qemu = swiftvm_qemu::installation::Installation::find(&program);
+        let runtime = swiftvm_qemu::runtime::root_for(&paths.data);
+        Config { paths, app_name: app_name.into(), program, watches_program: true, trusts_own_program: true, qemu, runtime }
     }
 }
 
@@ -42,6 +50,7 @@ pub(crate) struct Service {
     pub config: Config,
     pub permission: permission::Permission,
     pub events: Arc<events::Events>,
+    pub engine: Arc<engine::Engine>,
     /// Becomes `true` when the service is to stop: it listens no more, and lets the work under way end.
     pub stopping: watch::Sender<bool>,
 }
@@ -104,8 +113,16 @@ async fn serve(config: Config) -> i32 {
     };
     log(&format!("Listening on {}, for {}.", config.paths.service_socket().display(), config.app_name));
     let (stopping, mut stopped) = watch::channel(false);
-    let service =
-        Arc::new(Service { permission: permission::Permission::new(&config), events: Arc::new(events::Events::new()), config, stopping });
+    let engine = engine::Engine::new(config.runtime.clone(), config.qemu.clone());
+    // The machines an earlier service left running, before anyone asks about them.
+    engine.adopt_all().await;
+    let service = Arc::new(Service {
+        permission: permission::Permission::new(&config),
+        events: Arc::new(events::Events::new()),
+        engine,
+        config,
+        stopping,
+    });
     tokio::spawn(stop_on_signals(service.clone()));
     if service.config.watches_program {
         tokio::spawn(stop_when_replaced(service.clone()));
@@ -123,6 +140,8 @@ async fn serve(config: Config) -> i32 {
         }
         while connections.try_join_next().is_some() {}
     }
+    // The machines go on running, for the next service to take on: it may begin as soon as the lock is free.
+    service.engine.shutdown().await;
     // The next client starts another service, which may begin at once: the socket and the lock are its.
     listener.remove();
     drop(lock);

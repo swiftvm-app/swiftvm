@@ -1,0 +1,33 @@
+{
+  "schemaVersion" : 1,
+  "id" : "4F2B1C9E-3A5D-4E6F-8A7B-9C0D1E2F3A4B",
+  "name" : "Windows",
+  "os" : { "family" : "windows", "productName" : "Windows 11" },
+  "engine" : "qemu",
+  "cpuCount" : 4,
+  "memorySize" : 8589934592,
+  "disks" : [
+    { "id" : "0B6A8C42-1D3E-4F50-9A7B-2C4D6E8F0A1B", "fileName" : "disk.img", "capacity" : 68719476736, "bus" : "nvme", "format" : "raw", "readOnly" : false }
+  ],
+  "removableImages" : [
+    { "id" : "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D", "path" : "/Downloads/Windows 11, Arm.iso", "readOnly" : true },
+    { "id" : "B2C3D4E5-F6A7-4B8C-9D0E-1F2A3B4C5D6E", "path" : "/Downloads/stick.img", "readOnly" : false }
+  ],
+  "display" : { "widthInPixels" : 1920, "heightInPixels" : 1200, "pixelsPerInch" : 144, "automaticallyResizes" : true, "adapter" : "virtioGPU", "acceleratesGraphics" : false },
+  "keyboard" : { "capturesSystemKeys" : true },
+  "networkInterfaces" : [
+    { "id" : "C3D4E5F6-A7B8-4C9D-8E0F-1A2B3C4D5E6F", "networkID" : "default", "macAddress" : "02:00:00:00:00:01", "portForwards" : [ ], "isConnected" : true },
+    { "id" : "D4E5F6A7-B8C9-4D0E-9F1A-2B3C4D5E6F70", "networkID" : "default", "macAddress" : "02:00:00:00:00:02", "portForwards" : [ ], "isConnected" : false }
+  ],
+  "sharedFolders" : [
+    { "id" : "E5F6A7B8-C9D0-4E1F-8A2B-3C4D5E6F7081", "name" : "Projects", "path" : "/Users/username/Projects", "readOnly" : false }
+  ],
+  "clipboard" : { "isShared" : true, "includesAcceleratedLinux" : true },
+  "automation" : { "isAllowed" : true },
+  "audio" : { "outputEnabled" : true, "inputEnabled" : false },
+  "boot" : { "secureBoot" : false, "rosetta" : false, "nestedVirtualization" : false, "tpm" : true },
+  "usb" : { "autoConnect" : [ ] },
+  "ssh" : { "alias" : "windows", "user" : "username", "port" : 22 },
+  "installation" : { "attachesSeedImage" : false, "isProvisioned" : true, "hasHostTimeZone" : true, "hasReportedSetupFailure" : false, "hasDisplayDriver" : true, "hasAcceleratedDisplayDriver" : false, "setupMedia" : [ ] },
+  "createdAt" : 785000000
+}

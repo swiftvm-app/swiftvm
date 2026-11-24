@@ -6,6 +6,12 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use std::os::fd::OwnedFd;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
+
+use tokio::io::{AsyncRead, Interest, ReadBuf};
+use tokio::net::unix::OwnedReadHalf;
 use tokio::net::{UnixListener, UnixStream};
 
 /// Makes `folder` and those above it that are missing, which only this user can open.
@@ -100,4 +106,40 @@ fn program_of(pid: i32) -> Option<PathBuf> {
 #[cfg(not(target_os = "macos"))]
 fn program_of(pid: i32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+/// A connection's read half that keeps the descriptors that come with what it reads, for a request that
+/// hands some over. They are closed on exec, and when nobody takes them.
+pub struct DescriptorReader {
+    half: OwnedReadHalf,
+    pub descriptors: Vec<OwnedFd>,
+}
+
+impl DescriptorReader {
+    pub fn new(half: OwnedReadHalf) -> Self {
+        DescriptorReader { half, descriptors: Vec::new() }
+    }
+
+    pub fn into_inner(self) -> OwnedReadHalf {
+        self.half
+    }
+}
+
+impl AsyncRead for DescriptorReader {
+    fn poll_read(self: Pin<&mut Self>, context: &mut Context<'_>, buffer: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        let DescriptorReader { half, descriptors } = self.get_mut();
+        let stream: &UnixStream = half.as_ref();
+        loop {
+            ready!(stream.poll_read_ready(context))?;
+            let unfilled = buffer.initialize_unfilled();
+            match stream.try_io(Interest::READABLE, || swiftvm_qemu::fdpass::receive(stream.as_raw_fd(), unfilled, descriptors)) {
+                Ok(count) => {
+                    buffer.advance(count);
+                    return Poll::Ready(Ok(()));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+        }
+    }
 }

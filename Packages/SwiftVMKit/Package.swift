@@ -38,7 +38,7 @@ let package = Package(
         .target(name: "FileSharing"),
         // Runs Windows guests on QEMU, which the app carries in Contents/Helpers.
         .target(name: "GuestDisplayBridge"),
-        .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel", "GuestDisplayBridge"]),
+        .target(name: "QEMUEngine", dependencies: ["VMCore", "VMNetworking", "DiskTools", "GuestChannel", "GuestDisplayBridge", "VMControl"]),
         // The app's side of its control socket. The `swiftvm` tool on the other side is the Rust
         // workspace in crates/.
         .target(name: "VMControl", dependencies: ["GuestChannel"]),
@@ -54,7 +54,7 @@ let package = Package(
         .testTarget(name: "VMControlTests", dependencies: ["VMControl", "GuestChannel"]),
         .testTarget(name: "AgentControlTests", dependencies: ["AgentControl", "VMControl", "VMCore", "GuestChannel"]),
         .testTarget(name: "VZEngineTests", dependencies: ["VZEngine", "VMCore"]),
-        .testTarget(name: "QEMUEngineTests", dependencies: ["QEMUEngine", "VMCore", "GuestChannel"]),
+        .testTarget(name: "QEMUEngineTests", dependencies: ["QEMUEngine", "VMCore", "GuestChannel", "VMControl"]),
         .testTarget(name: "FileSharingTests", dependencies: ["FileSharing"]),
     ]
 )

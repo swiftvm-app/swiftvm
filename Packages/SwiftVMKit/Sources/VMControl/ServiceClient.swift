@@ -89,12 +89,15 @@ public struct ServiceClient: Sendable {
     }
 }
 
-public enum ServiceClientError: Error, LocalizedError {
+public enum ServiceClientError: Error, LocalizedError, Equatable {
     case refused(String)
+    /// The service answered with a failure: its code in API v1, and its words.
+    case failed(code: String, message: String)
 
     public var errorDescription: String? {
         switch self {
         case .refused(let message): message
+        case .failed(_, let message): message
         }
     }
 }
