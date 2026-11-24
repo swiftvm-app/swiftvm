@@ -11,7 +11,9 @@ const introduction = `# ${site.name}
 
 > ${site.description}
 
-${site.name} runs on ${site.requirements}. Install it with \`${site.brew}\`, or download it from ${site.download}. The source is at ${site.repository}.`
+${site.name} runs on ${site.requirements}. Install it with \`${site.brew}\`, or download it from ${site.download}. The source is at ${site.repository}.
+
+svm is a separate command line that runs Linux machines without the app, on macOS 14 or newer and on Linux with KVM. Install it with \`${site.svmInstall}\`. The source is at ${site.svmRepository}.`
 
 export function llmsIndex({ sections }) {
     const entry = (page) => `- [${page.title}](${markdownURL(page.source)})${page.lead ? `: ${page.lead}` : ''}`

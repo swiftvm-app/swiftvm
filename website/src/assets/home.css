@@ -998,6 +998,22 @@
     gap: 56px;
 }
 
+/* A second split under the first, in the same section. */
+.split + .split {
+    margin-top: 88px;
+}
+
+.split-copy .command {
+    width: fit-content;
+    margin-top: 24px;
+}
+
+.split-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+}
+
 .more {
     font-size: 17px;
     font-weight: 500;
@@ -1065,6 +1081,8 @@
     padding: 0;
     background: none;
     font-size: inherit;
+    /* Lines as the pre has them, unlike the inline code of .section. */
+    white-space: inherit;
 }
 
 .terminal .prompt {
@@ -1193,6 +1211,10 @@
     .split {
         grid-template-columns: minmax(0, 1fr);
         gap: 32px;
+    }
+
+    .split + .split {
+        margin-top: 64px;
     }
 }
 

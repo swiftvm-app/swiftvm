@@ -232,6 +232,26 @@
 <span class="prompt">%</span> swiftvm ssh web-server<span class="caret"></span></code></pre>
         </div>
     </div>
+    <div class="container split" id="svm">
+        <div class="split-copy">
+            <h2>Or run Linux machines without the app</h2>
+            <p class="section-lead"><code>svm</code> is a separate command line: one small program for macOS and Linux, with no app and no background service. Run it on a server, hand it to an AI agent, or ship it inside your own app and drive it with <code>--json</code>.</p>
+            <div class="command">
+                <code>{{site.svmInstall}}</code>
+                <button type="button" class="command-copy" data-copy="{{site.svmInstall}}" aria-label="Copy the command that installs svm">Copy</button>
+            </div>
+            <p class="split-links"><a class="more" href="{{doc:svm/README.md}}">About svm</a> <a class="more" href="{{site.svmRepository}}">Source on GitHub</a></p>
+        </div>
+        <div class="terminal" role="img" aria-label="A terminal on Linux running svm commands">
+            <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>bash</span></div>
+            <pre aria-hidden="true"><code><span class="prompt">$</span> svm create debian-13 --name dev --script docker
+<span class="prompt">$</span> svm start dev
+<span class="prompt">$</span> svm wait dev
+<span class="prompt">$</span> svm exec dev -- uname -sm
+Linux aarch64
+<span class="prompt">$</span> svm ssh dev<span class="caret"></span></code></pre>
+        </div>
+    </div>
 </section>
 
 <section class="section">

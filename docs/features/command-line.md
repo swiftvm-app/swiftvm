@@ -3,6 +3,10 @@
 `swiftvm` does from a terminal what the app does from the menu bar. It drives
 the running app, so SwiftVM must be open.
 
+To run Linux machines without the app, on a Mac or on a Linux server, or from
+your own app, use [`svm`](../svm/README.md), a separate command line that needs
+nothing else.
+
 ## Install
 
 Homebrew puts `swiftvm` on your `PATH`. Otherwise choose **Settings… → Command

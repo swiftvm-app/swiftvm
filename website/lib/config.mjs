@@ -10,4 +10,7 @@ export const site = {
     branch: 'main',
     download: 'https://github.com/swiftvm-app/swiftvm/releases/latest',
     brew: 'brew install --cask swiftvm-app/tap/swiftvm',
+    // svm, the command line that runs Linux machines without the app, on macOS and Linux.
+    svmRepository: 'https://github.com/swiftvm-app/cli',
+    svmInstall: 'curl -fsSL https://github.com/swiftvm-app/cli/releases/latest/download/install.sh | sh',
 }
